@@ -1,0 +1,294 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { z } from "zod";
+import type { RunTaskResult } from "../pipeline/run-task.js";
+import { RUN_STATUSES, type RunReport, type RunStatus } from "../schemas/report.js";
+import { EXPECTED_OUTCOMES, type EvalMeta, type TaskSpec } from "../schemas/task.js";
+import { findHiddenArtifacts } from "./hidden-guard.js";
+import type { HiddenTestResult } from "./hidden-tests.js";
+import { renderEvalSummaryMarkdown } from "./summary-markdown.js";
+
+export const EVAL_OUTCOMES = [
+  "verified",
+  "false_success",
+  "hidden_error",
+  ...RUN_STATUSES.filter((s) => s !== "success"),
+] as const;
+export type EvalOutcome = (typeof EVAL_OUTCOMES)[number];
+
+/**
+ * Final eval outcome for one task.
+ * - `success` is only a claim: hidden tests decide between `verified` and `false_success`
+ *   (`hidden_error` if the hidden tests could not be run at all).
+ * - Any other run status is the outcome as-is.
+ * `correct` is true for `verified` on an implementable task and for `needs_clarification`
+ * on a task whose expected outcome is a clarification (a contradictory request).
+ */
+export function classify(
+  status: RunStatus,
+  expected: EvalMeta["expected_outcome"],
+  hidden: HiddenTestResult | null,
+): { outcome: EvalOutcome; correct: boolean } {
+  if (status === "success") {
+    const outcome: EvalOutcome =
+      hidden === null || hidden.infraError !== undefined
+        ? "hidden_error"
+        : hidden.passed
+          ? "verified"
+          : "false_success";
+    return { outcome, correct: outcome === "verified" && expected === "implemented" };
+  }
+  return {
+    outcome: status,
+    correct: status === "needs_clarification" && expected === "needs_clarification",
+  };
+}
+
+export const EvalTaskResultSchema = z.strictObject({
+  taskId: z.string(),
+  title: z.string(),
+  difficulty: z.enum(["simple", "medium", "hard"]),
+  expected: z.enum(EXPECTED_OUTCOMES),
+  status: z.enum(RUN_STATUSES),
+  outcome: z.enum(EVAL_OUTCOMES),
+  correct: z.boolean(),
+  message: z.string(),
+  fixCycles: z.number().int().nonnegative(),
+  reachedDeveloper: z.boolean(),
+  durationMs: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  unknownCostSteps: z.number().int().nonnegative(),
+  hidden: z
+    .strictObject({
+      passed: z.boolean(),
+      exitCode: z.number().int().nullable(),
+      timedOut: z.boolean(),
+      total: z.number().int().nullable(),
+      failed: z.number().int().nullable(),
+      outputTail: z.string(),
+      infraError: z.string().optional(),
+    })
+    .nullable(),
+  /** Files from evals/hidden or evals/reference found in the agent's worktree (must be empty). */
+  hiddenLeaks: z.array(z.string()),
+  reportPath: z.string().nullable(),
+});
+export type EvalTaskResult = z.infer<typeof EvalTaskResultSchema>;
+
+export const EvalMetricsSchema = z.strictObject({
+  total: z.number().int(),
+  correct: z.number().int(),
+  /** correct / total: verified implementations + correct clarifications. */
+  verifiedRate: z.number(),
+  /** Tasks the system reported as `success`. */
+  successClaims: z.number().int(),
+  falseSuccess: z.number().int(),
+  /** falseSuccess / successClaims (null if nothing was claimed): the honesty metric. */
+  falseSuccessRate: z.number().nullable(),
+  /** Mean fix cycles over tasks that reached the developer. */
+  avgFixCycles: z.number().nullable(),
+  avgDurationSec: z.number(),
+  totalCostUsd: z.number(),
+  unknownCostSteps: z.number().int(),
+  byOutcome: z.record(z.string(), z.number().int()),
+  hiddenLeaks: z.number().int(),
+});
+export type EvalMetrics = z.infer<typeof EvalMetricsSchema>;
+
+export const EvalSummarySchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  evalId: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  models: z.record(z.string(), z.string()),
+  runtime: z.string(),
+  metrics: EvalMetricsSchema,
+  tasks: z.array(EvalTaskResultSchema),
+});
+export type EvalSummary = z.infer<typeof EvalSummarySchema>;
+
+const round = (n: number, digits: number) => Math.round(n * 10 ** digits) / 10 ** digits;
+
+export function computeMetrics(results: readonly EvalTaskResult[]): EvalMetrics {
+  const total = results.length;
+  const correct = results.filter((r) => r.correct).length;
+  const successClaims = results.filter((r) => r.status === "success").length;
+  const falseSuccess = results.filter((r) => r.outcome === "false_success").length;
+  const dev = results.filter((r) => r.reachedDeveloper);
+  const byOutcome: Record<string, number> = {};
+  for (const r of results) byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + 1;
+  return {
+    total,
+    correct,
+    verifiedRate: total ? round(correct / total, 4) : 0,
+    successClaims,
+    falseSuccess,
+    falseSuccessRate: successClaims ? round(falseSuccess / successClaims, 4) : null,
+    avgFixCycles: dev.length
+      ? round(dev.reduce((s, r) => s + r.fixCycles, 0) / dev.length, 2)
+      : null,
+    avgDurationSec: total
+      ? round(results.reduce((s, r) => s + r.durationMs, 0) / total / 1000, 1)
+      : 0,
+    totalCostUsd: round(
+      results.reduce((s, r) => s + r.costUsd, 0),
+      4,
+    ),
+    unknownCostSteps: results.reduce((s, r) => s + r.unknownCostSteps, 0),
+    byOutcome,
+    hiddenLeaks: results.reduce((s, r) => s + r.hiddenLeaks.length, 0),
+  };
+}
+
+export interface EvalTaskInput {
+  task: TaskSpec;
+  meta: EvalMeta;
+}
+
+export interface RunEvalDeps {
+  /** Runs one task through the pipeline, writing its run under `runsDir`. */
+  runTask: (task: TaskSpec, runsDir: string) => Promise<RunTaskResult>;
+  /** Runs a task's hidden tests against a finished worktree (on a copy, in the sandbox). */
+  runHidden: (worktreePath: string, taskId: string) => Promise<HiddenTestResult>;
+  runsDir: string;
+  runtimeName: string;
+  models: Record<string, string>;
+  now?: () => Date;
+  log?: (message: string) => void;
+}
+
+export function makeEvalId(now: Date): string {
+  return `eval-${now.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)}`;
+}
+
+/**
+ * Runs the eval suite sequentially. A task that crashes the pipeline is recorded as
+ * `error` and the suite continues. Writes `summary.json` and `summary.md`.
+ */
+export async function runEval(
+  tasks: readonly EvalTaskInput[],
+  deps: RunEvalDeps,
+): Promise<{ summary: EvalSummary; summaryMdPath: string; summaryJsonPath: string }> {
+  const now = deps.now ?? (() => new Date());
+  const log = deps.log ?? (() => undefined);
+  const started = now();
+  const evalId = makeEvalId(started);
+  const evalDir = path.join(deps.runsDir, evalId);
+  await mkdir(evalDir, { recursive: true });
+
+  const results: EvalTaskResult[] = [];
+  for (const [i, { task, meta }] of tasks.entries()) {
+    log(
+      `\n[${i + 1}/${tasks.length}] ${task.id} (${meta.difficulty}, expected: ${meta.expected_outcome})`,
+    );
+    const taskStarted = now();
+    let report: RunReport | null = null;
+    let reportPath: string | null = null;
+    let crash: string | null = null;
+    try {
+      const res = await deps.runTask(task, evalDir);
+      report = res.report;
+      reportPath = path.relative(evalDir, res.reportMdPath);
+    } catch (err) {
+      crash = err instanceof Error ? err.message : String(err);
+    }
+
+    const status: RunStatus = report?.status ?? "error";
+    let hidden: HiddenTestResult | null = null;
+    let leaks: string[] = [];
+    if (report?.worktree) {
+      if (status === "success") {
+        log("  running hidden tests…");
+        try {
+          hidden = await deps.runHidden(report.worktree.path, task.id);
+        } catch (err) {
+          hidden = {
+            passed: false,
+            exitCode: null,
+            timedOut: false,
+            total: null,
+            failed: null,
+            durationMs: 0,
+            outputTail: "",
+            infraError: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+      // The hidden tests ran on a copy; the agent's worktree must still be free of them.
+      leaks = await findHiddenArtifacts(report.worktree.path);
+    }
+
+    const { outcome, correct } = classify(status, meta.expected_outcome, hidden);
+    const result = EvalTaskResultSchema.parse({
+      taskId: task.id,
+      title: task.title,
+      difficulty: meta.difficulty,
+      expected: meta.expected_outcome,
+      status,
+      outcome,
+      correct,
+      message: crash ? `pipeline crashed: ${crash}` : (report?.message ?? ""),
+      fixCycles: report?.fixCycles ?? 0,
+      reachedDeveloper:
+        report?.steps.some((s) => s.kind === "agent" && s.role === "developer") ?? false,
+      durationMs: report?.durationMs ?? now().getTime() - taskStarted.getTime(),
+      costUsd: report?.cost.totalUsd ?? 0,
+      unknownCostSteps: report?.cost.unknownCostSteps ?? 0,
+      hidden: hidden && {
+        passed: hidden.passed,
+        exitCode: hidden.exitCode,
+        timedOut: hidden.timedOut,
+        total: hidden.total,
+        failed: hidden.failed,
+        outputTail: hidden.outputTail,
+        ...(hidden.infraError !== undefined ? { infraError: hidden.infraError } : {}),
+      },
+      hiddenLeaks: leaks,
+      reportPath,
+    });
+    results.push(result);
+    log(
+      `  → ${outcome}${correct ? " ✓" : " ✗"}` +
+        (hidden
+          ? ` (hidden ${hidden.total === null ? "?" : hidden.total - (hidden.failed ?? 0)}/${hidden.total ?? "?"})`
+          : "") +
+        `, $${result.costUsd.toFixed(3)}, ${Math.round(result.durationMs / 1000)}s`,
+    );
+    // Write progress after every task so a long eval leaves partial results.
+    await writeSummary(evalDir, buildSummary(evalId, started, now(), deps, results));
+  }
+
+  const summary = buildSummary(evalId, started, now(), deps, results);
+  const paths = await writeSummary(evalDir, summary);
+  return { summary, ...paths };
+}
+
+function buildSummary(
+  evalId: string,
+  started: Date,
+  finished: Date,
+  deps: RunEvalDeps,
+  results: EvalTaskResult[],
+): EvalSummary {
+  return EvalSummarySchema.parse({
+    schemaVersion: 1,
+    evalId,
+    startedAt: started.toISOString(),
+    finishedAt: finished.toISOString(),
+    models: deps.models,
+    runtime: deps.runtimeName,
+    metrics: computeMetrics(results),
+    tasks: results,
+  });
+}
+
+async function writeSummary(
+  evalDir: string,
+  summary: EvalSummary,
+): Promise<{ summaryMdPath: string; summaryJsonPath: string }> {
+  const summaryJsonPath = path.join(evalDir, "summary.json");
+  const summaryMdPath = path.join(evalDir, "summary.md");
+  await writeFile(summaryJsonPath, JSON.stringify(summary, null, 2));
+  await writeFile(summaryMdPath, renderEvalSummaryMarkdown(summary));
+  return { summaryMdPath, summaryJsonPath };
+}

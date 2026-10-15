@@ -24,11 +24,15 @@ describe("parseCliArgs", () => {
 
   it("rejects extra arguments", () => {
     expect(parseCliArgs(["run", "a", "b"])).toMatchObject({ kind: "invalid" });
-    expect(parseCliArgs(["eval", "x"])).toMatchObject({ kind: "invalid" });
   });
 
-  it("parses eval", () => {
-    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval" });
+  it("parses eval with optional task ids", () => {
+    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [] });
+    expect(parseCliArgs(["eval", "a-task", "b", "a-task"])).toEqual({
+      kind: "eval",
+      taskIds: ["a-task", "b"],
+    });
+    expect(parseCliArgs(["eval", "../x"])).toMatchObject({ kind: "invalid" });
   });
 
   it("parses verify-hidden with and without a taskId", () => {

@@ -102,3 +102,37 @@ describe("runInSandbox (docker)", () => {
     expect(res.infraError).toBeDefined();
   });
 });
+
+describe("runHiddenTests (docker)", () => {
+  it("fails on the baseline and passes on the reference, without touching the source", async () => {
+    const { runHiddenTests } = await import("../../src/eval/hidden-tests.js");
+    const { applyPatch } = await import("../../src/eval/target-copy.js");
+    const { referencePatchPath } = await import("../../src/eval/tasks.js");
+    const { findHiddenArtifacts } = await import("../../src/eval/hidden-guard.js");
+    const exec = (wt: string, cmd: readonly string[], t: number) =>
+      runInSandbox(wt, cmd, t, { image });
+
+    const baseline = await runHiddenTests({
+      worktreePath: worktree,
+      taskId: "complete-task",
+      exec,
+      timeoutMs: 120_000,
+    });
+    expect(baseline).toMatchObject({ passed: false, total: 4, failed: 3 });
+    expect(baseline.outputTail).toMatch(/✗ hidden: complete-task/);
+
+    const ref = path.join(workRoot, "ref");
+    await prepareTargetCopy({ source: TARGET, dest: ref });
+    await applyPatch(ref, referencePatchPath("complete-task"));
+    const passed = await runHiddenTests({
+      worktreePath: ref,
+      taskId: "complete-task",
+      exec,
+      timeoutMs: 120_000,
+    });
+    expect(passed).toMatchObject({ passed: true, total: 4, failed: 0 });
+
+    expect(await findHiddenArtifacts(ref)).toEqual([]);
+    expect(await findHiddenArtifacts(worktree)).toEqual([]);
+  });
+});

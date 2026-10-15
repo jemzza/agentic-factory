@@ -1,9 +1,12 @@
 import path from "node:path";
 import { parseCliArgs, USAGE } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
-import { listTaskIds, loadTaskSpec } from "./eval/tasks.js";
+import { runHiddenTests } from "./eval/hidden-tests.js";
+import { runEval } from "./eval/run-eval.js";
+import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
+import { ensureTargetRepo } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
-import { runTask } from "./pipeline/run-task.js";
+import { defaultSandboxExec, runTask } from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
@@ -60,6 +63,51 @@ async function runOne(taskId: string): Promise<number> {
   return report.status === "success" ? 0 : 1;
 }
 
+async function evalSuite(taskIds: string[]): Promise<number> {
+  const config = await loadConfig();
+  const ids = taskIds.length > 0 ? taskIds : await listTaskIds();
+  const tasks = [];
+  for (const id of ids) tasks.push({ task: await loadTaskSpec(id), meta: await loadEvalMeta(id) });
+  const repo = await ensureTargetRepo(config.target, config.workdirAbs);
+  const exec = await defaultSandboxExec(repo.dir);
+  const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+  const log = (m: string) => {
+    console.log(m);
+  };
+
+  console.log(`Eval: ${tasks.length} task(s), sequential`);
+  const { summary, summaryMdPath } = await runEval(tasks, {
+    runsDir: RUNS_DIR,
+    runtimeName: runtime.name,
+    models: config.models,
+    log,
+    runTask: async (task, runsDir) =>
+      runTask(task, {
+        config,
+        runtime,
+        runsDir,
+        makeSandboxExec: () => Promise.resolve(exec),
+        log,
+      }),
+    runHidden: (worktreePath, taskId) =>
+      runHiddenTests({
+        worktreePath,
+        taskId,
+        exec,
+        timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+      }),
+  });
+  const m = summary.metrics;
+  const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
+  console.log(
+    `\nverified rate ${pct(m.verifiedRate)} (${m.correct}/${m.total}), ` +
+      `false success rate ${pct(m.falseSuccessRate)} (${m.falseSuccess}/${m.successClaims}), ` +
+      `avg fix cycles ${m.avgFixCycles ?? "n/a"}, avg time ${m.avgDurationSec}s, total $${m.totalCostUsd.toFixed(3)}\n` +
+      `summary: ${path.relative(process.cwd(), summaryMdPath)}`,
+  );
+  return m.hiddenLeaks === 0 ? 0 : 1;
+}
+
 async function main(argv: readonly string[]): Promise<number> {
   const cmd = parseCliArgs(argv);
   switch (cmd.kind) {
@@ -74,9 +122,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "run":
       return runOne(cmd.taskId);
     case "eval":
-      // Implemented in Phase 7.
-      console.error(`error: "${cmd.kind}" is not implemented yet`);
-      return 1;
+      return evalSuite(cmd.taskIds);
   }
 }
 
