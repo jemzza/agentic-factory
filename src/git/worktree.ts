@@ -1,4 +1,4 @@
-import { access, mkdir, symlink } from "node:fs/promises";
+import { access, mkdir, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
 
@@ -12,6 +12,9 @@ export interface Worktree {
  * Creates an isolated worktree of the target repo on a new branch
  * `factory/<taskId>-<runId>`, starting at `baseCommit`. The repo's host-installed
  * node_modules is symlinked in so the developer agent can run the project's checks.
+ *
+ * Idempotent: if a previous attempt (e.g. a crashed `prepare`) already created the
+ * worktree on the expected branch, it is reused and reset to `baseCommit`.
  */
 export async function createWorktree(opts: {
   repoDir: string;
@@ -23,17 +26,70 @@ export async function createWorktree(opts: {
   const name = `${opts.taskId}-${opts.runId}`;
   const branch = `factory/${name}`;
   const wtPath = path.join(opts.worktreesDir, name);
+  const wt: Worktree = { path: wtPath, branch, baseCommit: opts.baseCommit };
   await mkdir(opts.worktreesDir, { recursive: true });
-  await git(opts.repoDir, ["worktree", "add", "-q", "-b", branch, wtPath, opts.baseCommit]);
+
+  if (await exists(wtPath)) {
+    const current = (await git(wtPath, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (current !== branch) {
+      throw new Error(`${wtPath} exists but is on branch "${current}", expected "${branch}"`);
+    }
+    await resetWorktree(wt, opts.baseCommit, opts.worktreesDir);
+  } else {
+    await git(opts.repoDir, ["worktree", "add", "-q", "-b", branch, wtPath, opts.baseCommit]);
+  }
 
   const nodeModules = path.join(opts.repoDir, "node_modules");
-  try {
-    await access(nodeModules);
-    await symlink(nodeModules, path.join(wtPath, "node_modules"), "dir");
-  } catch {
-    // Target without host dependencies: nothing to link.
+  const link = path.join(wtPath, "node_modules");
+  if ((await exists(nodeModules)) && !(await exists(link))) {
+    await symlink(nodeModules, link, "dir");
   }
-  return { path: wtPath, branch, baseCommit: opts.baseCommit };
+  return wt;
+}
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuses any path that is not a git worktree located directly inside `worktreesRoot`.
+ * Guards the destructive commands below: `git reset --hard` / `git clean` must never run
+ * on the factory repo, a target's main checkout, or anything else.
+ */
+export async function assertManagedWorktree(
+  wtPath: string,
+  worktreesRoot: string,
+): Promise<string> {
+  const [root, real] = await Promise.all([realpath(worktreesRoot), realpath(wtPath)]);
+  if (path.dirname(real) !== root) {
+    throw new Error(`refusing to touch ${wtPath}: not a worktree directly under ${worktreesRoot}`);
+  }
+  const top = await realpath((await git(real, ["rev-parse", "--show-toplevel"])).trim());
+  if (top !== real) {
+    throw new Error(`refusing to touch ${wtPath}: it is not the top level of a git worktree`);
+  }
+  return real;
+}
+
+/**
+ * Restores the worktree to exactly `commit`: discards tracked changes and removes
+ * untracked files (ignored files such as the node_modules symlink are kept).
+ * Used before re-running a node that changes files, so a replay after a crash never
+ * builds on top of partial changes.
+ */
+export async function resetWorktree(
+  wt: Worktree,
+  commit: string,
+  worktreesRoot: string,
+): Promise<void> {
+  const dir = await assertManagedWorktree(wt.path, worktreesRoot);
+  await git(dir, ["reset", "-q", "--hard", commit]);
+  await git(dir, ["clean", "-q", "-fd"]);
 }
 
 /**

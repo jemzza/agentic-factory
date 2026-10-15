@@ -21,11 +21,13 @@
     "verify-hidden": "tsx src/cli.ts verify-hidden",
     "smoke:claude": "tsx scripts/smoke-claude.ts",
     "runs": "tsx src/cli.ts runs",
+    "resume": "tsx src/cli.ts resume",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
     "@langchain/core": "1.2.17",
     "@langchain/langgraph": "1.5.0",
+    "@langchain/langgraph-checkpoint-sqlite": "1.1.0",
     "better-sqlite3": "12.11.1",
     "execa": "^10.1.1",
     "yaml": "^2.9.1",

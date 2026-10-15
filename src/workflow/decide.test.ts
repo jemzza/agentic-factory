@@ -14,6 +14,7 @@ const NOW = 1_000_000;
 function state(over: Partial<RunStateValue> = {}): RunStateValue {
   return {
     runId: "r",
+    runDir: "/runs/r",
     task: {
       id: "t",
       title: "T",
@@ -161,7 +162,7 @@ describe("graph structure", () => {
   it("has exactly the nodes and edges documented in docs/graph.md", async () => {
     const noop: NodeFn = () => Promise.resolve({});
     const nodes = Object.fromEntries(NODE_NAMES.map((n) => [n, noop])) as Record<NodeName, NodeFn>;
-    const g = await buildGraph(nodes, { now: () => new Date(NOW) }).getGraphAsync();
+    const g = await buildGraph(nodes, { deadlineNow: () => NOW }).getGraphAsync();
     expect(Object.keys(g.nodes).sort()).toEqual(["__end__", "__start__", ...NODE_NAMES].sort());
     const edges = g.edges.map((e) => `${e.source}->${e.target}`).sort();
     expect(edges).toEqual(

@@ -94,3 +94,21 @@ merged automatically.
 `budget_exceeded` · `error` (terminal), or `awaiting_spec_approval` →
 `awaiting_merge_approval` → `merged` | `closed`. `success` (Week 1) becomes
 `awaiting_merge_approval` in interactive and eval runs; eval classifies it as a success claim.
+
+## Checkpoints and resume (Phase 3)
+
+- Checkpointer: `SqliteSaver` from `@langchain/langgraph-checkpoint-sqlite` on the same
+  `data/factory.db` (tables `checkpoints`, `writes`), `thread_id = runId`. A checkpoint is
+  written after every completed node.
+- `npm run resume -- <runId>`: if the checkpoint has no pending nodes the command only prints
+  the run's status. Otherwise it takes the run lock (a live process holding it → refused),
+  marks steps left `running` by the dead process as `abandoned` (their cost counts as
+  unknown), journals a `resume` event and continues with `invoke(null)`. The node that was
+  running when the process died starts again from its beginning (verified).
+- Idempotency: `develop` first runs `git reset --hard <headCommit>` + `git clean -fd` on the
+  worktree; `assertManagedWorktree` refuses any path that is not a git worktree directly under
+  `<workdir>/worktrees`. `prepare` reuses an existing worktree on the expected branch. `gate`,
+  `review` and `plan` do not change files and simply run again.
+- Deadline: time between the last recorded activity and the resume is excluded from the task
+  timeout (`resume.payload.pausedMs`); timestamps in reports stay wall-clock.
+- Runs created before Phase 3 have no checkpoint and cannot be resumed.

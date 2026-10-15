@@ -58,6 +58,8 @@ export const WorktreeSchema = z.strictObject({
 export const RunState = new StateSchema({
   runId: z.string(),
   task: TaskSpecSchema,
+  /** Directory for this run's logs and reports (state, so a resumed process can find it). */
+  runDir: z.string(),
   startedAtMs: z.number(),
   deadlineMs: z.number(),
 

@@ -10,9 +10,9 @@ import { RunState, type NodeName } from "./state.js";
  */
 export function buildGraph(
   nodes: Record<NodeName, NodeFn>,
-  opts: { now: () => Date; checkpointer?: BaseCheckpointSaver },
+  opts: { deadlineNow: () => number; checkpointer?: BaseCheckpointSaver },
 ) {
-  const route = (s: typeof RunState.State) => routeAfter(s, opts.now().getTime());
+  const route = (s: typeof RunState.State) => routeAfter(s, opts.deadlineNow());
   const targets = (...names: NodeName[]) => names;
 
   const graph = new StateGraph(RunState)

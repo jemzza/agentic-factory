@@ -6,7 +6,7 @@ import { runEval } from "./eval/run-eval.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { ensureTargetRepo } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
-import { defaultSandboxExec, runTask } from "./pipeline/run-task.js";
+import { defaultSandboxExec, resumeRun, runTask } from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
@@ -140,6 +140,41 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   return m.hiddenLeaks === 0 ? 0 : 1;
 }
 
+async function resumeOne(runId: string): Promise<number> {
+  const config = await loadConfig();
+  const store = new Store(openDb());
+  try {
+    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const res = await resumeRun(runId, {
+      config,
+      runtime,
+      runsDir: RUNS_DIR,
+      store,
+      log: (m) => {
+        console.log(m);
+      },
+    });
+    if (res.kind === "finished") {
+      console.log(
+        `run ${runId} is already finished: ${res.run.status}${res.run.status_message ? ` (${res.run.status_message})` : ""}` +
+          (res.run.report_path
+            ? `\nreport: ${path.relative(process.cwd(), res.run.report_path)}`
+            : ""),
+      );
+      return 0;
+    }
+    const report = res.result.report;
+    console.log(
+      `\n${report.status.toUpperCase()}: ${report.message}\n` +
+        `cost $${report.cost.totalUsd.toFixed(3)}, fix cycles ${report.fixCycles}\n` +
+        `report: ${path.relative(process.cwd(), res.result.reportMdPath)}`,
+    );
+    return report.status === "success" ? 0 : 1;
+  } finally {
+    store.db.close();
+  }
+}
+
 function listRuns(limit: number): number {
   const store = new Store(openDb());
   const rows = store.listRuns({ limit });
@@ -182,6 +217,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return evalSuite(cmd.taskIds);
     case "runs":
       return listRuns(cmd.limit);
+    case "resume":
+      return resumeOne(cmd.runId);
     case "db-import":
       return dbImport();
   }

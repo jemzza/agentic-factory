@@ -51,6 +51,15 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["db-import"])).toEqual({ kind: "db-import" });
   });
 
+  it("parses resume <runId>", () => {
+    expect(parseCliArgs(["resume", "20261015-171000-ab12"])).toEqual({
+      kind: "resume",
+      runId: "20261015-171000-ab12",
+    });
+    expect(parseCliArgs(["resume"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["resume", "../x"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });

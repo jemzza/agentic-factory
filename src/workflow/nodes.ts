@@ -17,6 +17,7 @@ import {
   createWorktree,
   diffFromBase,
   headCommit,
+  resetWorktree,
   snapshot,
   type Worktree,
 } from "../git/worktree.js";
@@ -40,10 +41,14 @@ export interface NodeContext {
   config: ResolvedConfig;
   runtime: AgentRuntime;
   store?: Store | undefined;
-  runDir: string;
   ensureRepo: (target: TargetConfig, workdir: string) => Promise<TargetRepo>;
   makeSandboxExec: (repoDir: string) => Promise<SandboxExec>;
   now: () => Date;
+  /**
+   * Clock for deadline math (ms): wall time minus time the run spent paused/crashed
+   * between processes, so a resumed run is not timed out by its downtime.
+   */
+  deadlineNow: () => number;
   log: (message: string) => void;
   /** Set by the report node; read by the driver. */
   result?: { report: RunReport; reportJsonPath: string; reportMdPath: string };
@@ -52,8 +57,9 @@ export interface NodeContext {
 export type NodeFn = (state: RunStateValue) => Promise<RunStateUpdate>;
 
 const roundUsd = (n: number) => Math.round(n * 1e4) / 1e4;
-const logsDir = (ctx: NodeContext) => path.join(ctx.runDir, "logs");
-const checksDir = (ctx: NodeContext) => path.join(ctx.runDir, "checks");
+const logsDir = (s: RunStateValue) => path.join(s.runDir, "logs");
+const checksDir = (s: RunStateValue) => path.join(s.runDir, "checks");
+const AGENT_STEP_NODES = new Set(["planner", "developer", "reviewer"]);
 
 function requireWorktree(s: RunStateValue): Worktree {
   if (!s.worktree) throw new Error("worktree not prepared");
@@ -87,7 +93,7 @@ async function agentStep(
 ): Promise<{ res: AgentRunResult; update: RunStateUpdate }> {
   const wt = requireWorktree(s);
   const { config, runtime, store } = ctx;
-  const timeLeft = s.deadlineMs - ctx.now().getTime();
+  const timeLeft = s.deadlineMs - ctx.deadlineNow();
   const timeoutMs = Math.max(1, Math.min(config.stepTimeoutsMinutes[role] * 60_000, timeLeft));
   const remainingCost = s.task.budget.max_cost_usd - s.spentUsd;
   const seq = s.steps.filter((st) => st.kind === "agent").length + 1;
@@ -106,7 +112,7 @@ async function agentStep(
     systemPrompt: await buildSystemPrompt(role, s.conventions),
     maxBudgetUsd: Math.max(0.01, roundUsd(remainingCost)),
     model: config.models[role],
-    logPath: path.join(logsDir(ctx), `${String(seq).padStart(2, "0")}-${role}-c${cycle}.jsonl`),
+    logPath: path.join(logsDir(s), `${String(seq).padStart(2, "0")}-${role}-c${cycle}.jsonl`),
     ...(outputSchema ? { outputSchema } : {}),
   });
   const spentUsd = s.spentUsd + (res.costUsd ?? 0);
@@ -122,7 +128,7 @@ async function agentStep(
     tokens: res.tokens ?? null,
     numTurns: res.numTurns ?? null,
     permissionDenials: res.permissionDenials,
-    rawLogPath: path.relative(ctx.runDir, res.rawLogPath),
+    rawLogPath: path.relative(s.runDir, res.rawLogPath),
     output: res.output,
     error: res.error ?? null,
   };
@@ -174,6 +180,7 @@ async function assertNoHiddenArtifacts(dir: string): Promise<void> {
 /** Node implementations. Each calls existing modules; the graph only wires them together. */
 export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
   const { config } = ctx;
+  const worktreesRoot = path.join(config.workdirAbs, "worktrees");
   let execCache: { repoDir: string; exec: Promise<SandboxExec> } | null = null;
   const execFor = (repoDir: string) => {
     if (execCache?.repoDir !== repoDir) execCache = { repoDir, exec: ctx.makeSandboxExec(repoDir) };
@@ -182,12 +189,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
 
   return {
     prepare: node("prepare", async (s) => {
-      await mkdir(logsDir(ctx), { recursive: true });
+      await mkdir(logsDir(s), { recursive: true });
       const repo = await ctx.ensureRepo(config.target, config.workdirAbs);
       const wt = await createWorktree({
         repoDir: repo.dir,
         baseCommit: repo.baseCommit,
-        worktreesDir: path.join(config.workdirAbs, "worktrees"),
+        worktreesDir: worktreesRoot,
         taskId: s.task.id,
         runId: s.runId,
       });
@@ -228,7 +235,11 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
 
     develop: node("develop", async (s) => {
       if (!s.planResult) throw new Error("develop without a plan");
+      if (!s.headCommit) throw new Error("develop without a snapshot commit");
       const wt = requireWorktree(s);
+      // Replay safety: start from the last snapshot, discarding anything a crashed
+      // previous attempt of this node may have left behind.
+      await resetWorktree(wt, s.headCommit, worktreesRoot);
       const cycle = s.cycle + 1;
       const { update } = await agentStep(
         ctx,
@@ -262,16 +273,16 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         checks: config.target.checks,
         checkTimeoutMs: Math.max(
           1,
-          Math.min(config.stepTimeoutsMinutes.check * 60_000, s.deadlineMs - started.getTime()),
+          Math.min(config.stepTimeoutsMinutes.check * 60_000, s.deadlineMs - ctx.deadlineNow()),
         ),
         exec,
-        logDir: checksDir(ctx),
+        logDir: checksDir(s),
         logPrefix: `c${s.cycle}`,
       });
       if (dbStep) {
         ctx.store?.finishStep(dbStep.id, {
           status: gate.passed ? "ok" : "failed",
-          logPath: checksDir(ctx),
+          logPath: checksDir(s),
           error: gate.passed ? null : { kind: "gate_failed", message: describeGateFailures(gate) },
         });
       }
@@ -314,7 +325,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     }),
 
     report: node("report", async (s) => {
-      const decision = decide(s, ctx.now().getTime());
+      const decision = decide(s, ctx.deadlineNow());
       const status = decision.kind === "stop" ? decision.status : "error";
       let message =
         decision.kind === "stop"
@@ -333,6 +344,13 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           message += ` (failed to read final diff: ${err instanceof Error ? err.message : String(err)})`;
         }
       }
+      // Agent attempts cut short by a crash (marked abandoned on resume) cost an unknown amount.
+      const abandonedAgentSteps = ctx.store
+        ? ctx.store
+            .listSteps(s.runId)
+            .filter((st) => st.status === "abandoned" && AGENT_STEP_NODES.has(st.node)).length
+        : 0;
+      const unknownCostSteps = s.unknownCostSteps + abandonedAgentSteps;
       const finished = ctx.now();
       const report = RunReportSchema.parse({
         schemaVersion: 1,
@@ -359,14 +377,14 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         cost: {
           totalUsd: roundUsd(s.spentUsd),
           budgetUsd: s.task.budget.max_cost_usd,
-          unknownCostSteps: s.unknownCostSteps,
+          unknownCostSteps,
         },
         changedFiles: files,
         diff,
       });
-      await mkdir(ctx.runDir, { recursive: true });
-      const reportJsonPath = path.join(ctx.runDir, "report.json");
-      const reportMdPath = path.join(ctx.runDir, "report.md");
+      await mkdir(s.runDir, { recursive: true });
+      const reportJsonPath = path.join(s.runDir, "report.json");
+      const reportMdPath = path.join(s.runDir, "report.md");
       await writeFile(reportJsonPath, JSON.stringify(report, null, 2));
       await writeFile(reportMdPath, renderReportMarkdown(report));
       if (ctx.store) {
@@ -377,7 +395,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           statusMessage: message,
           finishedAt: finished.toISOString(),
           costUsd: report.cost.totalUsd,
-          unknownCostSteps: s.unknownCostSteps,
+          unknownCostSteps,
           fixCycles: report.fixCycles,
           ...(s.worktree ? { headCommit: head } : {}),
           reportPath: reportMdPath,

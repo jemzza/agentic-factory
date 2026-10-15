@@ -1,10 +1,13 @@
 import { TASK_ID_PATTERN } from "./schemas/task.js";
 
+export const RUN_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
+
 export type CliCommand =
   | { kind: "run"; taskId: string }
   | { kind: "eval"; taskIds: string[] }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
+  | { kind: "resume"; runId: string }
   | { kind: "db-import" }
   | { kind: "help" }
   | { kind: "invalid"; message: string };
@@ -15,6 +18,7 @@ export const USAGE = `Usage:
                                  successes with hidden tests
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
+  npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
   npm run runs [-- <limit>]      List recent runs from the database
   npm run db:import              Import run reports from runs/ into the database`;
 
@@ -66,6 +70,16 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: "runs: expected an optional positive limit" };
       }
       return { kind: "runs", limit: limit === undefined ? 20 : Number(limit) };
+    }
+    case "resume": {
+      const [runId, ...extra] = rest;
+      if (runId === undefined || extra.length > 0 || !RUN_ID_PATTERN.test(runId)) {
+        return {
+          kind: "invalid",
+          message: "resume: expected exactly one <runId> (e.g. 20261015-171000-ab12)",
+        };
+      }
+      return { kind: "resume", runId };
     }
     case "db-import":
       if (rest.length > 0) return { kind: "invalid", message: "db-import takes no arguments" };
