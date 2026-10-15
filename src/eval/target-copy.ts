@@ -6,26 +6,29 @@ import { runCommand, succeeded } from "../process/run-command.js";
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
 
 /**
- * Copies a target repository's working files into `dest` (no node_modules/.git/dist),
- * links `node_modules` from `nodeModulesFrom`, and makes `dest` its own git repo so
- * that `git apply` / `git diff` never resolve against an enclosing repository.
+ * Copies a target repository's working files into `dest` (no node_modules/.git/dist)
+ * and makes `dest` its own git repo so that `git apply` / `git diff` never resolve
+ * against an enclosing repository. Dependencies come from the sandbox image; pass
+ * `nodeModulesFrom` only to run checks on the host.
  */
 export async function prepareTargetCopy(opts: {
   source: string;
   dest: string;
-  nodeModulesFrom: string;
+  nodeModulesFrom?: string;
 }): Promise<void> {
-  const nodeModules = path.join(opts.nodeModulesFrom, "node_modules");
-  try {
-    await access(nodeModules);
-  } catch {
-    throw new Error(`${nodeModules} is missing; run \`npm ci\` in ${opts.nodeModulesFrom}`);
-  }
   await cp(opts.source, opts.dest, {
     recursive: true,
     filter: (src) => !SKIP_DIRS.has(path.basename(src)),
   });
-  await symlink(nodeModules, path.join(opts.dest, "node_modules"), "dir");
+  if (opts.nodeModulesFrom !== undefined) {
+    const nodeModules = path.join(opts.nodeModulesFrom, "node_modules");
+    try {
+      await access(nodeModules);
+    } catch {
+      throw new Error(`${nodeModules} is missing; run \`npm ci\` in ${opts.nodeModulesFrom}`);
+    }
+    await symlink(nodeModules, path.join(opts.dest, "node_modules"), "dir");
+  }
   const init = await runCommand("git", ["init", "-q"], { cwd: opts.dest, timeoutMs: 30_000 });
   if (!succeeded(init)) throw new Error(`git init failed in ${opts.dest}: ${init.stderr}`);
 }

@@ -2,7 +2,8 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FIXTURES_DIR } from "../paths.js";
-import { runCommand, succeeded, type CommandResult } from "../process/run-command.js";
+import { succeeded, type CommandResult } from "../process/run-command.js";
+import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
 import type { ExpectedOutcome } from "../schemas/task.js";
 import {
   DEFAULT_EVAL_DIRS,
@@ -14,20 +15,22 @@ import {
 } from "./tasks.js";
 import { applyPatch, installHiddenTests, prepareTargetCopy } from "./target-copy.js";
 
-/**
- * Runs a command inside a prepared copy of the target repo. Phase 3 uses the host;
- * Phase 4 swaps in the Docker sandbox with the same signature.
- */
+/** Runs a command against a prepared copy of the target repo. */
 export type CheckRunner = (
   cwd: string,
   command: readonly string[],
   timeoutMs: number,
 ) => Promise<CommandResult>;
 
-export const hostRunner: CheckRunner = (cwd, [file, ...args], timeoutMs) => {
-  if (file === undefined) throw new Error("empty command");
-  return runCommand(file, args, { cwd, timeoutMs });
-};
+/** Default runner: the Docker sandbox. Sandbox infrastructure failures abort verification. */
+export async function sandboxRunner(target: string): Promise<CheckRunner> {
+  const image = await ensureSandboxImage(target);
+  return async (cwd, command, timeoutMs) => {
+    const res = await runInSandbox(cwd, command, timeoutMs, { image });
+    if (res.infraError !== undefined) throw new Error(res.infraError);
+    return res;
+  };
+}
 
 const STEP_TIMEOUT_MS = 5 * 60_000;
 const HIDDEN_ONLY = (dir: string) => ["node_modules/.bin/vitest", "run", dir];
@@ -87,8 +90,8 @@ export async function verifyHiddenTests(
   opts: { target?: string; runner?: CheckRunner; dirs?: EvalDirs } = {},
 ): Promise<TaskVerification> {
   const dirs = opts.dirs ?? DEFAULT_EVAL_DIRS;
-  const runner = opts.runner ?? hostRunner;
   const target = opts.target ?? path.join(FIXTURES_DIR, "taskflow");
+  const runner = opts.runner ?? (await sandboxRunner(target));
 
   await loadTaskSpec(taskId, dirs); // validates task.yaml
   const meta = await loadEvalMeta(taskId, dirs);
@@ -99,14 +102,14 @@ export async function verifyHiddenTests(
   const workRoot = await mkdtemp(path.join(os.tmpdir(), `factory-verify-${taskId}-`));
   try {
     const baseDir = path.join(workRoot, "baseline");
-    await prepareTargetCopy({ source: target, dest: baseDir, nodeModulesFrom: target });
+    await prepareTargetCopy({ source: target, dest: baseDir });
     const hiddenDir = await installHiddenTests(baseDir, hiddenFiles);
     const baseline = await runner(baseDir, HIDDEN_ONLY(hiddenDir), STEP_TIMEOUT_MS);
 
     let reference: CommandResult | null = null;
     if (hasPatch) {
       const refDir = path.join(workRoot, "reference");
-      await prepareTargetCopy({ source: target, dest: refDir, nodeModulesFrom: target });
+      await prepareTargetCopy({ source: target, dest: refDir });
       await applyPatch(refDir, patch);
       await installHiddenTests(refDir, hiddenFiles);
       reference = await runner(refDir, FULL_CHECK, STEP_TIMEOUT_MS);
