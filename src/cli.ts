@@ -1,5 +1,10 @@
+import path from "node:path";
 import { parseCliArgs, USAGE } from "./cli-args.js";
-import { listTaskIds } from "./eval/tasks.js";
+import { loadConfig } from "./config/load-config.js";
+import { listTaskIds, loadTaskSpec } from "./eval/tasks.js";
+import { FACTORY_ROOT } from "./paths.js";
+import { runTask } from "./pipeline/run-task.js";
+import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
 
@@ -30,6 +35,31 @@ async function verifyHidden(taskId: string | null): Promise<number> {
   return failures === 0 ? 0 : 1;
 }
 
+export const RUNS_DIR = path.join(FACTORY_ROOT, "runs");
+
+async function runOne(taskId: string): Promise<number> {
+  const config = await loadConfig();
+  const task = await loadTaskSpec(taskId);
+  const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+  console.log(
+    `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min)`,
+  );
+  const { report, reportMdPath } = await runTask(task, {
+    config,
+    runtime,
+    runsDir: RUNS_DIR,
+    log: (m) => {
+      console.log(m);
+    },
+  });
+  console.log(
+    `\n${report.status.toUpperCase()}: ${report.message}\n` +
+      `cost $${report.cost.totalUsd.toFixed(3)}, ${Math.round(report.durationMs / 1000)}s, fix cycles ${report.fixCycles}\n` +
+      `report: ${path.relative(process.cwd(), reportMdPath)}`,
+  );
+  return report.status === "success" ? 0 : 1;
+}
+
 async function main(argv: readonly string[]): Promise<number> {
   const cmd = parseCliArgs(argv);
   switch (cmd.kind) {
@@ -42,8 +72,9 @@ async function main(argv: readonly string[]): Promise<number> {
     case "verify-hidden":
       return verifyHidden(cmd.taskId);
     case "run":
+      return runOne(cmd.taskId);
     case "eval":
-      // Implemented in Phases 6 and 7.
+      // Implemented in Phase 7.
       console.error(`error: "${cmd.kind}" is not implemented yet`);
       return 1;
   }
