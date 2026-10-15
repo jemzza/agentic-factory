@@ -11,6 +11,9 @@ import type { SandboxExec } from "../quality/gate.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
 import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
 import type { TaskSpec } from "../schemas/task.js";
+import { openDb } from "../store/db.js";
+import { importRunReports } from "../store/import-runs.js";
+import { Store } from "../store/store.js";
 import { runTask } from "./run-task.js";
 
 let tmp: string;
@@ -168,7 +171,7 @@ function config(): ResolvedConfig {
 
 async function run(
   script: Script,
-  opts: { task?: TaskSpec; exec?: SandboxExec; repo?: TargetRepo } = {},
+  opts: { task?: TaskSpec; exec?: SandboxExec; repo?: TargetRepo; store?: Store } = {},
 ) {
   const runtime = new FakeRuntime(script);
   const repo = opts.repo ?? (await makeRepo());
@@ -178,6 +181,7 @@ async function run(
     runsDir: path.join(tmp, "runs"),
     ensureRepo: () => Promise.resolve(repo),
     makeSandboxExec: () => Promise.resolve(opts.exec ?? fakeExec),
+    ...(opts.store ? { store: opts.store } : {}),
   });
   return { ...result, runtime, repo };
 }
@@ -446,5 +450,104 @@ describe("hidden tests never reach agent worktrees", () => {
       path.join("tests", "_harness.ts"),
       path.join("tests", "renamed.test.ts"),
     ]);
+  });
+});
+
+describe("runTask with the database", () => {
+  it("records the run, every step and the final status; report files remain artifacts", async () => {
+    const db = openDb(path.join(tmp, "with-db.sqlite"));
+    const store = new Store(db);
+    try {
+      const { report, reportMdPath } = await run(
+        {
+          planner: planner(),
+          developer: writeFeature(["BROKEN\n", "export const feature = 2;\n"]),
+          reviewer: reviewer(APPROVE),
+        },
+        { store },
+      );
+      const row = store.requireRun(report.runId);
+      expect(row).toMatchObject({
+        status: "success",
+        mode: "interactive",
+        fix_cycles: 1,
+        report_path: reportMdPath,
+        branch: report.worktree?.branch,
+        head_commit: report.worktree?.headCommit,
+      });
+      expect(row.cost_usd).toBeCloseTo(report.cost.totalUsd);
+      expect(row.roles_json["reviewer"]).toEqual({ runtime: "fake", model: "r-model" });
+      expect(store.listSteps(report.runId).map((s) => [s.node, s.cycle, s.status])).toEqual([
+        ["planner", 0, "ok"],
+        ["developer", 0, "ok"],
+        ["gate", 0, "failed"],
+        ["developer", 1, "ok"],
+        ["gate", 1, "ok"],
+        ["reviewer", 1, "ok"],
+      ]);
+      expect(store.listEvents(report.runId).at(-1)).toMatchObject({ kind: "status" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records a failed run with the error status and abandons the interrupted step", async () => {
+    const db = openDb(path.join(tmp, "with-db-err.sqlite"));
+    const store = new Store(db);
+    try {
+      const { report } = await run(
+        { planner: planner(), developer: writeFeature(["a\n"]) },
+        {
+          store,
+          exec: () =>
+            Promise.resolve({
+              exitCode: 125,
+              stdout: "",
+              stderr: "",
+              durationMs: 1,
+              timedOut: false,
+              infraError: "docker down",
+            }),
+        },
+      );
+      expect(store.requireRun(report.runId)).toMatchObject({ status: "error" });
+      expect(store.listSteps(report.runId).at(-1)).toMatchObject({
+        node: "gate",
+        status: "abandoned",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("imports Week 1 report.json files once (re-import skips them)", async () => {
+    const runsDir = path.join(tmp, "runs");
+    const { report } = await run({
+      planner: planner(),
+      developer: writeFeature(["export const feature = 1;\n"]),
+      reviewer: reviewer(APPROVE),
+    });
+    const db = openDb(path.join(tmp, "import.sqlite"));
+    const store = new Store(db);
+    try {
+      const first = await importRunReports(store, runsDir);
+      expect(first.invalid).toEqual([]);
+      expect(first.imported).toContain(report.runId);
+      expect(store.requireRun(report.runId)).toMatchObject({
+        status: "success",
+        task_id: "add-feature",
+      });
+      expect(store.listSteps(report.runId).map((s) => s.node)).toEqual([
+        "planner",
+        "developer",
+        "gate",
+        "reviewer",
+      ]);
+      const again = await importRunReports(store, runsDir);
+      expect(again.imported).toEqual([]);
+      expect(again.skipped).toContain(report.runId);
+    } finally {
+      db.close();
+    }
   });
 });

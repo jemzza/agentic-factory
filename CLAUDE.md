@@ -31,8 +31,11 @@ repository read that repository's own `CLAUDE.md`, not this one.
 - **Everything is bounded.** Every subprocess has a timeout; fix cycles and cost are capped.
 - **Don't guess CLI flags.** Check `--help` before using a flag of `claude`, `docker`, or `git`,
   and document the expected output format next to the code that parses it.
-- **Keep it simple.** Sequential TypeScript and JSON files. No orchestration frameworks, queues,
-  databases, or UI until explicitly planned.
+- **Keep it simple.** No queues, parallel task execution, or UI until explicitly planned.
+  Orchestration is LangGraph (Week 2); the graph routes, existing modules do the work.
+- **The database is the source of truth** for runs (`data/factory.db`, SQLite). `report.json` /
+  `report.md` are derived artifacts. Schema changes are new files in `migrations/`; never edit
+  an applied migration. Secret values are masked before anything is written to the DB.
 
 ## Code style
 
@@ -58,4 +61,8 @@ repository read that repository's own `CLAUDE.md`, not this one.
 - `evals/hidden/<id>/` — hidden acceptance tests (never shown to agents).
 - `evals/reference/<id>.patch` — reference implementations used only to validate hidden tests.
 - `sandbox/` — Docker image for running checks with `--network none`.
+- `src/store/` — SQLite access (migrations runner, `Store`, secret redaction, report import).
+- `migrations/` — numbered SQL migrations (`NNN_name.sql`).
+- `data/` — the factory database (git-ignored).
+- `docs/` — design documents (`graph.md`, `week2-design.md`).
 - `runs/` — run outputs (git-ignored).

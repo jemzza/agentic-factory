@@ -19,15 +19,19 @@
     "run-task": "tsx src/cli.ts run",
     "eval": "tsx src/cli.ts eval",
     "verify-hidden": "tsx src/cli.ts verify-hidden",
-    "smoke:claude": "tsx scripts/smoke-claude.ts"
+    "smoke:claude": "tsx scripts/smoke-claude.ts",
+    "runs": "tsx src/cli.ts runs",
+    "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
+    "better-sqlite3": "12.11.1",
     "execa": "^10.1.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "^22.19.0",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",

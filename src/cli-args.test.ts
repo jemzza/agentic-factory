@@ -44,6 +44,13 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["verify-hidden", "../x"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses runs and db-import", () => {
+    expect(parseCliArgs(["runs"])).toEqual({ kind: "runs", limit: 20 });
+    expect(parseCliArgs(["runs", "5"])).toEqual({ kind: "runs", limit: 5 });
+    expect(parseCliArgs(["runs", "x"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["db-import"])).toEqual({ kind: "db-import" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });

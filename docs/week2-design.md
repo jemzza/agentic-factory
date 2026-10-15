@@ -206,25 +206,30 @@ On `resume`, any `steps` row still `running` from a dead process becomes `abando
 replayed node gets `attempt + 1`. `locked_by` prevents two processes (e.g. `resume` and
 `approve`) from driving one run at the same time.
 
-## Questions (need your decision)
+## Decisions (confirmed 2026-10-15)
 
-1. **OpenCode reviewer model and credentials.** Which provider/model (must differ from the
-   developer's Opus; a different vendor gives a more independent review), and how will you
-   provide its API key (`.env`, passed only to the OpenCode process)?
-2. **Planner stays read-only.** The task says the Planner "creates the change proposal". I
-   propose the Planner returns the spec as structured JSON (capability, purpose,
-   requirements with scenarios, tasks) and the `spec_draft` node renders the OpenSpec files
-   deterministically and runs `openspec validate`. This keeps the Planner without write
-   tools and makes most format errors impossible. OK?
-3. **Merges vs. eval baseline.** `npm run merge` moves TaskFlow's `main`. Eval must keep
-   starting from the original baseline, so I'd tag it `factory-baseline` and branch eval runs
-   from the tag, interactive runs from `main`. OK?
-4. **Scope of the developer diff.** Spec files are committed by the factory before
-   `develop`; the scope check then applies to `specCommit..HEAD`, so `openspec/**` stays
-   outside `allowed_paths` and the developer cannot edit the approved spec. OK?
-5. **Spend for the week.** Phase 2 equivalence eval ≈ $5–6, Phase 7 `--repeat 3` ≈ $18–25
-   (spec drafting adds a little per task), `eval:review` = 15 diffs × 2 reviewers (small).
-   Total ≈ $30–40 at list price. OK?
+1. **Reviewer = another vendor** (OpenAI or Google flagship reasoning model, whichever has a
+   key) via OpenCode. The exact model ID (no "latest" aliases) is pinned in
+   `factory.config.ts` and recorded in every run and in `summary.md`. The API key lives in
+   `.env` (git-ignored; `.env.example` has no values) and is passed **only** to the OpenCode
+   process via an explicitly built env — never to Claude Code processes or the gate sandbox.
+   Key values are masked in logs and reports (tested: no key string anywhere in `runs/`).
+   A dedicated provider key with a spend limit is used.
+2. **Planner returns the spec as JSON** validated by a Zod schema; `spec_draft` renders the
+   OpenSpec files deterministically and runs `openspec validate`. On failure: one retry where
+   the Planner gets the validate output and its previous JSON; then `error`. Reports keep
+   both the JSON and the rendered files.
+3. **`factory-baseline` tag** marks the eval baseline. Factory code never moves it; only
+   `npm run baseline:update` does, recorded in the DB (who, when, from which commit). Every
+   eval result stores the baseline commit; comparing metrics across different baselines
+   produces a warning. Hidden-test validation ("fails on the original code") runs from the tag.
+4. **Spec committed by the factory before `develop`;** scope is checked from that commit. The
+   gate additionally fails if any spec file differs from the spec commit (policy violation
+   with a clear reason). The reviewer reads the spec from the spec commit, not the worktree.
+5. **Budget $30–40 with guards:** a global cost cap per eval run in config (exceeded → stop,
+   keep partial results); after the Phase 2 eval, if the actual per-task cost exceeds the
+   estimate by ≥ 50%, stop and report before `--repeat 3`; `week2-results.md` lists actual vs
+   estimated spend per phase.
 
 ## Risks
 

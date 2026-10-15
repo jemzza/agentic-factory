@@ -41,6 +41,7 @@ import {
   type StepResult,
 } from "../schemas/report.js";
 import type { TaskSpec } from "../schemas/task.js";
+import type { Store } from "../store/store.js";
 
 export interface RunTaskDeps {
   config: ResolvedConfig;
@@ -54,6 +55,15 @@ export interface RunTaskDeps {
   now?: () => Date;
   /** Progress messages for the CLI. */
   log?: (message: string) => void;
+  /** Source of truth for run history. Optional so unit tests can run without a DB. */
+  store?: Store;
+  /** How this run was started (recorded in the DB). Default: interactive. */
+  runContext?: {
+    mode: "interactive" | "eval";
+    evalId?: string;
+    evalRepeat?: number;
+    baselineCommit?: string;
+  };
 }
 
 export interface RunTaskResult {
@@ -106,6 +116,23 @@ export async function runTask(
   const logsDir = path.join(runDir, "logs");
   const checksDir = path.join(runDir, "checks");
   await mkdir(logsDir, { recursive: true });
+  const store = deps.store;
+  store?.createRun({
+    id: runId,
+    taskId: task.id,
+    mode: deps.runContext?.mode ?? "interactive",
+    budgetUsd: task.budget.max_cost_usd,
+    roles: Object.fromEntries(
+      (["planner", "developer", "reviewer"] as const).map((r) => [
+        r,
+        { runtime: runtime.name, model: config.models[r] },
+      ]),
+    ),
+    evalId: deps.runContext?.evalId ?? null,
+    evalRepeat: deps.runContext?.evalRepeat ?? null,
+    baselineCommit: deps.runContext?.baselineCommit ?? null,
+    startedAt: started.toISOString(),
+  });
 
   const deadline = started.getTime() + task.budget.timeout_minutes * 60_000;
   const budget = task.budget.max_cost_usd;
@@ -149,6 +176,10 @@ export async function runTask(
     const timeoutMs = Math.min(config.stepTimeoutsMinutes[role] * 60_000, timeLeft);
     const startedAt = now();
     log(`→ ${role}${cycle ? ` (fix cycle ${cycle})` : ""}…`);
+    const dbStep = store?.startStep(runId, role, cycle, {
+      runtime: runtime.name,
+      model: config.models[role],
+    });
     const res = await runtime.run({
       role,
       prompt,
@@ -163,6 +194,15 @@ export async function runTask(
     });
     if (res.costUsd === undefined) unknownCostSteps++;
     spent += res.costUsd ?? 0;
+    if (dbStep) {
+      store?.finishStep(dbStep.id, {
+        status: res.ok ? "ok" : "failed",
+        costUsd: res.costUsd ?? null,
+        logPath: res.rawLogPath,
+        error: res.error ?? null,
+      });
+      store?.updateRun(runId, { costUsd: roundUsd(spent), unknownCostSteps });
+    }
     steps.push({
       kind: "agent",
       role,
@@ -267,6 +307,7 @@ export async function runTask(
         throw new StopRun("timeout", "task timeout reached before quality gate");
       const gateStarted = now();
       log("→ quality gate…");
+      const gateStep = store?.startStep(runId, "gate", cycle);
       gate = await runGate({
         worktreePath: wt.path,
         changedFiles: (await changedFiles(wt)).map((f) => f.path),
@@ -284,6 +325,13 @@ export async function runTask(
         durationMs: now().getTime() - gateStarted.getTime(),
         result: gate,
       });
+      if (gateStep) {
+        store?.finishStep(gateStep.id, {
+          status: gate.passed ? "ok" : "failed",
+          logPath: checksDir,
+          error: gate.passed ? null : { kind: "gate_failed", message: describeGateFailures(gate) },
+        });
+      }
       log(
         `  gate: ${gate.passed ? "passed" : "FAILED"} (scope ${gate.scope.passed ? "ok" : "fail"}; ${gate.checks
           .map(
@@ -385,5 +433,21 @@ export async function runTask(
   const reportMdPath = path.join(runDir, "report.md");
   await writeFile(reportJsonPath, JSON.stringify(report, null, 2));
   await writeFile(reportMdPath, renderReportMarkdown(report));
+  if (store) {
+    // A step still `running` here was cut short by an unexpected error.
+    store.abandonRunningSteps(runId);
+    store.updateRun(runId, {
+      status,
+      statusMessage: message,
+      finishedAt: finished.toISOString(),
+      costUsd: report.cost.totalUsd,
+      unknownCostSteps,
+      fixCycles,
+      ...(wt
+        ? { worktreePath: wt.path, branch: wt.branch, baseCommit: wt.baseCommit, headCommit: head }
+        : {}),
+      reportPath: reportMdPath,
+    });
+  }
   return { report, reportJsonPath, reportMdPath };
 }

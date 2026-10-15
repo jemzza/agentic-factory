@@ -1,0 +1,277 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadMigrations, migrate, openDb, type Db } from "./db.js";
+import { createRedactor, MASK, secretsFromEnv } from "./redact.js";
+import { RunLockedError, Store } from "./store.js";
+
+const SECRET = "sk-test-0123456789abcdef";
+const ROLES = {
+  planner: { runtime: "claude-code", model: "opus" },
+  developer: { runtime: "claude-code", model: "opus" },
+  reviewer: { runtime: "opencode", model: "openai/gpt-x" },
+};
+
+let dir: string;
+let db: Db;
+let store: Store;
+let clock: number;
+
+beforeEach(() => {
+  dir = mkdtempSync(path.join(os.tmpdir(), "factory-store-test-"));
+  db = openDb(path.join(dir, "factory.db"));
+  clock = Date.parse("2026-10-15T10:00:00.000Z");
+  store = new Store(db, {
+    secrets: [SECRET],
+    now: () => new Date((clock += 1000)),
+  });
+});
+
+afterEach(() => {
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+const newRun = (id = "run-1") =>
+  store.createRun({ id, taskId: "complete-task", mode: "interactive", budgetUsd: 1, roles: ROLES });
+
+describe("migrations", () => {
+  it("creates all tables and records the applied version", () => {
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
+        name: string;
+      }[]
+    ).map((t) => t.name);
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        "approvals",
+        "baselines",
+        "evals",
+        "events",
+        "runs",
+        "schema_migrations",
+        "steps",
+      ]),
+    );
+    expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
+      { version: 1, name: "init" },
+    ]);
+  });
+
+  it("is idempotent", () => {
+    expect(migrate(db)).toEqual([]);
+  });
+
+  it("refuses an applied migration whose file changed", () => {
+    const [first] = loadMigrations();
+    if (!first) throw new Error("no migrations");
+    expect(() =>
+      migrate(db, [{ ...first, sql: first.sql + "\n-- edited", checksum: "different" }]),
+    ).toThrow(/modified after being applied/);
+  });
+
+  it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
+    const fresh = new Database(":memory:");
+    expect(migrate(fresh)).toEqual([1]);
+    fresh.close();
+    const badDir = mkdtempSync(path.join(dir, "bad-"));
+    writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
+    writeFileSync(path.join(badDir, "003_c.sql"), "SELECT 1;");
+    expect(() => loadMigrations(badDir)).toThrow(/without gaps/);
+  });
+
+  it("enforces foreign keys", () => {
+    expect(() => store.startStep("no-such-run", "plan")).toThrow();
+  });
+});
+
+describe("runs", () => {
+  it("creates, reads, lists and updates a run; status changes are logged as events", () => {
+    const run = newRun();
+    expect(run).toMatchObject({ id: "run-1", status: "running", roles_json: ROLES, cost_usd: 0 });
+
+    const updated = store.updateRun("run-1", {
+      status: "awaiting_spec_approval",
+      statusMessage: "spec ready",
+      costUsd: 0.25,
+      fixCycles: 1,
+      worktreePath: "/w/run-1",
+    });
+    expect(updated).toMatchObject({
+      status: "awaiting_spec_approval",
+      status_message: "spec ready",
+      cost_usd: 0.25,
+      fix_cycles: 1,
+      worktree_path: "/w/run-1",
+    });
+    expect(store.listRuns({ status: "awaiting_spec_approval" }).map((r) => r.id)).toEqual([
+      "run-1",
+    ]);
+    expect(store.listEvents("run-1").map((e) => [e.kind, e.payload])).toEqual([
+      ["status", JSON.stringify({ status: "awaiting_spec_approval", message: "spec ready" })],
+    ]);
+  });
+
+  it("rejects unknown runs and invalid statuses", () => {
+    expect(() => store.updateRun("missing", { costUsd: 1 })).toThrow(/not found/);
+    newRun();
+    expect(() => db.prepare("UPDATE runs SET mode = 'weird' WHERE id = 'run-1'").run()).toThrow();
+  });
+
+  it("locks a run to one live process and takes over a dead lock", () => {
+    newRun();
+    store.acquireLock("run-1", `${os.hostname()}:${process.pid}`);
+    expect(() => {
+      store.acquireLock("run-1", `${os.hostname()}:999999`);
+    }).toThrow(RunLockedError);
+    store.releaseLock("run-1", `${os.hostname()}:${process.pid}`);
+    expect(store.requireRun("run-1").locked_by).toBeNull();
+
+    // A lock left by a process that no longer exists is taken over.
+    db.prepare("UPDATE runs SET locked_by = ? WHERE id = 'run-1'").run(`${os.hostname()}:999999`);
+    store.acquireLock("run-1");
+    expect(store.requireRun("run-1").locked_by).toBe(`${os.hostname()}:${process.pid}`);
+  });
+});
+
+describe("steps", () => {
+  it("numbers attempts per node and cycle, and abandons steps left running by a crash", () => {
+    newRun();
+    const first = store.startStep("run-1", "develop", 0, { runtime: "claude-code", model: "opus" });
+    expect(first).toMatchObject({ attempt: 1, status: "running" });
+
+    // The process "crashes": the step stays running. On resume it is abandoned and replayed.
+    expect(store.abandonRunningSteps("run-1")).toBe(1);
+    const replay = store.startStep("run-1", "develop", 0);
+    expect(replay.attempt).toBe(2);
+    const done = store.finishStep(replay.id, {
+      status: "ok",
+      costUsd: 0.17,
+      logPath: "logs/02-developer.jsonl",
+    });
+    expect(done).toMatchObject({ status: "ok", cost_usd: 0.17 });
+    expect(done.duration_ms).toBeGreaterThan(0);
+
+    expect(store.startStep("run-1", "develop", 1).attempt).toBe(1); // new cycle starts at 1
+    expect(store.listSteps("run-1").map((s) => [s.node, s.cycle, s.attempt, s.status])).toEqual([
+      ["develop", 0, 1, "abandoned"],
+      ["develop", 0, 2, "ok"],
+      ["develop", 1, 1, "running"],
+    ]);
+    expect(store.listEvents("run-1").map((e) => e.kind)).toEqual([
+      "node_start",
+      "node_start",
+      "node_end",
+      "node_start",
+    ]);
+  });
+});
+
+describe("approvals, baselines, evals", () => {
+  it("records approvals in order", () => {
+    newRun();
+    store.recordApproval({
+      runId: "run-1",
+      gate: "spec",
+      decision: "reject",
+      actor: "alex",
+      comment: "split it",
+    });
+    store.recordApproval({ runId: "run-1", gate: "spec", decision: "approve", actor: "auto" });
+    expect(
+      store.listApprovals("run-1").map((a) => [a.gate, a.decision, a.actor, a.comment]),
+    ).toEqual([
+      ["spec", "reject", "alex", "split it"],
+      ["spec", "approve", "auto", null],
+    ]);
+  });
+
+  it("keeps a history of baselines and returns the latest", () => {
+    expect(store.latestBaseline("taskflow")).toBeNull();
+    store.recordBaseline({
+      target: "taskflow",
+      tag: "factory-baseline",
+      commitHash: "aaa",
+      actor: "factory",
+    });
+    store.recordBaseline({
+      target: "taskflow",
+      tag: "factory-baseline",
+      commitHash: "bbb",
+      previousHash: "aaa",
+      actor: "alex",
+      reason: "new fixture",
+    });
+    expect(store.latestBaseline("taskflow")).toMatchObject({
+      commit_hash: "bbb",
+      previous_hash: "aaa",
+    });
+  });
+
+  it("tracks eval runs with their baseline commit", () => {
+    store.createEval({ id: "eval-1", repeatCount: 3, baselineCommit: "aaa", costCapUsd: 25 });
+    store.createRun({
+      id: "run-e1",
+      taskId: "t",
+      mode: "eval",
+      budgetUsd: 1,
+      roles: ROLES,
+      evalId: "eval-1",
+      evalRepeat: 1,
+      specApproval: "auto",
+      baselineCommit: "aaa",
+    });
+    expect(store.listRuns({ evalId: "eval-1" })[0]).toMatchObject({
+      spec_approval: "auto",
+      eval_repeat: 1,
+    });
+    expect(
+      store.finishEval("eval-1", {
+        status: "cost_cap_reached",
+        costUsd: 25.4,
+        summaryPath: "s.md",
+      }),
+    ).toMatchObject({
+      status: "cost_cap_reached",
+      baseline_commit: "aaa",
+    });
+  });
+});
+
+describe("secret masking", () => {
+  it("never stores a secret in events, statuses, step errors or approvals", () => {
+    newRun();
+    store.appendEvent("run-1", {
+      kind: "transition",
+      node: "review",
+      next: "report",
+      payload: { env: { KEY: SECRET } },
+    });
+    store.updateRun("run-1", { status: "error", statusMessage: `provider rejected key ${SECRET}` });
+    const step = store.startStep("run-1", "review");
+    store.finishStep(step.id, {
+      status: "failed",
+      error: { kind: "process", message: `401 for ${SECRET}` },
+    });
+    store.recordApproval({
+      runId: "run-1",
+      gate: "merge",
+      decision: "close",
+      actor: "alex",
+      comment: SECRET,
+    });
+
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    const raw = readFileSync(path.join(dir, "factory.db"));
+    expect(raw.includes(Buffer.from(SECRET))).toBe(false);
+    expect(store.requireRun("run-1").status_message).toBe(`provider rejected key ${MASK}`);
+  });
+
+  it("redactor masks longer secrets first and ignores short values", () => {
+    const r = createRedactor(["abcdefgh", "abcdefgh-ijkl", "short", undefined]);
+    expect(r("x abcdefgh-ijkl y abcdefgh z short")).toBe(`x ${MASK} y ${MASK} z short`);
+    expect(secretsFromEnv(["A", "B", "C"], { A: "value-a-123", B: "" })).toEqual(["value-a-123"]);
+  });
+});

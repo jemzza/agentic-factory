@@ -10,6 +10,9 @@ import { defaultSandboxExec, runTask } from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
+import { openDb } from "./store/db.js";
+import { importRunReports } from "./store/import-runs.js";
+import { Store } from "./store/store.js";
 
 function describeRun(result: CommandResult | null): string {
   if (result === null) return "—";
@@ -47,14 +50,17 @@ async function runOne(taskId: string): Promise<number> {
   console.log(
     `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min)`,
   );
+  const store = new Store(openDb());
   const { report, reportMdPath } = await runTask(task, {
     config,
     runtime,
     runsDir: RUNS_DIR,
+    store,
     log: (m) => {
       console.log(m);
     },
   });
+  store.db.close();
   console.log(
     `\n${report.status.toUpperCase()}: ${report.message}\n` +
       `cost $${report.cost.totalUsd.toFixed(3)}, ${Math.round(report.durationMs / 1000)}s, fix cycles ${report.fixCycles}\n` +
@@ -75,20 +81,37 @@ async function evalSuite(taskIds: string[]): Promise<number> {
     console.log(m);
   };
 
+  const store = new Store(openDb());
+  // Set by the runTask callback (assigned in a closure, so kept in an object).
+  const current: { evalId: string | null } = { evalId: null };
   console.log(`Eval: ${tasks.length} task(s), sequential`);
   const { summary, summaryMdPath } = await runEval(tasks, {
     runsDir: RUNS_DIR,
     runtimeName: runtime.name,
     models: config.models,
     log,
-    runTask: async (task, runsDir) =>
-      runTask(task, {
+    runTask: async (task, runsDir) => {
+      // The eval directory name is the eval id (runs/eval-<ts>).
+      const evalId = path.basename(runsDir);
+      current.evalId = evalId;
+      if (!store.getEval(evalId)) {
+        store.createEval({
+          id: evalId,
+          repeatCount: 1,
+          baselineCommit: repo.baseCommit,
+          costCapUsd: null,
+        });
+      }
+      return runTask(task, {
         config,
         runtime,
         runsDir,
+        store,
+        runContext: { mode: "eval", evalId, evalRepeat: 1, baselineCommit: repo.baseCommit },
         makeSandboxExec: () => Promise.resolve(exec),
         log,
-      }),
+      });
+    },
     runHidden: (worktreePath, taskId) =>
       runHiddenTests({
         worktreePath,
@@ -98,6 +121,14 @@ async function evalSuite(taskIds: string[]): Promise<number> {
       }),
   });
   const m = summary.metrics;
+  if (current.evalId) {
+    store.finishEval(current.evalId, {
+      status: "completed",
+      costUsd: m.totalCostUsd,
+      summaryPath: summaryMdPath,
+    });
+  }
+  store.db.close();
   const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
   console.log(
     `\nverified rate ${pct(m.verifiedRate)} (${m.correct}/${m.total}), ` +
@@ -106,6 +137,31 @@ async function evalSuite(taskIds: string[]): Promise<number> {
       `summary: ${path.relative(process.cwd(), summaryMdPath)}`,
   );
   return m.hiddenLeaks === 0 ? 0 : 1;
+}
+
+function listRuns(limit: number): number {
+  const store = new Store(openDb());
+  const rows = store.listRuns({ limit });
+  for (const r of rows) {
+    console.log(
+      `${r.id}  ${r.task_id.padEnd(16)} ${r.status.padEnd(24)} ${r.mode.padEnd(11)} ` +
+        `$${r.cost_usd.toFixed(3).padStart(6)}  cycles ${r.fix_cycles}  ${r.started_at}`,
+    );
+  }
+  if (rows.length === 0) console.log("(no runs in the database)");
+  store.db.close();
+  return 0;
+}
+
+async function dbImport(): Promise<number> {
+  const store = new Store(openDb());
+  const res = await importRunReports(store, RUNS_DIR);
+  console.log(
+    `imported ${res.imported.length}, already present ${res.skipped.length}, invalid ${res.invalid.length}`,
+  );
+  for (const i of res.invalid) console.log(`  invalid: ${i.file}: ${i.error}`);
+  store.db.close();
+  return res.invalid.length === 0 ? 0 : 1;
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -123,6 +179,10 @@ async function main(argv: readonly string[]): Promise<number> {
       return runOne(cmd.taskId);
     case "eval":
       return evalSuite(cmd.taskIds);
+    case "runs":
+      return listRuns(cmd.limit);
+    case "db-import":
+      return dbImport();
   }
 }
 
