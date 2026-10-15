@@ -43,5 +43,7 @@ export const FactoryConfigSchema = z.strictObject({
   }),
   /** Diffs larger than this are truncated in the reviewer prompt (full diff stays in the report). */
   maxDiffCharsForReview: z.number().int().positive(),
+  /** Global spend cap for one `npm run eval` (USD); remaining tasks are skipped once reached. */
+  evalCostCapUsd: z.number().positive(),
 });
 export type FactoryConfig = z.infer<typeof FactoryConfigSchema>;

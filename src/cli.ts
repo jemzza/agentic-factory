@@ -89,6 +89,7 @@ async function evalSuite(taskIds: string[]): Promise<number> {
     runsDir: RUNS_DIR,
     runtimeName: runtime.name,
     models: config.models,
+    costCapUsd: config.evalCostCapUsd,
     log,
     runTask: async (task, runsDir) => {
       // The eval directory name is the eval id (runs/eval-<ts>).
@@ -123,7 +124,7 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   const m = summary.metrics;
   if (current.evalId) {
     store.finishEval(current.evalId, {
-      status: "completed",
+      status: summary.costCap?.reached ? "cost_cap_reached" : "completed",
       costUsd: m.totalCostUsd,
       summaryPath: summaryMdPath,
     });

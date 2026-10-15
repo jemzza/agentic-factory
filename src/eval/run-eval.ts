@@ -104,6 +104,14 @@ export const EvalSummarySchema = z.strictObject({
   runtime: z.string(),
   metrics: EvalMetricsSchema,
   tasks: z.array(EvalTaskResultSchema),
+  /** Global spend cap for this eval run; when reached, remaining tasks are skipped. */
+  costCap: z
+    .strictObject({
+      capUsd: z.number().positive(),
+      reached: z.boolean(),
+      skippedTasks: z.array(z.string()),
+    })
+    .nullable(),
 });
 export type EvalSummary = z.infer<typeof EvalSummarySchema>;
 
@@ -152,6 +160,8 @@ export interface RunEvalDeps {
   runHidden: (worktreePath: string, taskId: string) => Promise<HiddenTestResult>;
   runsDir: string;
   runtimeName: string;
+  /** Stop starting new tasks once the eval has spent this much (USD). */
+  costCapUsd?: number;
   models: Record<string, string>;
   now?: () => Date;
   log?: (message: string) => void;
@@ -177,7 +187,17 @@ export async function runEval(
   await mkdir(evalDir, { recursive: true });
 
   const results: EvalTaskResult[] = [];
+  const cap = { capUsd: deps.costCapUsd, reached: false, skippedTasks: [] as string[] };
   for (const [i, { task, meta }] of tasks.entries()) {
+    const spent = results.reduce((sum, r) => sum + r.costUsd, 0);
+    if (cap.capUsd !== undefined && spent >= cap.capUsd) {
+      cap.reached = true;
+      cap.skippedTasks = tasks.slice(i).map((t) => t.task.id);
+      log(
+        `\nEval cost cap $${cap.capUsd} reached ($${spent.toFixed(3)} spent): skipping ${cap.skippedTasks.length} task(s)`,
+      );
+      break;
+    }
     log(
       `\n[${i + 1}/${tasks.length}] ${task.id} (${meta.difficulty}, expected: ${meta.expected_outcome})`,
     );
@@ -255,10 +275,10 @@ export async function runEval(
         `, $${result.costUsd.toFixed(3)}, ${Math.round(result.durationMs / 1000)}s`,
     );
     // Write progress after every task so a long eval leaves partial results.
-    await writeSummary(evalDir, buildSummary(evalId, started, now(), deps, results));
+    await writeSummary(evalDir, buildSummary(evalId, started, now(), deps, results, cap));
   }
 
-  const summary = buildSummary(evalId, started, now(), deps, results);
+  const summary = buildSummary(evalId, started, now(), deps, results, cap);
   const paths = await writeSummary(evalDir, summary);
   return { summary, ...paths };
 }
@@ -269,6 +289,7 @@ function buildSummary(
   finished: Date,
   deps: RunEvalDeps,
   results: EvalTaskResult[],
+  cap: { capUsd: number | undefined; reached: boolean; skippedTasks: string[] },
 ): EvalSummary {
   return EvalSummarySchema.parse({
     schemaVersion: 1,
@@ -279,6 +300,10 @@ function buildSummary(
     runtime: deps.runtimeName,
     metrics: computeMetrics(results),
     tasks: results,
+    costCap:
+      cap.capUsd === undefined
+        ? null
+        : { capUsd: cap.capUsd, reached: cap.reached, skippedTasks: cap.skippedTasks },
   });
 }
 

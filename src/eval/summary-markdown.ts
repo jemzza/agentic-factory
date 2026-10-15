@@ -16,6 +16,12 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
     ].join("\n"),
   );
 
+  if (s.costCap?.reached) {
+    lines.push(
+      `> **Stopped at the eval cost cap ($${s.costCap.capUsd}).** Partial results: ` +
+        `${s.costCap.skippedTasks.length} task(s) not run: ${s.costCap.skippedTasks.map((t) => `\`${t}\``).join(", ")}.`,
+    );
+  }
   lines.push(
     "## Metrics",
     [

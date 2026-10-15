@@ -166,6 +166,7 @@ function config(): ResolvedConfig {
     models: { planner: "p-model", developer: "d-model", reviewer: "r-model" },
     stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
     maxDiffCharsForReview: 100_000,
+    evalCostCapUsd: 10,
   };
 }
 
@@ -485,7 +486,26 @@ describe("runTask with the database", () => {
         ["gate", 1, "ok"],
         ["reviewer", 1, "ok"],
       ]);
-      expect(store.listEvents(report.runId).at(-1)).toMatchObject({ kind: "status" });
+      const events = store.listEvents(report.runId);
+      expect(events.filter((e) => e.kind === "status").at(-1)?.payload).toContain(
+        '"status":"success"',
+      );
+      // Every state change is journaled as a graph transition, in order.
+      expect(
+        events.filter((e) => e.kind === "transition").map((e) => `${e.node}→${e.next}`),
+      ).toEqual([
+        "__start__→prepare",
+        "prepare→plan",
+        "plan→spec_draft",
+        "spec_draft→spec_approval",
+        "spec_approval→develop",
+        "develop→gate",
+        "gate→develop",
+        "develop→gate",
+        "gate→review",
+        "review→report",
+        "report→__end__",
+      ]);
     } finally {
       db.close();
     }

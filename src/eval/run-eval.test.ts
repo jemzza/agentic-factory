@@ -266,4 +266,28 @@ describe("runEval", () => {
     expect(summary.tasks[0]?.hiddenLeaks).toEqual([path.join("tests", "__hidden__", "x.test.ts")]);
     expect(summary.metrics.hiddenLeaks).toBe(1);
   });
+
+  it("stops at the eval cost cap and keeps partial results", async () => {
+    const wt = path.join(tmp, "cap-wt");
+    await mkdir(wt, { recursive: true });
+    const ran: string[] = [];
+    const { summary, summaryMdPath } = await runEval(
+      ["a", "b", "c", "d"].map((id) => ({ task: TASK(id), meta: META("implemented") })),
+      {
+        runsDir: tmp,
+        runtimeName: "fake",
+        models: {},
+        costCapUsd: 0.5,
+        runTask: (task, runsDir) => {
+          ran.push(task.id);
+          return fakeRun(task, runsDir, "gate_failed", wt); // each costs $0.25
+        },
+        runHidden: () => Promise.reject(new Error("not called")),
+      },
+    );
+    expect(ran).toEqual(["a", "b"]);
+    expect(summary.costCap).toEqual({ capUsd: 0.5, reached: true, skippedTasks: ["c", "d"] });
+    expect(summary.metrics.total).toBe(2);
+    expect(await readFile(summaryMdPath, "utf8")).toContain("Stopped at the eval cost cap");
+  });
 });
