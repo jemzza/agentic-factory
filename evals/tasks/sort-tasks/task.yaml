@@ -1,0 +1,17 @@
+id: sort-tasks
+title: Сортировка списка задач
+request: |
+  Добавь сортировку списка задач через query-параметры sort и order.
+  Добавь тесты.
+acceptance_criteria:
+  - GET /tasks поддерживает sort=createdAt|updatedAt|title (по умолчанию createdAt) и order=asc|desc (по умолчанию asc)
+  - Сортировка по title не учитывает регистр
+  - При равных значениях ключа сортировки задачи идут в порядке создания
+  - Недопустимые значения sort или order возвращают 400 VALIDATION_ERROR
+  - Сортировка комбинируется с фильтром status
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget:
+  max_fix_cycles: 2
+  max_cost_usd: 2.0
+  timeout_minutes: 20

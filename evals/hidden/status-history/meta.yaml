@@ -1,0 +1,5 @@
+difficulty: hard
+expected_outcome: implemented
+traps:
+  - PATCH с тем же статусом не должен добавлять запись
+  - История не должна просачиваться в формат задачи

@@ -1,0 +1,93 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..fcb8fb2 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -54,6 +54,11 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return toTaskDto(await service.update(id, body));
+   });
+ 
++  app.post("/tasks/:id/restore", async (request) => {
++    const { id } = parseInput(taskIdParamsSchema, request.params);
++    return toTaskDto(await service.restore(id));
++  });
++
+   app.delete("/tasks/:id", async (request, reply) => {
+     const { id } = parseInput(taskIdParamsSchema, request.params);
+     await service.softDelete(id);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..917681f 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -76,6 +76,20 @@ export class TaskService {
+     await this.deps.repository.save({ ...task, deletedAt: now, updatedAt: now });
+   }
+ 
++  /**
++   * Undoes a soft delete. The restored task must satisfy the rules for active tasks,
++   * so a title now taken by another active task → CONFLICT.
++   */
++  async restore(id: string): Promise<Task> {
++    const task = await this.deps.repository.findById(id);
++    if (!task) throw notFound(`Task ${id} not found`);
++    if (!isDeleted(task)) throw conflict(`Task ${id} is not deleted`);
++    await this.assertTitleAvailable(task.title, id);
++    const restored: Task = { ...task, deletedAt: null, updatedAt: this.deps.clock() };
++    await this.deps.repository.save(restored);
++    return restored;
++  }
++
+   /** Loads a task that may be modified: exists and is not soft-deleted. */
+   private async getMutable(id: string): Promise<Task> {
+     const task = await this.deps.repository.findById(id);
+diff --git a/tests/restore-task.test.ts b/tests/restore-task.test.ts
+new file mode 100644
+index 0000000..5276402
+--- /dev/null
++++ b/tests/restore-task.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("POST /tasks/:id/restore", () => {
++  it("restores a deleted task", async () => {
++    const { app, clock } = setup();
++    const created = await createTask(app);
++    await deleteTask(app, created.id);
++    clock.advance(1000);
++    const res = await app.inject({ method: "POST", url: `/tasks/${created.id}/restore` });
++    expect(res.statusCode).toBe(200);
++    expect(res.json()).toEqual({
++      ...created,
++      deletedAt: null,
++      updatedAt: "2026-01-01T00:00:01.000Z",
++    });
++    const after = await app.inject({ method: "GET", url: `/tasks/${created.id}` });
++    expect(after.statusCode).toBe(200);
++  });
++
++  it("returns 409 CONFLICT for a task that is not deleted", async () => {
++    const { app } = setup();
++    const created = await createTask(app);
++    const res = await app.inject({ method: "POST", url: `/tasks/${created.id}/restore` });
++    expect(res.statusCode).toBe(409);
++    expect(res.json()).toMatchObject({ error: { code: "CONFLICT" } });
++  });
++
++  it("returns 409 CONFLICT when the title is taken by an active task", async () => {
++    const { app } = setup();
++    const old = await createTask(app, { title: "Docs" });
++    await deleteTask(app, old.id);
++    await createTask(app, { title: "docs" });
++    const res = await app.inject({ method: "POST", url: `/tasks/${old.id}/restore` });
++    expect(res.statusCode).toBe(409);
++    const after = await app.inject({ method: "GET", url: `/tasks/${old.id}` });
++    expect(after.statusCode).toBe(404);
++  });
++
++  it("returns 404 NOT_FOUND for an unknown task", async () => {
++    const { app } = setup();
++    const res = await app.inject({ method: "POST", url: "/tasks/nope/restore" });
++    expect(res.statusCode).toBe(404);
++    expect(res.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
++  });
++});

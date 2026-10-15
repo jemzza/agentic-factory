@@ -1,0 +1,16 @@
+id: reopen-task
+title: Повторное открытие задачи
+request: |
+  Добавь возможность заново открыть завершённую задачу.
+  Добавь тесты для успешного сценария и ошибок.
+acceptance_criteria:
+  - POST /tasks/:id/reopen переводит задачу из статуса done в todo, обновляет updatedAt и возвращает 200 с обновлённой задачей
+  - Если задача не в статусе done, возвращается 409 CONFLICT, задача не меняется
+  - Для удалённой задачи возвращается 409 CONFLICT
+  - Для несуществующей задачи возвращается 404 NOT_FOUND
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget:
+  max_fix_cycles: 2
+  max_cost_usd: 1.0
+  timeout_minutes: 15

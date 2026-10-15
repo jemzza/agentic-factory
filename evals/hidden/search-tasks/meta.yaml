@@ -1,0 +1,4 @@
+difficulty: simple
+expected_outcome: implemented
+traps:
+  - q со спецсимволами регулярных выражений (c++, скобки) должен искаться как обычная подстрока и не давать 500

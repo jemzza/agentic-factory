@@ -1,0 +1,15 @@
+id: complete-task
+title: Завершение задачи
+request: |
+  Добавь возможность завершать задачу. Нельзя завершать удалённую задачу.
+  Добавь тесты для успешного сценария и ошибок.
+acceptance_criteria:
+  - POST /tasks/:id/complete переводит задачу в статус done, обновляет updatedAt и возвращает 200 с обновлённой задачей
+  - Для удалённой задачи возвращается 409 CONFLICT
+  - Для несуществующей задачи возвращается 404 NOT_FOUND
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget:
+  max_fix_cycles: 2
+  max_cost_usd: 1.0
+  timeout_minutes: 15

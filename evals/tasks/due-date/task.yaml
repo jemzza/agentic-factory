@@ -1,0 +1,17 @@
+id: due-date
+title: Срок выполнения и просроченные задачи
+request: |
+  Добавь задачам срок выполнения и возможность получить просроченные задачи.
+  Добавь тесты.
+acceptance_criteria:
+  - У задачи есть поле dueDate — дата в формате YYYY-MM-DD или null; по умолчанию null, поле присутствует у всех задач в ответах API
+  - dueDate можно задать при создании, изменить через PATCH и сбросить через PATCH со значением null
+  - Некорректное значение dueDate (неверный формат или несуществующая дата) возвращает 400 VALIDATION_ERROR
+  - GET /tasks?overdue=true возвращает только просроченные задачи — со сроком раньше текущей даты (UTC) и статусом не done
+  - Параметр overdue принимает только значение true, иначе 400 VALIDATION_ERROR; overdue комбинируется с фильтром status
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget:
+  max_fix_cycles: 2
+  max_cost_usd: 2.0
+  timeout_minutes: 20

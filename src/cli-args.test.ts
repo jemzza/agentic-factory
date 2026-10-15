@@ -31,6 +31,15 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["eval"])).toEqual({ kind: "eval" });
   });
 
+  it("parses verify-hidden with and without a taskId", () => {
+    expect(parseCliArgs(["verify-hidden"])).toEqual({ kind: "verify-hidden", taskId: null });
+    expect(parseCliArgs(["verify-hidden", "pagination"])).toEqual({
+      kind: "verify-hidden",
+      taskId: "pagination",
+    });
+    expect(parseCliArgs(["verify-hidden", "../x"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });
