@@ -40,14 +40,27 @@ The image build itself needs network (base image pull, `npm ci`). Checks never d
 Claude Code needs access to the Anthropic API, so in Week 1 the agent process runs on
 the host, with its working directory set to an isolated git worktree under
 `FACTORY_WORKDIR` (outside this repository, so hidden tests and reference patches are not
-reachable by relative paths). It is constrained by Claude Code's own permission system:
+reachable by relative paths). It is constrained by Claude Code's own permission system
+(`src/runtimes/claude-code.ts`, `src/runtimes/tool-policy.ts`; behavior verified with live
+probes against Claude Code 2.1.300):
 
-- Planner and Reviewer: read-only tools only (`Read`, `Grep`, `Glob`).
-- Developer: file edit tools plus an allow-list of specific `Bash` commands
-  (`npm run check`, `npm test`, `git status`, `git diff`); everything else is denied
-  (`--permission-mode dontAsk`). No `bypassPermissions` anywhere.
-- User/project settings and MCP servers are not loaded (`--setting-sources ""`,
-  `--strict-mcp-config`).
+- Planner and Reviewer: only `Read`, `Grep`, `Glob`, `--permission-mode dontAsk`.
+- Developer: `Read`, `Grep`, `Glob`, `Edit`, `Write` plus exact `Bash(...)` commands
+  (`npm run check`, `npm test`, `git status`, `git diff`, ...), `--permission-mode acceptEdits`.
+  No bare `Bash`, no wildcard Bash rules (`git diff *` would admit `--output=<outside path>`).
+- `--permission-prompts none`: anything that would need approval is denied, never waits.
+- No bare allow rules for file tools: a bare `Read` allow rule permits reading **outside** the
+  working directory (verified). Without allow rules, file access is confined to the worktree.
+  Writes, `cat` of outside files, compound commands with non-allowed parts, and `curl` were
+  all denied in probes. `.env*`, `*.pem`, `*.key` are explicitly denied even inside it.
+- `--setting-sources ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+  `--no-session-persistence`: no user settings, no hooks or permission rules from the target
+  repo's `.claude/`, no MCP servers. This also disables `CLAUDE.md` auto-loading, so the
+  factory injects the target's `CLAUDE.md` into the system prompt itself (deterministic, and
+  ancestor directories cannot leak instructions).
+- Environment: only an allow-list of variables (`HOME`, `USER`, `PATH`, locale, ...) is passed;
+  other host secrets are withheld. On timeout the agent's whole process group is killed.
+- Denied tool calls are recorded (`permissionDenials`) in every run report.
 
 This is weaker than the check sandbox: an allowed command such as `npm run check` executes
 scripts from the worktree's `package.json` on the host, with network. The scope check in

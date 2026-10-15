@@ -32,6 +32,31 @@ describe("runCommand", () => {
     expect(res.durationMs).toBeLessThan(5_000);
   });
 
+  it("with killTree, kills grandchildren on timeout", async () => {
+    // Parent spawns a long-lived child that prints its pid, then both hang.
+    const script = `
+      const { spawn } = require("node:child_process");
+      const c = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      process.stdout.write(String(c.pid));
+      setInterval(() => {}, 1000);
+    `;
+    const res = await runCommand(node, ["-e", script], { cwd, timeoutMs: 500, killTree: true });
+    expect(res.timedOut).toBe(true);
+    const grandchild = Number(res.stdout);
+    expect(grandchild).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(() => process.kill(grandchild, 0)).toThrow(); // no such process
+  });
+
+  it("with killTree, reports normal exits unchanged", async () => {
+    const res = await runCommand(node, ["-e", "process.exit(4)"], {
+      cwd,
+      timeoutMs: 10_000,
+      killTree: true,
+    });
+    expect(res).toMatchObject({ exitCode: 4, timedOut: false });
+  });
+
   it("reports a missing binary as a spawn error", async () => {
     const res = await runCommand("definitely-not-a-real-binary-xyz", [], {
       cwd,

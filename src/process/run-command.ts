@@ -17,10 +17,24 @@ export interface RunCommandOptions {
   /** Environment for the child. When given, the host environment is NOT inherited. */
   env?: Record<string, string>;
   input?: string;
+  /**
+   * Run the child in its own process group and, on timeout, kill the whole group
+   * (SIGTERM, then SIGKILL). Use for processes that spawn their own children
+   * (e.g. an agent running `npm test`), so nothing outlives the timeout. POSIX only.
+   */
+  killTree?: boolean;
 }
 
 /** Grace period between SIGTERM and SIGKILL after a timeout. */
 const FORCE_KILL_AFTER_MS = 5_000;
+
+function killGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // Group already gone.
+  }
+}
 
 /**
  * Runs a command without a shell and never throws for expected failures:
@@ -32,17 +46,42 @@ export async function runCommand(
   options: RunCommandOptions,
 ): Promise<CommandResult> {
   const started = performance.now();
-  const result = await execa(file, args, {
+  const killTree = options.killTree === true;
+  const subprocess = execa(file, args, {
     cwd: options.cwd,
-    timeout: options.timeoutMs,
-    forceKillAfterDelay: FORCE_KILL_AFTER_MS,
     reject: false,
     stripFinalNewline: false,
+    ...(killTree
+      ? { detached: true }
+      : { timeout: options.timeoutMs, forceKillAfterDelay: FORCE_KILL_AFTER_MS }),
     ...(options.env ? { env: options.env, extendEnv: false } : {}),
     ...(options.input !== undefined ? { input: options.input } : { stdin: "ignore" }),
   });
+
+  let groupTimedOut = false;
+  const timers: NodeJS.Timeout[] = [];
+  const pid = subprocess.pid;
+  if (killTree && pid !== undefined) {
+    timers.push(
+      setTimeout(() => {
+        groupTimedOut = true;
+        killGroup(pid, "SIGTERM");
+        timers.push(
+          setTimeout(() => {
+            killGroup(pid, "SIGKILL");
+          }, FORCE_KILL_AFTER_MS),
+        );
+      }, options.timeoutMs),
+    );
+  }
+
+  const result = await subprocess;
+  for (const t of timers) clearTimeout(t);
+  if (killTree && pid !== undefined) killGroup(pid, "SIGKILL"); // reap stragglers
+
+  const timedOut = killTree ? groupTimedOut : result.timedOut;
   const spawnError =
-    result.failed && result.exitCode === undefined && !result.timedOut && !result.isTerminated
+    result.failed && result.exitCode === undefined && !timedOut && !result.isTerminated
       ? result.shortMessage
       : undefined;
   return {
@@ -50,7 +89,7 @@ export async function runCommand(
     stdout: typeof result.stdout === "string" ? result.stdout : "",
     stderr: typeof result.stderr === "string" ? result.stderr : "",
     durationMs: Math.round(performance.now() - started),
-    timedOut: result.timedOut,
+    timedOut,
     ...(spawnError !== undefined ? { spawnError } : {}),
   };
 }
