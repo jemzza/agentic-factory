@@ -35,8 +35,16 @@ export const CaseScoreSchema = z.strictObject({
 });
 export type CaseScore = z.infer<typeof CaseScoreSchema>;
 
+/**
+ * Compares an issue's `file` with a defect file. Reviewers may append a line or a range
+ * ("src/app.ts:42-48"); that suffix is not part of the file (bug found in the first two-reviewer
+ * run, 2026-10-16; the scoring rule itself is unchanged).
+ */
 const fileMatches = (issueFile: string, defectFile: string) => {
-  const a = issueFile.trim().replace(/^\.?\//, "");
+  const a = issueFile
+    .trim()
+    .replace(/:\d+(?:-\d+)?$/, "")
+    .replace(/^\.?\//, "");
   return (
     a !== "" && (a === defectFile || a.endsWith(`/${defectFile}`) || defectFile.endsWith(`/${a}`))
   );

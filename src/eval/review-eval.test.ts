@@ -61,6 +61,13 @@ describe("scoreCase (rules from evals/review/README.md)", () => {
       issues: [{ severity: "minor", file: "src/services/task-service.ts", description: "x" }],
     });
     expect(scoreCase(d01, onFile, null)).toEqual({ flagged: true, found: true, error: null });
+    const withLines = verdict({
+      verdict: "request_changes",
+      issues: [
+        { severity: "blocker", file: "src/services/task-service.ts:73-78", description: "x" },
+      ],
+    });
+    expect(scoreCase(d01, withLines, null)).toMatchObject({ found: true });
     expect(scoreCase(d01, wrongFile, null)).toEqual({ flagged: true, found: false, error: null });
     expect(scoreCase(d01, minorOnly, null)).toMatchObject({ flagged: true, found: false });
     expect(scoreCase(d01, verdict({}), null)).toEqual({
