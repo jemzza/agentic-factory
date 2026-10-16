@@ -122,20 +122,25 @@ every `keyEnv` must also be listed in `secretEnv`.
 ## Latest metrics
 
 Week 2 pipeline (spec → develop → gate → review, stopping at the merge gate) on TaskFlow,
-10 tasks, planner and developer Claude Code Opus, one repeat per reviewer (2026-10-16):
+10 tasks, planner and developer Claude Code Opus, 2026-10-16. **Each configuration ran once**
+(Sol has a partial second repeat, 4/10 tasks, with identical outcomes); 9/10 vs 10/10 is one
+task and is not evidence that one reviewer is better.
 
-| Metric                    | Sol reviewer (OpenCode `openai/gpt-6.1-sol`) | Opus reviewer (Claude Code) | Week 1 baseline |
-| ------------------------- | -------------------------------------------- | --------------------------- | --------------- |
-| Verified rate             | **90%** (9/10)                               | **100%** (10/10)            | 100% (10/10)    |
-| False success rate        | 0% (0/8)                                     | 0% (0/9)                    | 0% (0/9)        |
-| Avg fix cycles            | 0.44                                         | 0                           | 0               |
-| Avg time per task         | 158.3s                                       | 119.1s                      | 147.1s          |
-| Total cost                | $6.03                                        | $5.82                       | $5.29           |
-| Hidden files in worktrees | 0                                            | 0                           | 0               |
+| Metric                    | **Sol reviewer** (default; OpenCode `openai/gpt-6.1-sol`) | Opus reviewer (Claude Code) | Week 1 baseline |
+| ------------------------- | --------------------------------------------------------- | --------------------------- | --------------- |
+| Verified rate             | 90% (9/10)                                                | 100% (10/10)                | 100% (10/10)    |
+| False success rate        | 0% (0/8)                                                  | 0% (0/9)                    | 0% (0/9)        |
+| Avg fix cycles            | 0.44                                                      | 0                           | 0               |
+| Avg time per task         | 158.3s                                                    | 119.1s                      | 147.1s          |
+| Total cost                | $6.03                                                     | $5.82                       | $5.29           |
+| Hidden files in worktrees | 0                                                         | 0                           | 0               |
 
-Sol lost `bulk-status` by demanding atomicity under repository failures beyond the task's
-scope. Details, the reviewer eval, caveats (the baseline commit changed in Phase 4) and the
-spend: [docs/week2-results.md](docs/week2-results.md).
+The reviewer is chosen by `npm run eval:review` (planted defects): both reviewers have 100%
+recall; Sol is from another vendor and ~3× cheaper per review, and caught a TaskFlow convention
+violation Opus approved. Sol loses `bulk-status` systematically (in both repeats) by demanding
+atomicity under repository failures — the target of the next correction (reviewer
+calibration). Details, caveats (the baseline commit changed in Phase 4) and spend:
+[docs/week2-results.md](docs/week2-results.md).
 
 ## Security model
 
