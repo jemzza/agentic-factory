@@ -33,17 +33,40 @@ describe("parseCliArgs", () => {
   });
 
   it("parses eval with optional task ids", () => {
-    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [], repeat: 1 });
+    const none = { resume: null, costCapUsd: null };
+    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [], repeat: 1, ...none });
     expect(parseCliArgs(["eval", "a-task", "b", "a-task"])).toEqual({
       kind: "eval",
       taskIds: ["a-task", "b"],
       repeat: 1,
+      ...none,
     });
     expect(parseCliArgs(["eval", "--repeat", "3"])).toEqual({
       kind: "eval",
       taskIds: [],
       repeat: 3,
+      ...none,
     });
+    expect(
+      parseCliArgs([
+        "eval",
+        "--resume",
+        "eval-20261016-113113",
+        "--repeat",
+        "3",
+        "--cost-cap",
+        "21",
+      ]),
+    ).toEqual({
+      kind: "eval",
+      taskIds: [],
+      repeat: 3,
+      resume: "eval-20261016-113113",
+      costCapUsd: 21,
+    });
+    expect(parseCliArgs(["eval", "--resume", "../runs"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval", "--cost-cap", "0"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval", "--cost-cap", "abc"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["eval", "--repeat", "0"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["eval", "--repeat"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["eval", "../x"])).toMatchObject({ kind: "invalid" });

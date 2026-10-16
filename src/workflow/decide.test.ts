@@ -160,6 +160,7 @@ describe("decide: node errors", () => {
   it.each([
     ["timeout", "timeout", /^developer: /],
     ["budget", "budget_exceeded", /^developer: /],
+    ["infra", "infra_error", /^provider unavailable in developer: /],
     ["process", "error", /^process error in developer: /],
     ["invalid_response", "error", /^invalid_response error in developer: /],
     ["sandbox", "error", /^sandbox failure: /],

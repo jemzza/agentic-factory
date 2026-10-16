@@ -32,6 +32,8 @@ export function stopForError(error: StepError): Decision {
       return stop("timeout", detail);
     case "budget":
       return stop("budget_exceeded", detail);
+    case "infra":
+      return stop("infra_error", `provider unavailable in ${detail}`);
     case "sandbox":
       return stop("error", `sandbox failure: ${error.message}`);
     case "exception":

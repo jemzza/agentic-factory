@@ -14,7 +14,15 @@ export type CliCommand =
   | { kind: "baseline-update"; reason: string }
   | { kind: "reopen-merge"; runId: string }
   | { kind: "eval-review"; only: string | null }
-  | { kind: "eval"; taskIds: string[]; repeat: number }
+  | {
+      kind: "eval";
+      taskIds: string[];
+      repeat: number;
+      /** Continue this eval (interrupted passes, then more repeats). */
+      resume: string | null;
+      /** Override of the config's evalCostCapUsd for this eval (USD, all repeats). */
+      costCapUsd: number | null;
+    }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
@@ -36,9 +44,10 @@ export const USAGE = `Usage:
   npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
-  npm run eval [-- [--repeat N] <taskId>...]
+  npm run eval [-- [--repeat N] [--cost-cap USD] [--resume <evalId>] <taskId>...]
                                  Run the eval suite (all tasks, or the given ones) N times and
-                                 verify successes with hidden tests
+                                 verify successes with hidden tests. --resume continues an eval
+                                 interrupted by a provider limit and/or adds repeats up to N
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
   npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
@@ -70,6 +79,8 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     }
     case "eval": {
       let repeat = 1;
+      let resume: string | null = null;
+      let costCapUsd: number | null = null;
       const ids: string[] = [];
       for (let k = 0; k < rest.length; k++) {
         const a = rest[k] ?? "";
@@ -79,13 +90,28 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
             return { kind: "invalid", message: "eval: --repeat expects a number from 1 to 9" };
           }
           repeat = Number(n);
+        } else if (a === "--resume") {
+          const id = rest[++k];
+          if (id === undefined || !/^eval-\d{8}-\d{6}$/.test(id)) {
+            return {
+              kind: "invalid",
+              message: "eval: --resume expects an eval id (eval-YYYYMMDD-HHMMSS)",
+            };
+          }
+          resume = id;
+        } else if (a === "--cost-cap") {
+          const v = Number(rest[++k]);
+          if (!Number.isFinite(v) || v <= 0 || v > 100) {
+            return { kind: "invalid", message: "eval: --cost-cap expects USD in (0, 100]" };
+          }
+          costCapUsd = v;
         } else if (TASK_ID_PATTERN.test(a)) {
           if (!ids.includes(a)) ids.push(a);
         } else {
           return { kind: "invalid", message: `eval: invalid taskId(s): ${a}` };
         }
       }
-      return { kind: "eval", taskIds: ids, repeat };
+      return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd };
     }
     case "verify-hidden": {
       const [taskId, ...extra] = rest;

@@ -8,6 +8,7 @@ const STATUS_ICON: Record<RunReport["status"], string> = {
   timeout: "⏱️",
   budget_exceeded: "💸",
   error: "💥",
+  infra_error: "🔌",
 };
 
 const fence = (body: string, lang = "") => {

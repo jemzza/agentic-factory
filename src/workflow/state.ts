@@ -70,6 +70,7 @@ export const StepErrorSchema = z.strictObject({
     "process",
     "parse",
     "budget",
+    "infra",
     "invalid_response",
     "sandbox",
     "exception",

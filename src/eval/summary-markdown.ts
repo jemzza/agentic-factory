@@ -13,6 +13,7 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       `- **Runtime / models:** ${s.runtime} — ${Object.entries(s.models)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")}`,
+      `- **Factory commit:** ${s.factoryCommit ? `\`${s.factoryCommit}\`` : "not recorded"}`,
       `- **Spec approval:** ${s.specApproval} (eval runs are unattended; manual approvals are not mixed into these metrics)`,
     ].join("\n"),
   );
@@ -21,6 +22,13 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
     lines.push(
       `> **Stopped at the eval cost cap ($${s.costCap.capUsd}).** Partial results: ` +
         `${s.costCap.skippedTasks.length} task(s) not run: ${s.costCap.skippedTasks.map((t) => `\`${t}\``).join(", ")}.`,
+    );
+  }
+  if (s.interrupted) {
+    lines.push(
+      `> **Interrupted: the model provider was unavailable** (${cell(s.interrupted.reason)}). ` +
+        `${s.interrupted.pendingTasks.length} task(s) pending: ${s.interrupted.pendingTasks.map((t) => `\`${t}\``).join(", ")}. ` +
+        "Resume with `npm run eval -- --resume <evalId>`.",
     );
   }
   lines.push(
@@ -34,6 +42,11 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       `| Average time per task | ${m.avgDurationSec.toFixed(1)}s |`,
       `| Total cost | $${m.totalCostUsd.toFixed(3)}${m.unknownCostSteps ? ` (+${m.unknownCostSteps} step(s) with unknown cost)` : ""} |`,
       `| Hidden-test files found in agent worktrees | ${m.hiddenLeaks} |`,
+      ...(m.excludedInfra || s.replacedCostUsd
+        ? [
+            `| Excluded: provider unavailable (infra_error) | ${m.excludedInfra} task(s); $${s.replacedCostUsd.toFixed(3)} spent on attempts replaced by a resume |`,
+          ]
+        : []),
       `| Outcomes | ${Object.entries(m.byOutcome)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")} |`,
@@ -63,6 +76,7 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       "- **false_success**: the run ended in `success` but the hidden tests failed — the system claimed success wrongly.",
       "- **needs_clarification** is the correct outcome for tasks whose request is contradictory; it counts as correct only there.",
       "- Any other outcome is the pipeline's final status (`gate_failed`, `review_rejected`, `timeout`, `budget_exceeded`, `error`).",
+      "- **infra_error**: the model provider refused the call (usage/rate limit, outage). It says nothing about the factory, so it is excluded from every metric and re-run on resume.",
       "- Costs are list-price estimates reported by the agent CLI.",
     ].join("\n"),
   );

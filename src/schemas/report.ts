@@ -11,6 +11,8 @@ export const RUN_STATUSES = [
   "timeout",
   "budget_exceeded",
   "error",
+  /** The model provider was unavailable (usage/rate limit, outage): not a factory result. */
+  "infra_error",
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
@@ -46,7 +48,7 @@ export const GateResultSchema = z.strictObject({
 export type GateResult = z.infer<typeof GateResultSchema>;
 
 const AgentErrorSchema = z.strictObject({
-  kind: z.enum(["timeout", "process", "parse", "budget", "invalid_response"]),
+  kind: z.enum(["timeout", "process", "parse", "budget", "infra", "invalid_response"]),
   message: z.string(),
 });
 

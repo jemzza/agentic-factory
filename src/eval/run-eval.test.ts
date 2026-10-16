@@ -122,6 +122,28 @@ describe("computeMetrics", () => {
     });
   });
 
+  it("leaves infra_error out of every metric and counts it separately", () => {
+    const m = computeMetrics([
+      result({}),
+      result({
+        status: "infra_error",
+        outcome: "infra_error",
+        correct: false,
+        durationMs: 1_000,
+        costUsd: 0.3,
+      }),
+    ]);
+    expect(m).toMatchObject({
+      total: 1,
+      correct: 1,
+      verifiedRate: 1,
+      totalCostUsd: 0.5,
+      avgDurationSec: 10,
+      excludedInfra: 1,
+      byOutcome: { verified: 1 },
+    });
+  });
+
   it("reports a null false success rate when nothing was claimed", () => {
     expect(
       computeMetrics([result({ status: "error", outcome: "error", correct: false })])
@@ -265,6 +287,67 @@ describe("runEval", () => {
     });
     expect(summary.tasks[0]?.hiddenLeaks).toEqual([path.join("tests", "__hidden__", "x.test.ts")]);
     expect(summary.metrics.hiddenLeaks).toBe(1);
+  });
+
+  it("stops the pass at a provider limit; resume keeps decided tasks and runs the rest", async () => {
+    const wt = path.join(tmp, "infra-wt");
+    await mkdir(wt, { recursive: true });
+    const evalDir = path.join(tmp, "eval-infra", "r1");
+    const tasks = ["a", "b", "c", "d"].map((id) => ({ task: TASK(id), meta: META("implemented") }));
+    const ran: string[] = [];
+    const deps = {
+      runsDir: tmp,
+      evalId: "eval-infra/r1",
+      evalDir,
+      runtimeName: "fake",
+      models: {},
+      factoryCommit: "abc123",
+      runHidden: () => Promise.resolve(hidden(true)),
+    };
+    let limited = true;
+    const first = await runEval(tasks, {
+      ...deps,
+      runTask: (task, runsDir) => {
+        ran.push(task.id);
+        const status: RunStatus = task.id === "b" && limited ? "infra_error" : "gate_failed";
+        return fakeRun(task, runsDir, status, wt);
+      },
+    });
+    // b hit the limit: c and d are not started (they would fail the same way).
+    expect(ran).toEqual(["a", "b"]);
+    expect(first.summary.interrupted).toEqual({
+      reason: "infra_error message",
+      pendingTasks: ["b", "c", "d"],
+    });
+    expect(first.summary.metrics).toMatchObject({ total: 1, excludedInfra: 1, totalCostUsd: 0.25 });
+    expect(await readFile(first.summaryMdPath, "utf8")).toContain(
+      "Interrupted: the model provider was unavailable",
+    );
+
+    limited = false;
+    ran.length = 0;
+    const resumed = await runEval(tasks, {
+      ...deps,
+      previous: first.summary,
+      runTask: (task, runsDir) => {
+        ran.push(task.id);
+        return fakeRun(task, runsDir, "success", wt);
+      },
+    });
+    expect(ran).toEqual(["b", "c", "d"]); // a is kept as decided before
+    expect(resumed.summary.interrupted).toBeNull();
+    expect(resumed.summary.tasks.map((t) => [t.taskId, t.outcome])).toEqual([
+      ["a", "gate_failed"],
+      ["b", "verified"],
+      ["c", "verified"],
+      ["d", "verified"],
+    ]);
+    expect(resumed.summary).toMatchObject({
+      startedAt: first.summary.startedAt,
+      factoryCommit: "abc123",
+      replacedCostUsd: 0.25, // the attempt of b that hit the limit
+    });
+    expect(resumed.summary.metrics).toMatchObject({ total: 4, excludedInfra: 0 });
   });
 
   it("stops at the eval cost cap and keeps partial results", async () => {

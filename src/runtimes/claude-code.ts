@@ -61,8 +61,33 @@ const ResultEventSchema = z.looseObject({
     .optional(),
   terminal_reason: z.string().optional(),
   errors: z.array(z.string()).optional(),
+  /** Set when the API refused the call (observed: 429 + "usage_limit_reached", 2.1.300). */
+  api_error_status: z.number().optional(),
+  api_error: z.string().optional(),
 });
 type ResultEvent = z.infer<typeof ResultEventSchema>;
+
+/**
+ * The provider refused the call: a subscription usage limit, a rate limit, or an overloaded /
+ * failing API. Observed live (Claude Code 2.1.300, subscription session limit):
+ *   {"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",
+ *    "api_error_status":429,"api_error":"usage_limit_reached",
+ *    "result":"You've hit your session limit · resets 7:10pm (Europe/Moscow)", ...}
+ * Only the structured fields are used, never the message text. Other 4xx (a bad request
+ * the factory built) stay `process` errors.
+ */
+export function isProviderUnavailable(event: ResultEvent): boolean {
+  if (!event.is_error) return false;
+  const status = event.api_error_status;
+  return (
+    status === 429 ||
+    status === 529 ||
+    (status !== undefined && status >= 500) ||
+    event.api_error === "usage_limit_reached" ||
+    event.api_error === "rate_limit_error" ||
+    event.api_error === "overloaded_error"
+  );
+}
 
 export type StreamParse =
   | { kind: "result"; event: ResultEvent }
@@ -239,6 +264,11 @@ export function interpretRun(
   }
   if (event.subtype === "error_max_budget_usd" || event.terminal_reason === "budget_exhausted") {
     return fail("budget", (event.errors ?? []).join("; ") || "agent budget exhausted");
+  }
+  if (isProviderUnavailable(event)) {
+    const why = (event.errors ?? []).join("; ") || event.result || event.subtype;
+    const code = event.api_error ?? `HTTP ${String(event.api_error_status)}`;
+    return fail("infra", `provider unavailable (${code}): ${why}`);
   }
   if (event.is_error || event.subtype !== "success") {
     const why = (event.errors ?? []).join("; ") || event.result || event.subtype;

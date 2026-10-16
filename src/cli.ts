@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { parseCliArgs, USAGE } from "./cli-args.js";
+import { parseCliArgs, USAGE, type CliCommand } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { runEvalRepeated } from "./eval/repeat.js";
@@ -19,7 +19,8 @@ import { buildRuntimes, runtimeForBinding } from "./runtimes/registry.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { loadReviewCases, verifyManifest } from "./eval/review-cases.js";
 import { renderReviewEvalMarkdown, runReviewEval } from "./eval/review-eval.js";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { git } from "./git/git.js";
 import { createRedactor, secretsFromEnv } from "./store/redact.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
@@ -259,8 +260,74 @@ async function baselineUpdate(reason: string): Promise<number> {
   }
 }
 
-async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
+/** Paths whose change alters what the agents are asked or allowed to do. */
+const MEASUREMENT_PATHS = ["prompts", "factory.config.ts", "src/agents", "src/runtimes"];
+
+/** The factory's own commit, with `-dirty` when tracked files have uncommitted changes. */
+async function factoryCommit(): Promise<string> {
+  const head = (await git(FACTORY_ROOT, ["rev-parse", "--short=12", "HEAD"])).trim();
+  const dirty = (await git(FACTORY_ROOT, ["status", "--porcelain", "--untracked-files=no"])).trim();
+  return dirty ? `${head}-dirty` : head;
+}
+
+/**
+ * Measurement-relevant files changed since the commits that ran the earlier passes of an
+ * eval. Returns the changed paths (empty = comparable). Passes without a recorded commit
+ * cannot be checked automatically and are reported separately.
+ */
+async function changedSincePasses(
+  evalDir: string,
+): Promise<{ changed: string[]; unknown: number }> {
+  const changed = new Set<string>();
+  let unknown = 0;
+  for (let i = 1; ; i++) {
+    let raw: string;
+    try {
+      raw = await readFile(path.join(evalDir, `r${i}`, "summary.json"), "utf8");
+    } catch {
+      break;
+    }
+    const commit = (JSON.parse(raw) as { factoryCommit?: string | null }).factoryCommit ?? null;
+    if (commit === null) {
+      unknown++;
+      continue;
+    }
+    const out = await git(FACTORY_ROOT, [
+      "diff",
+      "--name-only",
+      commit.replace(/-dirty$/, ""),
+      "--",
+      ...MEASUREMENT_PATHS,
+    ]);
+    for (const f of out.split("\n").filter((l) => l.trim() !== "")) changed.add(f);
+  }
+  return { changed: [...changed], unknown };
+}
+
+async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<number> {
+  const { taskIds, repeat } = cmd;
   const config = await loadConfig();
+  const costCapUsd = cmd.costCapUsd ?? config.evalCostCapUsd;
+  const commit = await factoryCommit();
+  if (commit.endsWith("-dirty")) {
+    console.warn(
+      `Warning: the factory has uncommitted changes (${commit}); results are recorded as such.`,
+    );
+  }
+  if (cmd.resume) {
+    const { changed, unknown } = await changedSincePasses(path.join(RUNS_DIR, cmd.resume));
+    if (changed.length > 0) {
+      console.error(
+        `Cannot resume ${cmd.resume}: files that change the measurement differ from the commit of an earlier pass:\n  ${changed.join("\n  ")}\nStart a new eval instead.`,
+      );
+      return 2;
+    }
+    if (unknown > 0) {
+      console.warn(
+        `Note: ${unknown} earlier pass(es) of ${cmd.resume} have no recorded factory commit; their comparability is not checked automatically.`,
+      );
+    }
+  }
   const ids = taskIds.length > 0 ? taskIds : await listTaskIds();
   const tasks = [];
   for (const id of ids) tasks.push({ task: await loadTaskSpec(id), meta: await loadEvalMeta(id) });
@@ -286,20 +353,33 @@ async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
     });
   }
   console.log(
-    `Eval: ${tasks.length} task(s) × ${repeat} repeat(s), sequential; cost cap $${config.evalCostCapUsd}\n` +
+    `Eval${cmd.resume ? ` ${cmd.resume} (resume)` : ""}: ${tasks.length} task(s) × ${repeat} repeat(s), sequential; cost cap $${costCapUsd}; factory ${commit}\n` +
       `roles: ${Object.entries(roles)
         .map(([k, v]) => `${k}=${v}`)
         .join(", ")}`,
   );
   const evalIds = new Set<string>();
+  if (cmd.resume) {
+    if (store.getEval(cmd.resume)) store.resumeEval(cmd.resume);
+    else
+      store.createEval({
+        id: cmd.resume,
+        repeatCount: repeat,
+        baselineCommit: repo.baseCommit,
+        costCapUsd,
+      });
+    evalIds.add(cmd.resume);
+  }
   const { summary, summaryMdPath } = await runEvalRepeated(tasks, {
     repeat,
     roles,
     baselineCommit: repo.baseCommit,
+    ...(cmd.resume ? { resumeEvalId: cmd.resume } : {}),
+    factoryCommit: commit,
     runsDir: RUNS_DIR,
     runtimeName: [...new Set(Object.values(runtimes).map((r) => r.name))].join("+"),
     models: roles,
-    costCapUsd: config.evalCostCapUsd,
+    costCapUsd,
     log: consoleLog,
     runTask: async (task, runsDir) => {
       // runs/eval-<ts>/r<N>/: the eval id is the parent directory, N the repeat.
@@ -311,7 +391,7 @@ async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
           id: evalId,
           repeatCount: repeat,
           baselineCommit: repo.baseCommit,
-          costCapUsd: config.evalCostCapUsd,
+          costCapUsd,
         });
       }
       const outcome = await runTask(task, {
@@ -340,8 +420,16 @@ async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
   });
   for (const id of evalIds) {
     store.finishEval(id, {
-      status: summary.costCapReached ? "cost_cap_reached" : "completed",
-      costUsd: summary.repeats.reduce((sum, r) => sum + r.metrics.totalCostUsd, 0),
+      status: summary.interrupted
+        ? "interrupted"
+        : summary.costCapReached
+          ? "cost_cap_reached"
+          : "completed",
+      repeatCount: summary.repeatsPlanned,
+      costUsd: summary.repeats.reduce(
+        (sum, r) => sum + r.metrics.totalCostUsd + r.replacedCostUsd,
+        0,
+      ),
       summaryPath: summaryMdPath,
     });
   }
@@ -354,6 +442,12 @@ async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
       `time ${m.avgDurationSec.mean ?? "n/a"}s, cost/repeat $${(m.totalCostUsd.mean ?? 0).toFixed(2)}\n` +
       `summary: ${path.relative(process.cwd(), summaryMdPath)}`,
   );
+  if (summary.interrupted) {
+    console.log(
+      `\nInterrupted: the model provider was unavailable. Continue later with:\n  npm run eval -- --resume ${summary.evalId}${cmd.costCapUsd ? ` --cost-cap ${String(cmd.costCapUsd)}` : ""}`,
+    );
+    return 3;
+  }
   return summary.repeats.every((r) => r.metrics.hiddenLeaks === 0) ? 0 : 1;
 }
 
@@ -440,7 +534,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "eval-review":
       return evalReview(cmd.only);
     case "eval":
-      return evalSuite(cmd.taskIds, cmd.repeat);
+      return evalSuite(cmd);
     case "runs":
       return listRuns(cmd.limit);
     case "resume":

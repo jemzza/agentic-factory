@@ -6,7 +6,7 @@ export type StructuredOutcome<T> =
   | {
       ok: false;
       error: {
-        kind: "timeout" | "process" | "parse" | "budget" | "invalid_response";
+        kind: "timeout" | "process" | "parse" | "budget" | "infra" | "invalid_response";
         message: string;
       };
     };

@@ -29,7 +29,12 @@ export interface AgentRunInput {
   logPath?: string;
 }
 
-export type AgentErrorKind = "timeout" | "process" | "parse" | "budget";
+/**
+ * `infra`: the model provider refused the call (usage/rate limit, overload, 5xx) — not the
+ * agent's or the factory's fault. Runs that stop on it are `infra_error`, kept out of eval
+ * metrics and resumable.
+ */
+export type AgentErrorKind = "timeout" | "process" | "parse" | "budget" | "infra";
 
 export interface PermissionDenial {
   tool: string;

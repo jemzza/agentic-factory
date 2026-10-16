@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -47,6 +47,8 @@ export const RepeatedSummarySchema = z.strictObject({
   specApproval: z.literal("auto"),
   costCapUsd: z.number().nullable(),
   costCapReached: z.boolean(),
+  /** A pass stopped because the provider was unavailable; `--resume` continues it. */
+  interrupted: z.boolean().default(false),
   metrics: z.strictObject({
     verifiedRate: StatSchema,
     falseSuccessRate: StatSchema,
@@ -69,9 +71,12 @@ export function aggregate(
     baselineCommit: string | null;
     costCapUsd: number | null;
     costCapReached: boolean;
+    interrupted?: boolean;
   },
 ): RepeatedSummary {
-  const m = (pick: (s: EvalSummary) => number | null) => stat(repeats.map(pick));
+  // Statistics only over complete passes: an interrupted pass has not decided every task.
+  const complete = repeats.filter((r) => r.interrupted === null);
+  const m = (pick: (s: EvalSummary) => number | null) => stat(complete.map(pick));
   const tasks: Record<string, string[]> = {};
   for (const s of repeats) {
     for (const t of s.tasks) (tasks[t.taskId] ??= []).push(t.correct ? t.outcome : `${t.outcome}✗`);
@@ -80,18 +85,19 @@ export function aggregate(
     schemaVersion: 1,
     evalId,
     repeatsPlanned: info.repeatsPlanned,
-    repeatsDone: repeats.length,
+    repeatsDone: complete.length,
     roles: info.roles,
     baselineCommit: info.baselineCommit,
     specApproval: "auto",
     costCapUsd: info.costCapUsd,
     costCapReached: info.costCapReached,
+    interrupted: info.interrupted ?? false,
     metrics: {
       verifiedRate: m((s) => s.metrics.verifiedRate),
       falseSuccessRate: m((s) => s.metrics.falseSuccessRate),
       avgFixCycles: m((s) => s.metrics.avgFixCycles),
       avgDurationSec: m((s) => s.metrics.avgDurationSec),
-      totalCostUsd: m((s) => s.metrics.totalCostUsd),
+      totalCostUsd: m((s) => s.metrics.totalCostUsd + s.replacedCostUsd),
     },
     tasks,
     repeats,
@@ -118,6 +124,14 @@ export function renderRepeatedMarkdown(r: RepeatedSummary): string {
           .join("; ")}`,
         `- **Spec approval:** ${r.specApproval} · **Baseline commit:** \`${r.baselineCommit ?? "?"}\``,
         `- **Cost cap:** ${r.costCapUsd === null ? "none" : `$${r.costCapUsd}`}${r.costCapReached ? " — **reached, results are partial**" : ""}`,
+        `- **Factory commit per repeat:** ${r.repeats.map((p, i) => `r${i + 1} ${p.factoryCommit ? `\`${p.factoryCommit}\`` : "not recorded"}`).join(", ")}`,
+        ...(r.interrupted
+          ? [
+              "- **Interrupted: the model provider was unavailable.** Resume with `npm run eval -- --resume " +
+                r.evalId +
+                "`; statistics cover complete repeats only.",
+            ]
+          : []),
       ].join("\n"),
       "## Metrics (mean ± sample stdev across repeats)",
       [
@@ -140,53 +154,137 @@ export function renderRepeatedMarkdown(r: RepeatedSummary): string {
   );
 }
 
+export interface RepeatOptions {
+  repeat: number;
+  roles: Record<string, string>;
+  baselineCommit: string | null;
+  /** Continue this eval: finish interrupted passes, then add repeats up to `repeat`. */
+  resumeEvalId?: string;
+}
+
+async function readJson(file: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as unknown;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+}
+
+/**
+ * What an eval being resumed was measured with. Anything that changes the measurement makes
+ * new passes incomparable with the old ones, so a mismatch refuses the resume (start a new
+ * eval instead).
+ */
+export function resumeMismatch(
+  stored: { roles: Record<string, string>; baselineCommit: string | null; taskIds: string[] },
+  current: { roles: Record<string, string>; baselineCommit: string | null; taskIds: string[] },
+): string | null {
+  const roles = (r: Record<string, string>) =>
+    Object.entries(r)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join(", ");
+  if (roles(stored.roles) !== roles(current.roles))
+    return `roles differ: eval has ${roles(stored.roles)}, config has ${roles(current.roles)}`;
+  if (stored.baselineCommit !== current.baselineCommit)
+    return `baseline commit differs: eval ${stored.baselineCommit ?? "?"}, now ${current.baselineCommit ?? "?"}`;
+  if (stored.taskIds.join(",") !== current.taskIds.join(","))
+    return `task set differs: eval ran ${stored.taskIds.join(", ")}`;
+  return null;
+}
+
 /**
  * Runs the task set `repeat` times (sequentially) into runs/eval-<ts>/r<N>/, with ONE cost
- * cap for the whole eval, and writes an aggregated summary with mean and spread.
+ * cap for the whole eval, and writes an aggregated summary with mean and spread after every
+ * pass. A pass interrupted by the provider (infra_error) stops the eval; `resumeEvalId`
+ * continues it: decided tasks are kept, the rest run, then missing repeats are added.
  */
 export async function runEvalRepeated(
   tasks: readonly EvalTaskInput[],
-  deps: RunEvalDeps & {
-    repeat: number;
-    roles: Record<string, string>;
-    baselineCommit: string | null;
-  },
+  deps: RunEvalDeps & RepeatOptions,
 ): Promise<{ summary: RepeatedSummary; summaryMdPath: string }> {
-  const evalId = makeEvalId((deps.now ?? (() => new Date()))());
+  const evalId = deps.resumeEvalId ?? makeEvalId((deps.now ?? (() => new Date()))());
   const root = path.join(deps.runsDir, evalId);
+  const taskIds = tasks.map((t) => t.task.id);
+
+  const previous: EvalSummary[] = [];
+  let repeatsPlanned = deps.repeat;
+  if (deps.resumeEvalId) {
+    const stored = await readJson(path.join(root, "summary.json"));
+    if (stored === undefined) throw new Error(`eval ${evalId}: no summary.json under ${root}`);
+    const s = RepeatedSummarySchema.parse(stored);
+    for (let i = 1; ; i++) {
+      const pass = await readJson(path.join(root, `r${i}`, "summary.json"));
+      if (pass === undefined) break;
+      previous.push(EvalSummarySchema.parse(pass));
+    }
+    const firstTasks = previous[0]?.tasks.map((t) => t.taskId) ?? [];
+    const pending = previous[0]?.interrupted?.pendingTasks ?? [];
+    const why = resumeMismatch(
+      {
+        roles: s.roles,
+        baselineCommit: s.baselineCommit,
+        taskIds: [...firstTasks, ...pending.filter((t) => !firstTasks.includes(t))],
+      },
+      { roles: deps.roles, baselineCommit: deps.baselineCommit, taskIds },
+    );
+    if (why) throw new Error(`cannot resume ${evalId}: ${why}`);
+    repeatsPlanned = Math.max(deps.repeat, s.repeatsPlanned, previous.length);
+  }
   await mkdir(root, { recursive: true });
+
   const repeats: EvalSummary[] = [];
   let capReached = false;
-  for (let i = 1; i <= deps.repeat; i++) {
-    const spent = repeats.reduce((s, r) => s + r.metrics.totalCostUsd, 0);
+  let interrupted = false;
+  const write = async () => {
+    const summary = aggregate(evalId, repeats, {
+      repeatsPlanned,
+      roles: deps.roles,
+      baselineCommit: deps.baselineCommit,
+      costCapUsd: deps.costCapUsd ?? null,
+      costCapReached: capReached,
+      interrupted,
+    });
+    const summaryMdPath = path.join(root, "summary.md");
+    await writeFile(path.join(root, "summary.json"), JSON.stringify(summary, null, 2));
+    await writeFile(summaryMdPath, renderRepeatedMarkdown(summary));
+    return { summary, summaryMdPath };
+  };
+
+  for (let i = 1; i <= repeatsPlanned; i++) {
+    const prev = previous[i - 1];
+    const covered = new Set(prev?.tasks.map((t) => t.taskId));
+    if (prev && prev.interrupted === null && taskIds.every((t) => covered.has(t))) {
+      repeats.push(prev);
+      deps.log?.(`\n=== repeat ${i}/${repeatsPlanned}: complete, kept ===`);
+      continue;
+    }
+    const spent = repeats.reduce((s, r) => s + r.metrics.totalCostUsd + r.replacedCostUsd, 0);
     const remaining = deps.costCapUsd === undefined ? undefined : deps.costCapUsd - spent;
     if (remaining !== undefined && remaining <= 0) {
       capReached = true;
       deps.log?.(`\nEval cost cap reached before repeat ${i}; stopping.`);
       break;
     }
-    deps.log?.(`\n=== repeat ${i}/${deps.repeat} ===`);
+    deps.log?.(`\n=== repeat ${i}/${repeatsPlanned}${prev ? " (resumed)" : ""} ===`);
     const { summary } = await runEval(tasks, {
       ...deps,
       evalId: `${evalId}/r${i}`,
       evalDir: path.join(root, `r${i}`),
       ...(remaining !== undefined ? { costCapUsd: remaining } : {}),
+      ...(prev ? { previous: prev } : {}),
     });
     repeats.push(summary);
+    if (summary.interrupted) {
+      interrupted = true;
+      break;
+    }
     if (summary.costCap?.reached) {
       capReached = true;
       break;
     }
+    await write();
   }
-  const summary = aggregate(evalId, repeats, {
-    repeatsPlanned: deps.repeat,
-    roles: deps.roles,
-    baselineCommit: deps.baselineCommit,
-    costCapUsd: deps.costCapUsd ?? null,
-    costCapReached: capReached,
-  });
-  const summaryMdPath = path.join(root, "summary.md");
-  await writeFile(path.join(root, "summary.json"), JSON.stringify(summary, null, 2));
-  await writeFile(summaryMdPath, renderRepeatedMarkdown(summary));
-  return { summary, summaryMdPath };
+  return write();
 }

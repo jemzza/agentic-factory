@@ -76,6 +76,37 @@ switch (mode) {
     );
     process.exit(1);
     break;
+  case "usage-limit":
+    // Shape observed live (Claude Code 2.1.300) when the subscription session limit is hit.
+    out({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1792167000, rateLimitType: "five_hour" },
+    });
+    out(
+      result({
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 429,
+        api_error: "usage_limit_reached",
+        result: "You've hit your session limit · resets 7:10pm (Europe/Moscow)",
+        total_cost_usd: 0,
+      }),
+    );
+    process.exit(1);
+    break;
+  case "bad-request":
+    out(
+      result({
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 400,
+        api_error: "invalid_request_error",
+        result: "output_format.schema: invalid",
+      }),
+    );
+    process.exit(1);
+    break;
   case "error-result":
     out(result({ subtype: "error_during_execution", is_error: true, errors: ["API overloaded"] }));
     process.exit(1);

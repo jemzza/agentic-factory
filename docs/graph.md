@@ -128,7 +128,7 @@ merged automatically.
 ## Run statuses
 
 `running` → one of: `needs_clarification` · `gate_failed` · `review_rejected` · `timeout` ·
-`budget_exceeded` · `error` (terminal), or `awaiting_spec_approval` →
+`budget_exceeded` · `error` · `infra_error` (terminal), or `awaiting_spec_approval` →
 `awaiting_merge_approval` → `merged` | `closed`. `success` (Week 1) becomes
 `awaiting_merge_approval` in interactive and eval runs; eval classifies it as a success claim.
 
@@ -149,3 +149,18 @@ merged automatically.
 - Deadline: time between the last recorded activity and the resume is excluded from the task
   timeout (`resume.payload.pausedMs`); timestamps in reports stay wall-clock.
 - Runs created before Phase 3 have no checkpoint and cannot be resumed.
+
+## Provider unavailable: `infra_error` (Phase 7)
+
+- An agent call the model provider refuses — subscription usage limit, rate limit, overload,
+  5xx — is an `infra` step error, recognized from the structured fields of Claude Code's
+  `result` event (`api_error_status` 429/529/5xx, `api_error`), never from message text. The
+  run ends `infra_error`, distinct from `error` (a factory or agent failure).
+- Eval: an `infra_error` task is excluded from every metric (counted as `excludedInfra`), the
+  pass stops at once (later tasks would fail the same way) and the eval is `interrupted`.
+  `npm run eval -- --resume <evalId>` keeps every decided task, re-runs the interrupted and
+  pending ones, then adds repeats up to `--repeat N`. A resume is refused if roles, baseline
+  commit or task set differ, or if `prompts/`, `factory.config.ts`, `src/agents/` or
+  `src/runtimes/` changed since the commit recorded for an earlier pass.
+- Not yet covered: OpenCode provider errors (their event shape has not been observed live, so
+  they remain `process` errors), and interactive runs (an `infra_error` run is re-run, not resumed).

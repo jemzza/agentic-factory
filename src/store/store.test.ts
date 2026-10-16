@@ -58,6 +58,7 @@ describe("migrations", () => {
     expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
       { version: 1, name: "init" },
       { version: 2, name: "run_durations" },
+      { version: 3, name: "eval_interrupted" },
     ]);
   });
 
@@ -75,7 +76,7 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1, 2]);
+    expect(migrate(fresh)).toEqual([1, 2, 3]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
@@ -102,6 +103,73 @@ describe("migrations", () => {
       wall_duration_ms: null,
     });
     old.close();
+  });
+
+  it("migration 003 rebuilds evals with the interrupted status, keeping rows and run references", () => {
+    const old = new Database(":memory:");
+    old.pragma("foreign_keys = ON");
+    const [m1, m2, m3] = loadMigrations();
+    if (!m1 || !m2 || !m3) throw new Error("expected migrations 001–003");
+    migrate(old, [m1, m2]);
+    old
+      .prepare(
+        `INSERT INTO evals (id, started_at, status, repeat_count, baseline_commit, cost_usd)
+         VALUES ('eval-old', '2026-10-16T00:00:00Z', 'completed', 1, 'c3e', 6.03)`,
+      )
+      .run();
+    old
+      .prepare(
+        `INSERT INTO runs (id, task_id, mode, eval_id, status, started_at, updated_at, budget_usd, roles_json)
+         VALUES ('r1', 't', 'eval', 'eval-old', 'success', '2026-10-16T00:00:00Z', '2026-10-16T00:00:00Z', 1, '{}')`,
+      )
+      .run();
+    expect(migrate(old, [m1, m2, m3])).toEqual([3]);
+    expect(old.pragma("foreign_key_check")).toEqual([]);
+    const s = new Store(old);
+    expect(s.getEval("eval-old")).toMatchObject({ status: "completed", cost_usd: 6.03 });
+    expect(s.requireRun("r1")).toMatchObject({ eval_id: "eval-old" });
+    expect(
+      s.finishEval("eval-old", {
+        status: "interrupted",
+        repeatCount: 3,
+        costUsd: 7,
+        summaryPath: null,
+      }),
+    ).toMatchObject({ status: "interrupted", repeat_count: 3 });
+    expect(s.resumeEval("eval-old")).toMatchObject({ status: "running", finished_at: null });
+    // The FK from runs still points at the rebuilt table.
+    expect(() =>
+      old
+        .prepare(
+          `INSERT INTO runs (id, task_id, mode, eval_id, status, started_at, updated_at, budget_usd, roles_json)
+           VALUES ('r2', 't', 'eval', 'no-such-eval', 'success', 'x', 'x', 1, '{}')`,
+        )
+        .run(),
+    ).toThrow(/FOREIGN KEY/);
+    old.close();
+  });
+
+  it("a foreign-keys-off migration that leaves dangling references is rolled back", () => {
+    const fresh = new Database(":memory:");
+    fresh.pragma("foreign_keys = ON");
+    const all = loadMigrations();
+    migrate(fresh, all);
+    fresh
+      .prepare(
+        `INSERT INTO runs (id, task_id, mode, status, started_at, updated_at, budget_usd, roles_json)
+         VALUES ('r', 't', 'eval', 'success', 'x', 'x', 1, '{}')`,
+      )
+      .run();
+    const bad = {
+      version: all.length + 1,
+      name: "bad",
+      checksum: "x",
+      sql: "-- factory:foreign_keys=off\nINSERT INTO steps (run_id, node, attempt, status, started_at) VALUES ('missing', 'plan', 1, 'ok', 'x');",
+    };
+    expect(() => migrate(fresh, [...all, bad])).toThrow(/broke foreign keys/);
+    expect(fresh.prepare("SELECT count(*) AS n FROM steps").get()).toEqual({ n: 0 });
+    expect(fresh.pragma("foreign_keys", { simple: true })).toBe(1);
+    fresh.close();
   });
 
   it("enforces foreign keys", () => {

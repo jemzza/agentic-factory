@@ -213,6 +213,17 @@ describe("ClaudeCodeRuntime (fake process)", () => {
     expect(res.error?.message).toMatch(/API overloaded/);
   });
 
+  it("reports a provider usage limit as infra (from the structured API error fields)", async () => {
+    const res = await runtime("usage-limit").run(input());
+    expect(res).toMatchObject({ ok: false, error: { kind: "infra" } });
+    expect(res.error?.message).toMatch(/usage_limit_reached.*session limit/);
+  });
+
+  it("keeps a bad request built by the factory a process error, not infra", async () => {
+    const res = await runtime("bad-request").run(input());
+    expect(res).toMatchObject({ ok: false, error: { kind: "process" } });
+  });
+
   it("does not trust a success result with a non-zero exit code", async () => {
     const res = await runtime("success-nonzero").run(input());
     expect(res).toMatchObject({ ok: false, error: { kind: "process" } });

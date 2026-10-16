@@ -42,6 +42,9 @@ export function loadMigrations(dir: string = MIGRATIONS_DIR): Migration[] {
   return migrations;
 }
 
+/** First line of a migration that must run with foreign keys off (a table rebuild). */
+const FK_OFF_MARKER = "-- factory:foreign_keys=off";
+
 /**
  * Applies pending migrations in order, each in its own transaction, and records them in
  * `schema_migrations`. An already-applied migration whose file changed is an error:
@@ -74,12 +77,30 @@ export function migrate(db: Db, migrations: readonly Migration[] = loadMigration
       }
       continue;
     }
-    db.transaction(() => {
-      db.exec(m.sql);
-      db.prepare(
-        "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-      ).run(m.version, m.name, m.checksum, new Date().toISOString());
-    })();
+    // A table rebuild (SQLite's documented procedure for changing a constraint) needs foreign
+    // keys off; the pragma is a no-op inside a transaction, so it is switched around it and
+    // integrity is checked before COMMIT.
+    const fkOff = m.sql.startsWith(FK_OFF_MARKER);
+    const fkWasOn = fkOff && db.pragma("foreign_keys", { simple: true }) === 1;
+    if (fkWasOn) db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(m.sql);
+        if (fkOff) {
+          const violations = db.pragma("foreign_key_check") as unknown[];
+          if (violations.length > 0) {
+            throw new Error(
+              `Migration ${m.name} broke foreign keys: ${JSON.stringify(violations.slice(0, 3))}`,
+            );
+          }
+        }
+        db.prepare(
+          "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+        ).run(m.version, m.name, m.checksum, new Date().toISOString());
+      })();
+    } finally {
+      if (fkWasOn) db.pragma("foreign_keys = ON");
+    }
     newlyApplied.push(m.version);
   }
   return newlyApplied;

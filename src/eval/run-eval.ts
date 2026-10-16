@@ -92,6 +92,8 @@ export const EvalMetricsSchema = z.strictObject({
   unknownCostSteps: z.number().int(),
   byOutcome: z.record(z.string(), z.number().int()),
   hiddenLeaks: z.number().int(),
+  /** Tasks left out of every metric above because the provider was unavailable. */
+  excludedInfra: z.number().int().default(0),
 });
 export type EvalMetrics = z.infer<typeof EvalMetricsSchema>;
 
@@ -117,12 +119,30 @@ export const EvalSummarySchema = z.strictObject({
       skippedTasks: z.array(z.string()),
     })
     .nullable(),
+  /**
+   * Set when the pass stopped because the provider was unavailable: the task that hit it
+   * (kept in `tasks` as `infra_error`) and the tasks not started. Resume re-runs both.
+   */
+  interrupted: z
+    .strictObject({ reason: z.string(), pendingTasks: z.array(z.string()) })
+    .nullable()
+    .default(null),
+  /** Spent on attempts that ended in infra_error and were replaced by a resume. */
+  replacedCostUsd: z.number().nonnegative().default(0),
+  /** Factory git commit that ran this pass (`-dirty` with uncommitted changes); null before it was recorded. */
+  factoryCommit: z.string().nullable().default(null),
 });
 export type EvalSummary = z.infer<typeof EvalSummarySchema>;
 
 const round = (n: number, digits: number) => Math.round(n * 10 ** digits) / 10 ** digits;
 
-export function computeMetrics(results: readonly EvalTaskResult[]): EvalMetrics {
+/**
+ * Metrics over the tasks the factory actually decided. `infra_error` (provider unavailable:
+ * usage/rate limit, outage) says nothing about the factory, so it is excluded and counted
+ * separately; such tasks are re-run by `npm run eval -- --resume`.
+ */
+export function computeMetrics(all: readonly EvalTaskResult[]): EvalMetrics {
+  const results = all.filter((r) => r.outcome !== "infra_error");
   const total = results.length;
   const correct = results.filter((r) => r.correct).length;
   const successClaims = results.filter((r) => r.status === "success").length;
@@ -150,6 +170,7 @@ export function computeMetrics(results: readonly EvalTaskResult[]): EvalMetrics 
     unknownCostSteps: results.reduce((s, r) => s + r.unknownCostSteps, 0),
     byOutcome,
     hiddenLeaks: results.reduce((s, r) => s + r.hiddenLeaks.length, 0),
+    excludedInfra: all.length - results.length,
   };
 }
 
@@ -170,6 +191,13 @@ export interface RunEvalDeps {
   runtimeName: string;
   /** Stop starting new tasks once the eval has spent this much (USD). */
   costCapUsd?: number;
+  /** Factory git commit recorded in the summary. */
+  factoryCommit?: string | null;
+  /**
+   * Resume: the pass's earlier summary. Its decided tasks are kept as they are; tasks that
+   * ended in infra_error or never started are run.
+   */
+  previous?: EvalSummary;
   models: Record<string, string>;
   now?: () => Date;
   log?: (message: string) => void;
@@ -189,15 +217,41 @@ export async function runEval(
 ): Promise<{ summary: EvalSummary; summaryMdPath: string; summaryJsonPath: string }> {
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);
-  const started = now();
+  const prev = deps.previous;
+  const started = prev ? new Date(prev.startedAt) : now();
   const evalId = deps.evalId ?? makeEvalId(started);
   const evalDir = deps.evalDir ?? path.join(deps.runsDir, evalId);
   await mkdir(evalDir, { recursive: true });
+  const factoryCommit = prev?.factoryCommit ?? deps.factoryCommit ?? null;
 
   const results: EvalTaskResult[] = [];
+  const kept = new Map(
+    (prev?.tasks ?? []).filter((t) => t.outcome !== "infra_error").map((t) => [t.taskId, t]),
+  );
+  // Attempts that hit the provider limit before are replaced; their spend is still counted.
+  const replacedCostUsd =
+    (prev?.replacedCostUsd ?? 0) +
+    (prev?.tasks ?? [])
+      .filter((t) => t.outcome === "infra_error")
+      .reduce((s, t) => s + t.costUsd, 0);
   const cap = { capUsd: deps.costCapUsd, reached: false, skippedTasks: [] as string[] };
+  let interrupted: EvalSummary["interrupted"] = null;
+  const summarize = () =>
+    buildSummary(evalId, started, now(), deps, results, cap, {
+      interrupted,
+      replacedCostUsd,
+      factoryCommit,
+    });
   for (const [i, { task, meta }] of tasks.entries()) {
-    const spent = results.reduce((sum, r) => sum + r.costUsd, 0);
+    const done = kept.get(task.id);
+    if (done) {
+      results.push(done);
+      log(
+        `\n[${i + 1}/${tasks.length}] ${task.id}: kept from the interrupted pass (${done.outcome})`,
+      );
+      continue;
+    }
+    const spent = results.reduce((sum, r) => sum + r.costUsd, 0) + replacedCostUsd;
     if (cap.capUsd !== undefined && spent >= cap.capUsd) {
       cap.reached = true;
       cap.skippedTasks = tasks.slice(i).map((t) => t.task.id);
@@ -282,11 +336,24 @@ export async function runEval(
           : "") +
         `, $${result.costUsd.toFixed(3)}, ${Math.round(result.durationMs / 1000)}s`,
     );
+    if (outcome === "infra_error") {
+      // Every later task would fail the same way: stop and leave the pass resumable.
+      interrupted = {
+        reason: result.message,
+        pendingTasks: tasks.slice(i).map((t) => t.task.id),
+      };
+      log(
+        `\nProvider unavailable — pass stopped; ${interrupted.pendingTasks.length} task(s) pending. ` +
+          `Resume later with: npm run eval -- --resume <evalId>`,
+      );
+      await writeSummary(evalDir, summarize());
+      break;
+    }
     // Write progress after every task so a long eval leaves partial results.
-    await writeSummary(evalDir, buildSummary(evalId, started, now(), deps, results, cap));
+    await writeSummary(evalDir, summarize());
   }
 
-  const summary = buildSummary(evalId, started, now(), deps, results, cap);
+  const summary = summarize();
   const paths = await writeSummary(evalDir, summary);
   return { summary, ...paths };
 }
@@ -298,6 +365,7 @@ function buildSummary(
   deps: RunEvalDeps,
   results: EvalTaskResult[],
   cap: { capUsd: number | undefined; reached: boolean; skippedTasks: string[] },
+  extra: Pick<EvalSummary, "interrupted" | "replacedCostUsd" | "factoryCommit">,
 ): EvalSummary {
   return EvalSummarySchema.parse({
     schemaVersion: 1,
@@ -312,6 +380,7 @@ function buildSummary(
       cap.capUsd === undefined
         ? null
         : { capUsd: cap.capUsd, reached: cap.reached, skippedTasks: cap.skippedTasks },
+    ...extra,
   });
 }
 

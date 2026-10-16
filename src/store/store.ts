@@ -128,7 +128,7 @@ export const EvalRowSchema = z.object({
   id: z.string(),
   started_at: z.string(),
   finished_at: z.string().nullable(),
-  status: z.enum(["running", "completed", "cost_cap_reached", "error"]),
+  status: z.enum(["running", "completed", "cost_cap_reached", "error", "interrupted"]),
   repeat_count: z.number().int(),
   baseline_commit: z.string(),
   cost_cap_usd: z.number().nullable(),
@@ -539,16 +539,25 @@ export class Store {
   finishEval(
     id: string,
     r: {
-      status: "completed" | "cost_cap_reached" | "error";
+      status: "completed" | "cost_cap_reached" | "error" | "interrupted";
+      /** Total repeats of the eval (it can grow when a resume adds repeats). */
+      repeatCount?: number;
       costUsd: number;
       summaryPath: string | null;
     },
   ): EvalRow {
     this.db
       .prepare(
-        "UPDATE evals SET status = ?, finished_at = ?, cost_usd = ?, summary_path = ? WHERE id = ?",
+        `UPDATE evals SET status = ?, finished_at = ?, cost_usd = ?, summary_path = ?,
+           repeat_count = COALESCE(?, repeat_count) WHERE id = ?`,
       )
-      .run(r.status, this.ts(), r.costUsd, r.summaryPath, id);
+      .run(r.status, this.ts(), r.costUsd, r.summaryPath, r.repeatCount ?? null, id);
+    return this.requireEval(id);
+  }
+
+  /** Marks an eval as running again (`npm run eval -- --resume`). */
+  resumeEval(id: string): EvalRow {
+    this.db.prepare("UPDATE evals SET status = 'running', finished_at = NULL WHERE id = ?").run(id);
     return this.requireEval(id);
   }
 

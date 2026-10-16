@@ -70,7 +70,7 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
 ### Statuses and limits
 
 `needs_clarification` · `gate_failed` · `review_rejected` · `timeout` · `budget_exceeded` ·
-`error` (terminal) · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
+`error` · `infra_error` (terminal; the model provider was unavailable — excluded from eval metrics) · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
 `closed`. Every step has a timeout capped by the task deadline; each agent call gets only the
 remaining budget; at most `max_fix_cycles` (≤ 2) develop→gate/review cycles; at most 2 spec
 rejections and one spec repair attempt. A run reaches `awaiting_merge_approval` only if the
@@ -85,21 +85,22 @@ cp .env.example .env          # OPENAI_API_KEY for the OpenCode reviewer; option
 claude auth status            # the Claude Code CLI must be logged in
 ```
 
-| Command                                              | What it does                                                                           |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `npm run run-task -- <taskId> [--auto-approve-spec]` | Run one task from `main`; stops at spec approval (see `runs/<runId>/spec-approval.md`) |
-| `npm run approve -- <runId> spec`                    | Approve the spec and continue to development                                           |
-| `npm run reject -- <runId> spec --comment "…"`       | Send the spec back to the planner with the comment (≤ 2 times)                         |
-| `npm run merge -- <runId>`                           | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
-| `npm run close -- <runId> --comment "…"`             | Close a successful run without merging                                                 |
-| `npm run resume -- <runId>`                          | Continue an interrupted run from its last checkpoint                                   |
-| `npm run runs [-- <limit>]`                          | List recent runs from the database                                                     |
-| `npm run eval [-- [--repeat N] <taskId>...]`         | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
-| `npm run eval:review [-- --only <runtime>]`          | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
-| `npm run verify-hidden [-- <taskId>]`                | Hidden tests fail on baseline and pass on reference patches                            |
-| `npm run baseline:update -- --reason "…"`            | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
-| `npm run reopen-merge -- <runId>`                    | One-time: put a pre-merge-gate success run at the merge gate                           |
-| `npm run db:import`                                  | Import Week 1 run reports from `runs/` into the database                               |
+| Command                                                       | What it does                                                                           |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `npm run run-task -- <taskId> [--auto-approve-spec]`          | Run one task from `main`; stops at spec approval (see `runs/<runId>/spec-approval.md`) |
+| `npm run approve -- <runId> spec`                             | Approve the spec and continue to development                                           |
+| `npm run reject -- <runId> spec --comment "…"`                | Send the spec back to the planner with the comment (≤ 2 times)                         |
+| `npm run merge -- <runId>`                                    | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
+| `npm run close -- <runId> --comment "…"`                      | Close a successful run without merging                                                 |
+| `npm run resume -- <runId>`                                   | Continue an interrupted run from its last checkpoint                                   |
+| `npm run runs [-- <limit>]`                                   | List recent runs from the database                                                     |
+| `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]` | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
+| `npm run eval -- --resume <evalId> [--repeat N]`              | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
+| `npm run eval:review [-- --only <runtime>]`                   | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
+| `npm run verify-hidden [-- <taskId>]`                         | Hidden tests fail on baseline and pass on reference patches                            |
+| `npm run baseline:update -- --reason "…"`                     | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
+| `npm run reopen-merge -- <runId>`                             | One-time: put a pre-merge-gate success run at the merge gate                           |
+| `npm run db:import`                                           | Import Week 1 run reports from `runs/` into the database                               |
 
 ### Runtime configuration (`factory.config.ts`)
 
