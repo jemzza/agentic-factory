@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseCliArgs, USAGE } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
-import { runEval } from "./eval/run-eval.js";
+import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { BASELINE_TAG, ensureTargetRepo, moveBaselineTag } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
@@ -259,7 +259,7 @@ async function baselineUpdate(reason: string): Promise<number> {
   }
 }
 
-async function evalSuite(taskIds: string[]): Promise<number> {
+async function evalSuite(taskIds: string[], repeat: number): Promise<number> {
   const config = await loadConfig();
   const ids = taskIds.length > 0 ? taskIds : await listTaskIds();
   const tasks = [];
@@ -268,9 +268,12 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
   const exec = await defaultSandboxExec(repo.dir);
   const { runtime, runtimes } = runtimeDeps(config);
-  const log = (m: string) => {
-    console.log(m);
-  };
+  const roles = Object.fromEntries(
+    (["planner", "developer", "reviewer"] as const).map((r) => [
+      r,
+      `${config.roles[r].runtime}:${config.roles[r].model}`,
+    ]),
+  );
 
   const store = openStore(config);
   if (repo.baselineCreated && repo.baselineCommit) {
@@ -282,25 +285,33 @@ async function evalSuite(taskIds: string[]): Promise<number> {
       reason: "initial materialization",
     });
   }
-  // Set by the runTask callback (assigned in a closure, so kept in an object).
-  const current: { evalId: string | null } = { evalId: null };
-  console.log(`Eval: ${tasks.length} task(s), sequential`);
-  const { summary, summaryMdPath } = await runEval(tasks, {
+  console.log(
+    `Eval: ${tasks.length} task(s) × ${repeat} repeat(s), sequential; cost cap $${config.evalCostCapUsd}\n` +
+      `roles: ${Object.entries(roles)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ")}`,
+  );
+  const evalIds = new Set<string>();
+  const { summary, summaryMdPath } = await runEvalRepeated(tasks, {
+    repeat,
+    roles,
+    baselineCommit: repo.baseCommit,
     runsDir: RUNS_DIR,
-    runtimeName: runtime.name,
-    models: config.models,
+    runtimeName: [...new Set(Object.values(runtimes).map((r) => r.name))].join("+"),
+    models: roles,
     costCapUsd: config.evalCostCapUsd,
-    log,
+    log: consoleLog,
     runTask: async (task, runsDir) => {
-      // The eval directory name is the eval id (runs/eval-<ts>).
-      const evalId = path.basename(runsDir);
-      current.evalId = evalId;
-      if (!store.getEval(evalId)) {
+      // runs/eval-<ts>/r<N>/: the eval id is the parent directory, N the repeat.
+      const evalId = path.basename(path.dirname(runsDir));
+      const evalRepeat = Number(path.basename(runsDir).slice(1));
+      if (!evalIds.has(evalId)) {
+        evalIds.add(evalId);
         store.createEval({
           id: evalId,
-          repeatCount: 1,
+          repeatCount: repeat,
           baselineCommit: repo.baseCommit,
-          costCapUsd: null,
+          costCapUsd: config.evalCostCapUsd,
         });
       }
       const outcome = await runTask(task, {
@@ -309,14 +320,15 @@ async function evalSuite(taskIds: string[]): Promise<number> {
         runtimes,
         runsDir,
         store,
-        runContext: { mode: "eval", evalId, evalRepeat: 1, baselineCommit: repo.baseCommit },
+        runContext: { mode: "eval", evalId, evalRepeat, baselineCommit: repo.baseCommit },
         makeSandboxExec: () => Promise.resolve(exec),
-        log,
+        log: consoleLog,
       });
-      // Eval approves specs automatically, so a run can only pause at the merge gate (Phase 5).
-      if (outcome.kind !== "finished")
-        throw new Error(`eval run paused at ${outcome.gate} approval`);
-      return outcome;
+      // Eval approves specs automatically and never merges: a successful run stops at the
+      // merge gate with its report written.
+      if (outcome.kind === "finished") return outcome;
+      if (outcome.result) return outcome.result;
+      throw new Error(`eval run paused at ${outcome.gate} approval`);
     },
     runHidden: (worktreePath, taskId) =>
       runHiddenTests({
@@ -326,23 +338,23 @@ async function evalSuite(taskIds: string[]): Promise<number> {
         timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
       }),
   });
-  const m = summary.metrics;
-  if (current.evalId) {
-    store.finishEval(current.evalId, {
-      status: summary.costCap?.reached ? "cost_cap_reached" : "completed",
-      costUsd: m.totalCostUsd,
+  for (const id of evalIds) {
+    store.finishEval(id, {
+      status: summary.costCapReached ? "cost_cap_reached" : "completed",
+      costUsd: summary.repeats.reduce((sum, r) => sum + r.metrics.totalCostUsd, 0),
       summaryPath: summaryMdPath,
     });
   }
   store.db.close();
+  const m = summary.metrics;
   const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
   console.log(
-    `\nverified rate ${pct(m.verifiedRate)} (${m.correct}/${m.total}), ` +
-      `false success rate ${pct(m.falseSuccessRate)} (${m.falseSuccess}/${m.successClaims}), ` +
-      `avg fix cycles ${m.avgFixCycles ?? "n/a"}, avg time ${m.avgDurationSec}s, total $${m.totalCostUsd.toFixed(3)}\n` +
+    `\n${summary.repeatsDone}/${summary.repeatsPlanned} repeat(s): verified ${pct(m.verifiedRate.mean)} ± ${pct(m.verifiedRate.stdev)}, ` +
+      `false success ${pct(m.falseSuccessRate.mean)}, fix cycles ${m.avgFixCycles.mean ?? "n/a"}, ` +
+      `time ${m.avgDurationSec.mean ?? "n/a"}s, cost/repeat $${(m.totalCostUsd.mean ?? 0).toFixed(2)}\n` +
       `summary: ${path.relative(process.cwd(), summaryMdPath)}`,
   );
-  return m.hiddenLeaks === 0 ? 0 : 1;
+  return summary.repeats.every((r) => r.metrics.hiddenLeaks === 0) ? 0 : 1;
 }
 
 async function resumeOne(runId: string): Promise<number> {
@@ -428,7 +440,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "eval-review":
       return evalReview(cmd.only);
     case "eval":
-      return evalSuite(cmd.taskIds);
+      return evalSuite(cmd.taskIds, cmd.repeat);
     case "runs":
       return listRuns(cmd.limit);
     case "resume":

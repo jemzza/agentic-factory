@@ -14,7 +14,7 @@ export type CliCommand =
   | { kind: "baseline-update"; reason: string }
   | { kind: "reopen-merge"; runId: string }
   | { kind: "eval-review"; only: string | null }
-  | { kind: "eval"; taskIds: string[] }
+  | { kind: "eval"; taskIds: string[]; repeat: number }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
@@ -36,8 +36,9 @@ export const USAGE = `Usage:
   npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
-  npm run eval [-- <taskId>...]  Run the eval suite (all tasks, or the given ones) and verify
-                                 successes with hidden tests
+  npm run eval [-- [--repeat N] <taskId>...]
+                                 Run the eval suite (all tasks, or the given ones) N times and
+                                 verify successes with hidden tests
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
   npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
@@ -68,11 +69,23 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       return { kind: "run", taskId, autoApproveSpec };
     }
     case "eval": {
-      const bad = rest.filter((id) => !TASK_ID_PATTERN.test(id));
-      if (bad.length > 0) {
-        return { kind: "invalid", message: `eval: invalid taskId(s): ${bad.join(" ")}` };
+      let repeat = 1;
+      const ids: string[] = [];
+      for (let k = 0; k < rest.length; k++) {
+        const a = rest[k] ?? "";
+        if (a === "--repeat") {
+          const n = rest[++k];
+          if (n === undefined || !/^[1-9]$/.test(n)) {
+            return { kind: "invalid", message: "eval: --repeat expects a number from 1 to 9" };
+          }
+          repeat = Number(n);
+        } else if (TASK_ID_PATTERN.test(a)) {
+          if (!ids.includes(a)) ids.push(a);
+        } else {
+          return { kind: "invalid", message: `eval: invalid taskId(s): ${a}` };
+        }
       }
-      return { kind: "eval", taskIds: [...new Set(rest)] };
+      return { kind: "eval", taskIds: ids, repeat };
     }
     case "verify-hidden": {
       const [taskId, ...extra] = rest;

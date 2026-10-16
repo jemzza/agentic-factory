@@ -33,11 +33,19 @@ describe("parseCliArgs", () => {
   });
 
   it("parses eval with optional task ids", () => {
-    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [] });
+    expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [], repeat: 1 });
     expect(parseCliArgs(["eval", "a-task", "b", "a-task"])).toEqual({
       kind: "eval",
       taskIds: ["a-task", "b"],
+      repeat: 1,
     });
+    expect(parseCliArgs(["eval", "--repeat", "3"])).toEqual({
+      kind: "eval",
+      taskIds: [],
+      repeat: 3,
+    });
+    expect(parseCliArgs(["eval", "--repeat", "0"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval", "--repeat"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["eval", "../x"])).toMatchObject({ kind: "invalid" });
   });
 

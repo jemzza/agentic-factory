@@ -159,6 +159,9 @@ export interface EvalTaskInput {
 }
 
 export interface RunEvalDeps {
+  /** Write this pass into `evalDir` with this id instead of a new runs/eval-<ts>/ (repeats). */
+  evalId?: string;
+  evalDir?: string;
   /** Runs one task through the pipeline, writing its run under `runsDir`. */
   runTask: (task: TaskSpec, runsDir: string) => Promise<RunTaskResult>;
   /** Runs a task's hidden tests against a finished worktree (on a copy, in the sandbox). */
@@ -187,8 +190,8 @@ export async function runEval(
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);
   const started = now();
-  const evalId = makeEvalId(started);
-  const evalDir = path.join(deps.runsDir, evalId);
+  const evalId = deps.evalId ?? makeEvalId(started);
+  const evalDir = deps.evalDir ?? path.join(deps.runsDir, evalId);
   await mkdir(evalDir, { recursive: true });
 
   const results: EvalTaskResult[] = [];
