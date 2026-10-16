@@ -57,6 +57,7 @@ describe("migrations", () => {
     );
     expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
       { version: 1, name: "init" },
+      { version: 2, name: "run_durations" },
     ]);
   });
 
@@ -74,12 +75,33 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1]);
+    expect(migrate(fresh)).toEqual([1, 2]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
     writeFileSync(path.join(badDir, "003_c.sql"), "SELECT 1;");
     expect(() => loadMigrations(badDir)).toThrow(/without gaps/);
+  });
+
+  it("migration 002 keeps runs recorded before it readable, with NULL durations", () => {
+    const old = new Database(":memory:");
+    const [m1, m2] = loadMigrations();
+    if (!m1 || !m2) throw new Error("expected migrations 001 and 002");
+    migrate(old, [m1]);
+    old
+      .prepare(
+        `INSERT INTO runs (id, task_id, mode, status, started_at, updated_at, budget_usd, roles_json)
+         VALUES ('old-run', 't', 'eval', 'success', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', 1, '{}')`,
+      )
+      .run();
+    expect(migrate(old, [m1, m2])).toEqual([2]);
+    const row = new Store(old).requireRun("old-run");
+    expect(row).toMatchObject({
+      status: "success",
+      active_duration_ms: null,
+      wall_duration_ms: null,
+    });
+    old.close();
   });
 
   it("enforces foreign keys", () => {

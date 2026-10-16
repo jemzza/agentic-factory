@@ -118,6 +118,9 @@ describe("spec drafting and approval", () => {
       const done = await decide(deps, store, first.runId, "approve");
       if (done.kind !== "finished") throw new Error("expected a finished run");
       expect(done.report.status).toBe("success");
+      // Waiting for the human is not active time.
+      expect(done.report.activeDurationMs).toBeLessThanOrEqual(done.report.wallDurationMs ?? 0);
+      expect(store.requireRun(first.runId).wall_duration_ms).toBe(done.report.wallDurationMs);
       expect(done.report.spec).toMatchObject({
         approvalMode: "manual",
         valid: true,

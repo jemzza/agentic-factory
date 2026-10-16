@@ -55,6 +55,9 @@ export const RunRowSchema = z.object({
   head_commit: z.string().nullable(),
   report_path: z.string().nullable(),
   locked_by: z.string().nullable(),
+  /** NULL for runs recorded before migration 002. */
+  active_duration_ms: z.number().int().nullable(),
+  wall_duration_ms: z.number().int().nullable(),
 });
 export type RunRow = z.output<typeof RunRowSchema>;
 
@@ -161,6 +164,8 @@ export type RunPatch = Partial<{
   headCommit: string | null;
   reportPath: string;
   specApproval: "manual" | "auto";
+  activeDurationMs: number;
+  wallDurationMs: number;
 }>;
 
 const RUN_PATCH_COLUMNS: Record<keyof RunPatch, string> = {
@@ -176,6 +181,8 @@ const RUN_PATCH_COLUMNS: Record<keyof RunPatch, string> = {
   headCommit: "head_commit",
   reportPath: "report_path",
   specApproval: "spec_approval",
+  activeDurationMs: "active_duration_ms",
+  wallDurationMs: "wall_duration_ms",
 };
 
 export class RunLockedError extends Error {

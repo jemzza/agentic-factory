@@ -533,6 +533,8 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         startedAt: new Date(s.startedAtMs).toISOString(),
         finishedAt: finished.toISOString(),
         durationMs: finished.getTime() - s.startedAtMs,
+        wallDurationMs: finished.getTime() - s.startedAtMs,
+        activeDurationMs: Math.max(0, ctx.deadlineNow() - s.startedAtMs),
         task: s.task,
         runtime: ctx.runtime.name,
         models: { ...config.models },
@@ -585,6 +587,8 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           fixCycles: report.fixCycles,
           ...(s.worktree ? { headCommit: head } : {}),
           reportPath: reportMdPath,
+          wallDurationMs: report.wallDurationMs ?? report.durationMs,
+          activeDurationMs: report.activeDurationMs ?? report.durationMs,
         });
       }
       ctx.result = { report, reportJsonPath, reportMdPath };

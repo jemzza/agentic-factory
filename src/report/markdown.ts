@@ -42,7 +42,12 @@ export function renderReportMarkdown(r: RunReport): string {
       `- **Run:** \`${r.runId}\``,
       `- **Task:** \`${r.task.id}\``,
       `- **Result:** ${r.message}`,
-      `- **Time:** ${secs(r.durationMs)} (limit ${r.task.budget.timeout_minutes} min)`,
+      r.activeDurationMs !== undefined && r.wallDurationMs !== undefined
+        ? `- **Time:** ${secs(r.activeDurationMs)} active of the ${r.task.budget.timeout_minutes} min limit; ${secs(r.wallDurationMs)} wall-clock` +
+          (r.wallDurationMs - r.activeDurationMs >= 1000
+            ? ` (includes ${secs(r.wallDurationMs - r.activeDurationMs)} waiting for a human or interrupted, not counted against the limit)`
+            : "")
+        : `- **Time:** ${secs(r.durationMs)} (limit ${r.task.budget.timeout_minutes} min)`,
       `- **Cost:** ${usd(r.cost.totalUsd)} of ${usd(r.cost.budgetUsd)}${r.cost.unknownCostSteps ? ` (+${r.cost.unknownCostSteps} step(s) with unknown cost)` : ""}`,
       `- **Fix cycles:** ${r.fixCycles} of ${r.task.budget.max_fix_cycles}`,
       `- **Runtime / models:** ${r.runtime} — ${Object.entries(r.models)

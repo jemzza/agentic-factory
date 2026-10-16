@@ -98,7 +98,12 @@ export const RunReportSchema = z.strictObject({
   message: z.string(),
   startedAt: z.string(),
   finishedAt: z.string(),
+  /** Wall-clock duration (kept for compatibility; equals wallDurationMs when present). */
   durationMs: z.number().int().nonnegative(),
+  /** Time that counts against the task timeout (excludes waiting for humans / downtime). */
+  activeDurationMs: z.number().int().nonnegative().optional(),
+  /** Full wall-clock time from start to finish. */
+  wallDurationMs: z.number().int().nonnegative().optional(),
   task: TaskSpecSchema,
   runtime: z.string(),
   models: z.record(z.string(), z.string()),
