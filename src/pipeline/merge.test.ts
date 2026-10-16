@@ -11,6 +11,7 @@ import {
   appendingDeveloper,
   FAKE_APPROVE,
   FAKE_PLAN,
+  FAKE_SPEC,
   FAKE_TASK,
   fakeConfig,
   fakeExec,
@@ -306,8 +307,23 @@ describe("merge gate", () => {
         deadlineNow: () => Date.now(),
         checkpointer: new SqliteSaver(c.db),
       });
-      await legacy.updateState({ configurable: { thread_id: c.runId } }, {}, "close");
+      // Its spec predates the `source` rule — in the checkpoint and in report.json.
+      const oldSpec = structuredClone(FAKE_SPEC) as {
+        capabilities: { requirements: { source?: string }[] }[];
+      };
+      for (const cap of oldSpec.capabilities) for (const r of cap.requirements) delete r.source;
+      await legacy.updateState(
+        { configurable: { thread_id: c.runId } },
+        { spec: oldSpec },
+        "close",
+      );
       c.store.updateRun(c.runId, { status: "success" });
+      const reportJson = path.join(c.deps.runsDir, c.runId, "report.json");
+      const report = JSON.parse(await readFile(reportJson, "utf8")) as {
+        spec: { change: unknown };
+      };
+      report.spec.change = oldSpec;
+      await writeFile(reportJson, JSON.stringify(report));
       expect((await legacy.getState({ configurable: { thread_id: c.runId } })).next).toEqual([]);
 
       const reopened = await reopenForMerge(c.runId, c.deps, "tester");

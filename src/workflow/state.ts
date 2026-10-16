@@ -7,7 +7,7 @@ import {
   StepResultSchema,
   type StepResult,
 } from "../schemas/report.js";
-import { OpenSpecIssueSchema, SpecChangeSchema } from "../schemas/spec.js";
+import { OpenSpecIssueSchema, PersistedSpecChangeSchema } from "../schemas/spec.js";
 import { TaskSpecSchema } from "../schemas/task.js";
 
 /** Spec rejections a human may send back to planning before the run asks for clarification. */
@@ -118,7 +118,7 @@ export const RunState = new StateSchema({
   /** Raw spec JSON as the Planner returned it (validated in spec_draft). */
   specRaw: z.unknown().default(null),
   /** Current validated spec (null until a draft passes the schema). */
-  spec: SpecChangeSchema.nullable().default(null),
+  spec: PersistedSpecChangeSchema.nullable().default(null),
   /** Rendered OpenSpec files (repo-relative path → content), as committed. */
   specFiles: z.record(z.string(), z.string()).default({}),
   specValid: z.boolean().default(false),

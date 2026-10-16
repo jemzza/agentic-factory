@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PlannerOutputSchema, ReviewVerdictSchema } from "./agents.js";
-import { SpecChangeSchema } from "./spec.js";
+import { PersistedSpecChangeSchema } from "./spec.js";
 import { TaskSpecSchema } from "./task.js";
 
 export const RUN_STATUSES = [
@@ -122,7 +122,7 @@ export const RunReportSchema = z.strictObject({
       commit: z.string().nullable(),
       valid: z.boolean(),
       attempts: z.number().int(),
-      change: SpecChangeSchema.nullable(),
+      change: PersistedSpecChangeSchema.nullable(),
       files: z.record(z.string(), z.string()),
       rejections: z.array(z.string()),
     })

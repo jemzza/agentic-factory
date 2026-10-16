@@ -85,6 +85,36 @@ export const SpecChangeSchema = z
   });
 export type SpecChange = z.infer<typeof SpecChangeSchema>;
 
+/**
+ * Shape of specs already stored in checkpoints and reports. Specs drafted before the
+ * `source` rule have no `source`; history must stay readable, so it is optional here and
+ * no refinements are re-applied. New specs are always checked with SpecChangeSchema.
+ */
+export const PersistedSpecChangeSchema = z.strictObject({
+  why: z.string(),
+  what_changes: z.array(z.string()),
+  capabilities: z.array(
+    z.strictObject({
+      path: z.string(),
+      kind: z.enum(["new", "modified"]),
+      purpose: z.string(),
+      requirements: z.array(
+        z.strictObject({
+          name: z.string(),
+          source: z.string().optional(),
+          text: z.string(),
+          scenarios: z.array(
+            z.strictObject({ name: z.string(), when: z.string(), then: z.string() }),
+          ),
+        }),
+      ),
+    }),
+  ),
+  impact: z.string(),
+  tasks: z.array(z.string()),
+});
+export type PersistedSpecChange = z.infer<typeof PersistedSpecChangeSchema>;
+
 /** One issue from `openspec validate --json` (see Phase 0 probe). */
 export const OpenSpecIssueSchema = z.looseObject({
   level: z.string(),

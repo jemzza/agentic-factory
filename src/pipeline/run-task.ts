@@ -9,7 +9,7 @@ import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
 import type { AgentRuntime } from "../runtimes/types.js";
 import type { TargetConfig } from "../schemas/config.js";
 import { RunReportSchema, type RunReport } from "../schemas/report.js";
-import type { SpecChange } from "../schemas/spec.js";
+import type { PersistedSpecChange } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { RunRow, Store } from "../store/store.js";
 import { Command, MemorySaver } from "@langchain/langgraph";
@@ -172,7 +172,7 @@ async function settle(
     runDir: string;
     specCommit: string | null;
     specFiles: Record<string, string>;
-    spec: SpecChange | null;
+    spec: PersistedSpecChange | null;
     task: TaskSpec;
     worktree: { branch: string } | null;
     mergeOutcome: { kind: string; reason?: string } | null;
@@ -240,7 +240,7 @@ function renderSpecApprovalNotice(
   v: {
     specCommit: string | null;
     specFiles: Record<string, string>;
-    spec: SpecChange | null;
+    spec: PersistedSpecChange | null;
     task: TaskSpec;
   },
 ): string {
@@ -254,6 +254,8 @@ function renderSpecApprovalNotice(
   );
   const traced = requirements
     .map((r) => {
+      if (r.source === undefined)
+        return `- **${r.name}** (\`${r.capability}\`) ← not recorded (spec predates sources)`;
       const n = /^acceptance:(\d+)$/.exec(r.source)?.[1];
       const criterion = n === undefined ? undefined : v.task.acceptance_criteria[Number(n) - 1];
       const from =
