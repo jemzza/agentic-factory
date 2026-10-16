@@ -160,6 +160,13 @@ function config(): ResolvedConfig {
       conventionsFile: "CLAUDE.md",
     },
     models: { planner: "p-model", developer: "d-model", reviewer: "r-model" },
+    roles: {
+      planner: { runtime: "claude-code", model: "p-model", keyEnv: [] },
+      developer: { runtime: "claude-code", model: "d-model", keyEnv: [] },
+      reviewer: { runtime: "claude-code", model: "r-model", keyEnv: [] },
+    },
+    secretEnv: [],
+    reviewEval: { reviewers: [{ runtime: "claude-code", model: "r-model", keyEnv: [] }] },
     stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
@@ -393,6 +400,52 @@ describe("runTask", () => {
     });
     expect(report.status).toBe("error");
     expect(report.message).toMatch(/expected exactly 2/);
+  });
+
+  it("retries an invalid reviewer answer once and continues when the retry is valid", async () => {
+    const { report, runtime } = await run({
+      planner: planner(),
+      developer: writeFeature(["a\n"]),
+      reviewer: (_input, n) =>
+        Promise.resolve(n === 0 ? { structured: { verdict: "maybe" } } : { structured: APPROVE }),
+    });
+    expect(report.status).toBe("success");
+    expect(runtime.rolesCalled().filter((r) => r === "reviewer")).toHaveLength(2);
+    expect(runtime.calls.filter((c) => c.role === "reviewer")[1]?.prompt).toContain(
+      "Your previous answer could not be used",
+    );
+  });
+
+  it("a second invalid reviewer answer is a step error", async () => {
+    const { report, runtime } = await run({
+      planner: planner(),
+      developer: writeFeature(["a\n"]),
+      reviewer: () =>
+        Promise.resolve({ ok: false, error: { kind: "parse", message: "no JSON object found" } }),
+    });
+    expect(report.status).toBe("error");
+    expect(runtime.rolesCalled().filter((r) => r === "reviewer")).toHaveLength(2);
+  });
+
+  it("serves each role with its configured runtime", async () => {
+    const reviewerRuntime = new FakeRuntime({ reviewer: reviewer(APPROVE) });
+    Object.defineProperty(reviewerRuntime, "name", { value: "opencode" });
+    const main = new FakeRuntime({ planner: planner(), developer: writeFeature(["a\n"]) });
+    const repo = await makeRepo();
+    const outcome = await runTask(TASK, {
+      config: config(),
+      runtime: main,
+      runtimes: { reviewer: reviewerRuntime },
+      runsDir: path.join(tmp, "runs"),
+      ensureRepo: () => Promise.resolve(repo),
+      makeSandboxExec: () => Promise.resolve(fakeExec),
+      specApprovalMode: "auto",
+    });
+    const { report } = resultOf(outcome);
+    expect(report.status).toBe("success");
+    expect(main.rolesCalled()).toEqual(["planner", "developer"]);
+    expect(reviewerRuntime.rolesCalled()).toEqual(["reviewer"]);
+    expect(report.runtime).toBe("fake+opencode");
   });
 
   it("maps an agent process crash to error with the message", async () => {

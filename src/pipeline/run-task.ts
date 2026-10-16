@@ -6,7 +6,7 @@ import { git } from "../git/git.js";
 import { ensureTargetRepo, type RepoRef, type TargetRepo } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
 import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
-import type { AgentRuntime } from "../runtimes/types.js";
+import type { AgentRole, AgentRuntime } from "../runtimes/types.js";
 import type { TargetConfig } from "../schemas/config.js";
 import { RunReportSchema, type RunReport } from "../schemas/report.js";
 import type { PersistedSpecChange } from "../schemas/spec.js";
@@ -19,7 +19,10 @@ import { makeNodes, type NodeContext } from "../workflow/nodes.js";
 
 export interface RunTaskDeps {
   config: ResolvedConfig;
+  /** Default runtime for every role. */
   runtime: AgentRuntime;
+  /** Per-role overrides (e.g. an OpenCode reviewer), built from the config's role bindings. */
+  runtimes?: Partial<Record<AgentRole, AgentRuntime>>;
   /** Directory for run outputs (`runs/`). */
   runsDir: string;
   /** Returns a sandbox executor for the target repo. Default: Docker sandbox. */
@@ -87,11 +90,11 @@ export const defaultSandboxExec = async (repoDir: string): Promise<SandboxExec> 
 /** Upper bound on graph steps; the longest path (3 dev/gate/review cycles) is ~14. */
 const RECURSION_LIMIT = 50;
 
-function rolesFor(config: ResolvedConfig, runtime: AgentRuntime) {
+function rolesFor(config: ResolvedConfig, runtime: AgentRuntime, deps: RunTaskDeps) {
   return Object.fromEntries(
     (["planner", "developer", "reviewer"] as const).map((r) => [
       r,
-      { runtime: runtime.name, model: config.models[r] },
+      { runtime: (deps.runtimes?.[r] ?? runtime).name, model: config.models[r] },
     ]),
   );
 }
@@ -104,7 +107,7 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
   const now = deps.now ?? (() => new Date());
   const ctx: NodeContext = {
     config: deps.config,
-    runtime: deps.runtime,
+    runtimeFor: (role) => deps.runtimes?.[role] ?? deps.runtime,
     store: deps.store,
     ensureRepo: deps.ensureRepo ?? ensureTargetRepo,
     makeSandboxExec: deps.makeSandboxExec ?? defaultSandboxExec,
@@ -318,7 +321,7 @@ export async function runTask(
     taskId: task.id,
     mode,
     budgetUsd: task.budget.max_cost_usd,
-    roles: rolesFor(config, runtime),
+    roles: rolesFor(config, runtime, deps),
     specApproval: specApprovalMode,
     evalId: deps.runContext?.evalId ?? null,
     evalRepeat: deps.runContext?.evalRepeat ?? null,

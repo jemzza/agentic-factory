@@ -1,10 +1,14 @@
-import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import type { z } from "zod";
 import { FACTORY_ROOT } from "../paths.js";
-import { FactoryConfigSchema, type FactoryConfig } from "../schemas/config.js";
+import { FactoryConfigSchema, roleBindingIssues, type FactoryConfig } from "../schemas/config.js";
 
-export const CONFIG_FILE = path.join(FACTORY_ROOT, "factory.config.json");
+export const CONFIG_FILE = path.join(FACTORY_ROOT, "factory.config.ts");
+
+/** What factory.config.ts exports (input shape: defaults may be omitted). */
+export type FactoryConfigInput = z.input<typeof FactoryConfigSchema>;
 
 export function expandHome(p: string, home: string = os.homedir()): string {
   return p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
@@ -13,6 +17,27 @@ export function expandHome(p: string, home: string = os.homedir()): string {
 export interface ResolvedConfig extends FactoryConfig {
   /** Absolute workdir (after `~` expansion and the FACTORY_WORKDIR override). */
   workdirAbs: string;
+  /** Model per role, derived from `roles` (kept for reports and callers that need only it). */
+  models: Record<"planner" | "developer" | "reviewer", string>;
+}
+
+export function resolveConfig(
+  raw: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  source = "config",
+): ResolvedConfig {
+  const parsed = FactoryConfigSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`Invalid ${source}: ${parsed.error.message}`);
+  const issues = roleBindingIssues(parsed.data);
+  if (issues.length) throw new Error(`Invalid ${source}:\n- ${issues.join("\n- ")}`);
+  const workdirAbs = path.resolve(expandHome(env["FACTORY_WORKDIR"] ?? parsed.data.workdir));
+  assertOutside(workdirAbs, FACTORY_ROOT);
+  const r = parsed.data.roles;
+  return {
+    ...parsed.data,
+    workdirAbs,
+    models: { planner: r.planner.model, developer: r.developer.model, reviewer: r.reviewer.model },
+  };
 }
 
 /**
@@ -24,12 +49,8 @@ export async function loadConfig(
   file: string = CONFIG_FILE,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ResolvedConfig> {
-  const raw: unknown = JSON.parse(await readFile(file, "utf8"));
-  const parsed = FactoryConfigSchema.safeParse(raw);
-  if (!parsed.success) throw new Error(`Invalid ${file}: ${parsed.error.message}`);
-  const workdirAbs = path.resolve(expandHome(env["FACTORY_WORKDIR"] ?? parsed.data.workdir));
-  assertOutside(workdirAbs, FACTORY_ROOT);
-  return { ...parsed.data, workdirAbs };
+  const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
+  return resolveConfig(mod.default, env, file);
 }
 
 export function assertOutside(workdir: string, factoryRoot: string): void {

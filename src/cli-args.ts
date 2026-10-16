@@ -13,6 +13,7 @@ export type CliCommand =
     }
   | { kind: "baseline-update"; reason: string }
   | { kind: "reopen-merge"; runId: string }
+  | { kind: "eval-review"; only: string | null }
   | { kind: "eval"; taskIds: string[] }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
@@ -30,6 +31,8 @@ export const USAGE = `Usage:
   npm run merge -- <runId>       Merge a successful run into main (gate re-runs on the merge result)
   npm run close -- <runId> --comment "..."
                                  Close a successful run without merging
+  npm run eval:review [-- --only <claude-code|opencode>]
+                                 Compare reviewers on evals/review/ (recall, false positive rate)
   npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
@@ -126,6 +129,20 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
       }
       return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "eval-review": {
+      if (rest.length === 0) return { kind: "eval-review", only: null };
+      if (
+        rest[0] === "--only" &&
+        rest.length === 2 &&
+        (rest[1] === "claude-code" || rest[1] === "opencode")
+      ) {
+        return { kind: "eval-review", only: rest[1] };
+      }
+      return {
+        kind: "invalid",
+        message: "eval-review: only --only <claude-code|opencode> is accepted",
+      };
     }
     case "reopen-merge": {
       const [runId, ...extra] = rest;

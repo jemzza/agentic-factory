@@ -28,6 +28,7 @@
     "close": "tsx src/cli.ts close",
     "baseline:update": "tsx src/cli.ts baseline-update",
     "reopen-merge": "tsx src/cli.ts reopen-merge",
+    "eval:review": "tsx src/cli.ts eval-review",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "@langchain/langgraph-checkpoint-sqlite": "1.1.0",
     "better-sqlite3": "12.11.1",
     "execa": "^10.1.1",
+    "opencode-ai": "1.19.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },

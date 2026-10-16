@@ -24,9 +24,9 @@ import { BASELINE_TAG, type RepoRef } from "../git/target-repo.js";
 import { buildSystemPrompt } from "../agents/prompts.js";
 import {
   isApproved,
-  parseReviewerResult,
   REVIEWER_OUTPUT_SCHEMA,
   reviewerPrompt,
+  reviewWithRetry,
 } from "../agents/reviewer.js";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { findHiddenArtifacts } from "../eval/hidden-guard.js";
@@ -66,7 +66,8 @@ import {
 /** Everything nodes need that is not state: services, paths, clock. Never checkpointed. */
 export interface NodeContext {
   config: ResolvedConfig;
-  runtime: AgentRuntime;
+  /** Runtime serving each role (from the config's role bindings). */
+  runtimeFor: (role: AgentRole) => AgentRuntime;
   store?: Store | undefined;
   ensureRepo: (target: TargetConfig, workdir: string, from: RepoRef) => Promise<TargetRepo>;
   makeSandboxExec: (repoDir: string) => Promise<SandboxExec>;
@@ -123,7 +124,8 @@ async function agentStep(
   errorNode?: NodeName,
 ): Promise<{ res: AgentRunResult; update: RunStateUpdate }> {
   const wt = requireWorktree(s);
-  const { config, runtime, store } = ctx;
+  const { config, store } = ctx;
+  const runtime = ctx.runtimeFor(role);
   const timeLeft = s.deadlineMs - ctx.deadlineNow();
   const timeoutMs = Math.max(1, Math.min(config.stepTimeoutsMinutes[role] * 60_000, timeLeft));
   const remainingCost = s.task.budget.max_cost_usd - s.spentUsd;
@@ -490,21 +492,49 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     review: node("review", async (s) => {
       const wt = requireWorktree(s);
       const diff = await diffFromBase(wt, s.specCommit ?? wt.baseCommit);
-      const { res, update } = await agentStep(
-        ctx,
-        s,
-        "reviewer",
-        s.cycle,
-        reviewerPrompt(s.task, diff, config.maxDiffCharsForReview, await approvedSpec(s)),
-        REVIEWER_OUTPUT_SCHEMA,
+      const prompt = reviewerPrompt(
+        s.task,
+        diff,
+        config.maxDiffCharsForReview,
+        await approvedSpec(s),
       );
-      if (update.lastError) return update;
-      const reviewed = parseReviewerResult(res, s.task);
-      if (!reviewed.ok) return { ...update, lastError: { node: "review", ...reviewed.error } };
+      // Each attempt is a recorded agent step; accounting carries over between attempts.
+      let state = s;
+      const steps: StepResult[] = [];
+      const { outcome } = await reviewWithRetry(
+        async (p) => {
+          const { res, update } = await agentStep(
+            ctx,
+            state,
+            "reviewer",
+            s.cycle,
+            p,
+            REVIEWER_OUTPUT_SCHEMA,
+          );
+          const newSteps = (update.steps as StepResult[] | undefined) ?? [];
+          steps.push(...newSteps);
+          state = {
+            ...state,
+            spentUsd: update.spentUsd ?? state.spentUsd,
+            unknownCostSteps: update.unknownCostSteps ?? state.unknownCostSteps,
+            steps: [...state.steps, ...newSteps],
+          };
+          return res;
+        },
+        prompt,
+        s.task,
+        ctx.log,
+      );
+      const update: RunStateUpdate = {
+        spentUsd: state.spentUsd,
+        unknownCostSteps: state.unknownCostSteps,
+        steps,
+      };
+      if (!outcome.ok) return { ...update, lastError: { node: "review", ...outcome.error } };
       ctx.log(
-        `  review: ${reviewed.value.verdict}${isApproved(reviewed.value) ? "" : " (not accepted)"}`,
+        `  review: ${outcome.value.verdict}${isApproved(outcome.value) ? "" : " (not accepted)"}`,
       );
-      return { ...update, reviewVerdict: reviewed.value };
+      return { ...update, reviewVerdict: outcome.value };
     }),
 
     report: node("report", async (s) => {
@@ -546,7 +576,11 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         wallDurationMs: finished.getTime() - s.startedAtMs,
         activeDurationMs: Math.max(0, ctx.deadlineNow() - s.startedAtMs),
         task: s.task,
-        runtime: ctx.runtime.name,
+        runtime: [
+          ...new Set(
+            (["planner", "developer", "reviewer"] as const).map((r) => ctx.runtimeFor(r).name),
+          ),
+        ].join("+"),
         models: { ...config.models },
         target: s.repo
           ? { name: config.target.name, repoDir: s.repo.dir, baseCommit: s.repo.baseCommit }

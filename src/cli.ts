@@ -14,7 +14,13 @@ import {
   runTask,
   type RunOutcome,
 } from "./pipeline/run-task.js";
+import type { ResolvedConfig } from "./config/load-config.js";
+import { buildRuntimes, runtimeForBinding } from "./runtimes/registry.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
+import { loadReviewCases, verifyManifest } from "./eval/review-cases.js";
+import { renderReviewEvalMarkdown, runReviewEval } from "./eval/review-eval.js";
+import { writeFile } from "node:fs/promises";
+import { createRedactor, secretsFromEnv } from "./store/redact.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
 import { openDb } from "./store/db.js";
@@ -50,6 +56,25 @@ async function verifyHidden(taskId: string | null): Promise<number> {
 
 export const RUNS_DIR = path.join(FACTORY_ROOT, "runs");
 
+// Provider keys for non-Anthropic runtimes live in .env (git-ignored). They reach only the
+// runtime that names them in keyEnv; Claude Code and the sandbox get explicit envs.
+try {
+  process.loadEnvFile(path.join(FACTORY_ROOT, ".env"));
+} catch {
+  // no .env: fine unless a role needs a key (the runtime then fails with a clear error)
+}
+
+/** The DB, masking every secret listed in config.secretEnv before anything is written. */
+function openStore(config: ResolvedConfig): Store {
+  return new Store(openDb(), { secrets: secretsFromEnv(config.secretEnv) });
+}
+
+/** One runtime per role from the config (switching runtimes is a config change). */
+function runtimeDeps(config: ResolvedConfig) {
+  const runtimes = buildRuntimes(config, RUNS_DIR);
+  return { runtime: runtimes.developer, runtimes };
+}
+
 function printOutcome(outcome: RunOutcome): number {
   if (outcome.kind === "awaiting") {
     const next =
@@ -77,15 +102,16 @@ const consoleLog = (m: string) => {
 async function runOne(taskId: string, autoApproveSpec: boolean): Promise<number> {
   const config = await loadConfig();
   const task = await loadTaskSpec(taskId);
-  const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+  const { runtime, runtimes } = runtimeDeps(config);
   console.log(
     `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min, spec approval: ${autoApproveSpec ? "auto" : "manual"})`,
   );
-  const store = new Store(openDb());
+  const store = openStore(config);
   try {
     const outcome = await runTask(task, {
       config,
       runtime,
+      runtimes,
       runsDir: RUNS_DIR,
       store,
       specApprovalMode: autoApproveSpec ? "auto" : "manual",
@@ -111,7 +137,7 @@ async function decideGate(
   comment: string | null,
 ): Promise<number> {
   const config = await loadConfig();
-  const store = new Store(openDb());
+  const store = openStore(config);
   try {
     const run = store.requireRun(runId);
     if (gate === "merge" && (run.status === "merged" || run.status === "closed")) {
@@ -126,10 +152,10 @@ async function decideGate(
     }
     const actor = os.userInfo().username;
     store.recordApproval({ runId, gate, decision, actor, comment });
-    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const { runtime, runtimes } = runtimeDeps(config);
     const res = await resumeRun(
       runId,
-      { config, runtime, runsDir: RUNS_DIR, store, log: consoleLog },
+      { config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog },
       { answer: { decision, actor, ...(comment ? { comment } : {}) } },
     );
     if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
@@ -144,14 +170,57 @@ async function decideGate(
   }
 }
 
+/** Compares the configured reviewers on the frozen evals/review/ set. */
+async function evalReview(only: string | null): Promise<number> {
+  const config = await loadConfig();
+  const problems = await verifyManifest();
+  if (problems.length) {
+    console.error(`error: evals/review/ does not match its manifest:\n- ${problems.join("\n- ")}`);
+    return 2;
+  }
+  const cases = await loadReviewCases();
+  const evalId = `review-eval-${new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)}`;
+  const outDir = path.join(RUNS_DIR, evalId);
+  const claude = new ClaudeCodeRuntime({ logDir: outDir, models: config.models });
+  const reviewers = config.reviewEval.reviewers
+    .filter((b) => only === null || b.runtime === only)
+    .map((b) => ({
+      label: `${b.runtime}:${b.model}`,
+      model: b.model,
+      runtime: runtimeForBinding(b, outDir, claude),
+    }));
+  console.log(`Reviewer eval: ${cases.length} cases × ${reviewers.map((r) => r.label).join(", ")}`);
+  const results = await runReviewEval({
+    cases,
+    reviewers,
+    loadTask: loadTaskSpec,
+    baselineSource: path.join(FACTORY_ROOT, "fixtures", "taskflow"),
+    outDir,
+    maxDiffChars: config.maxDiffCharsForReview,
+    timeoutMs: config.stepTimeoutsMinutes.reviewer * 60_000,
+    log: consoleLog,
+  });
+  const redact = createRedactor(secretsFromEnv(config.secretEnv));
+  await writeFile(
+    path.join(outDir, "summary.json"),
+    redact(JSON.stringify({ evalId, results }, null, 2)),
+  );
+  const md = renderReviewEvalMarkdown(evalId, results);
+  await writeFile(path.join(outDir, "summary.md"), redact(md));
+  console.log(
+    `\n${md.split("## Per case")[0]?.trim() ?? ""}\nsummary: ${path.relative(process.cwd(), path.join(outDir, "summary.md"))}`,
+  );
+  return 0;
+}
+
 async function reopenMerge(runId: string): Promise<number> {
   const config = await loadConfig();
-  const store = new Store(openDb());
+  const store = openStore(config);
   try {
-    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const { runtime, runtimes } = runtimeDeps(config);
     const outcome = await reopenForMerge(
       runId,
-      { config, runtime, runsDir: RUNS_DIR, store, log: consoleLog },
+      { config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog },
       os.userInfo().username,
     );
     return printOutcome(outcome);
@@ -164,7 +233,7 @@ async function reopenMerge(runId: string): Promise<number> {
 async function baselineUpdate(reason: string): Promise<number> {
   const config = await loadConfig();
   const repo = await ensureTargetRepo(config.target, config.workdirAbs, "main");
-  const store = new Store(openDb());
+  const store = openStore(config);
   try {
     const { previous, current } = await moveBaselineTag(repo.dir);
     if (previous === current) {
@@ -198,12 +267,12 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   // Eval always starts from the immutable baseline tag.
   const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
   const exec = await defaultSandboxExec(repo.dir);
-  const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+  const { runtime, runtimes } = runtimeDeps(config);
   const log = (m: string) => {
     console.log(m);
   };
 
-  const store = new Store(openDb());
+  const store = openStore(config);
   if (repo.baselineCreated && repo.baselineCommit) {
     store.recordBaseline({
       target: config.target.name,
@@ -237,6 +306,7 @@ async function evalSuite(taskIds: string[]): Promise<number> {
       const outcome = await runTask(task, {
         config,
         runtime,
+        runtimes,
         runsDir,
         store,
         runContext: { mode: "eval", evalId, evalRepeat: 1, baselineCommit: repo.baseCommit },
@@ -277,12 +347,13 @@ async function evalSuite(taskIds: string[]): Promise<number> {
 
 async function resumeOne(runId: string): Promise<number> {
   const config = await loadConfig();
-  const store = new Store(openDb());
+  const store = openStore(config);
   try {
-    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const { runtime, runtimes } = runtimeDeps(config);
     const res = await resumeRun(runId, {
       config,
       runtime,
+      runtimes,
       runsDir: RUNS_DIR,
       store,
       log: (m) => {
@@ -310,8 +381,8 @@ async function resumeOne(runId: string): Promise<number> {
   }
 }
 
-function listRuns(limit: number): number {
-  const store = new Store(openDb());
+async function listRuns(limit: number): Promise<number> {
+  const store = openStore(await loadConfig());
   const rows = store.listRuns({ limit });
   for (const r of rows) {
     console.log(
@@ -325,7 +396,7 @@ function listRuns(limit: number): number {
 }
 
 async function dbImport(): Promise<number> {
-  const store = new Store(openDb());
+  const store = openStore(await loadConfig());
   const res = await importRunReports(store, RUNS_DIR);
   console.log(
     `imported ${res.imported.length}, already present ${res.skipped.length}, invalid ${res.invalid.length}`,
@@ -354,6 +425,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return baselineUpdate(cmd.reason);
     case "reopen-merge":
       return reopenMerge(cmd.runId);
+    case "eval-review":
+      return evalReview(cmd.only);
     case "eval":
       return evalSuite(cmd.taskIds);
     case "runs":

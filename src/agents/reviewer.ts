@@ -66,3 +66,35 @@ export function isApproved(review: ReviewVerdict): boolean {
     review.issues.every((i) => i.severity === "minor")
   );
 }
+
+/**
+ * Runs the reviewer and, if its answer is not a valid verdict (no JSON, wrong schema, criteria
+ * missing), asks once more with the problem spelled out. A second invalid answer is returned
+ * as the error. Other failures (timeout, process, budget) are not retried. Shared by the
+ * graph's review node and `npm run eval:review`, so both judge reviewers the same way.
+ */
+export async function reviewWithRetry(
+  call: (prompt: string) => Promise<AgentRunResult>,
+  prompt: string,
+  task: TaskSpec,
+  log: (message: string) => void = () => undefined,
+): Promise<{ outcome: StructuredOutcome<ReviewVerdict>; attempts: number }> {
+  const judge = (res: AgentRunResult): StructuredOutcome<ReviewVerdict> =>
+    res.ok
+      ? parseReviewerResult(res, task)
+      : { ok: false, error: res.error ?? { kind: "process", message: "agent run failed" } };
+  let outcome = judge(await call(prompt));
+  if (
+    !outcome.ok &&
+    (outcome.error.kind === "parse" || outcome.error.kind === "invalid_response")
+  ) {
+    log(`  review: invalid answer (${outcome.error.message.slice(0, 120)}); retrying once`);
+    outcome = judge(
+      await call(
+        `${prompt}\n\n## Your previous answer could not be used\n\n${outcome.error.message}\n\nReply again with ONLY the JSON verdict matching the schema.`,
+      ),
+    );
+    return { outcome, attempts: 2 };
+  }
+  return { outcome, attempts: 1 };
+}

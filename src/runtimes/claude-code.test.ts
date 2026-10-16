@@ -138,6 +138,11 @@ describe("agentEnv", () => {
     expect(env["HOME"]).toBe("/h");
     expect(env["PATH"]).toBe("/bin");
     expect(env).not.toHaveProperty("GITHUB_TOKEN");
+    // Provider keys of other runtimes (e.g. the OpenCode reviewer) never reach Claude Code.
+    expect(agentEnv({ HOME: "/h", OPENAI_API_KEY: "k1", GEMINI_API_KEY: "k2" })).not.toHaveProperty(
+      "OPENAI_API_KEY",
+    );
+    expect(agentEnv({ HOME: "/h", GEMINI_API_KEY: "k2" })).not.toHaveProperty("GEMINI_API_KEY");
     expect(env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
   });
 });

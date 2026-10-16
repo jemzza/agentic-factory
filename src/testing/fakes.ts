@@ -179,6 +179,13 @@ export function fakeConfig(workdir: string): ResolvedConfig {
       conventionsFile: "CLAUDE.md",
     },
     models: { planner: "p-model", developer: "d-model", reviewer: "r-model" },
+    roles: {
+      planner: { runtime: "claude-code", model: "p-model", keyEnv: [] },
+      developer: { runtime: "claude-code", model: "d-model", keyEnv: [] },
+      reviewer: { runtime: "claude-code", model: "r-model", keyEnv: [] },
+    },
+    secretEnv: [],
+    reviewEval: { reviewers: [{ runtime: "claude-code", model: "r-model", keyEnv: [] }] },
     stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
