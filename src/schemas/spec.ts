@@ -22,8 +22,20 @@ export const SpecScenarioSchema = z.strictObject({
   then: z.string().trim().min(1),
 });
 
+/**
+ * Where a requirement comes from: an acceptance criterion (1-based number) or behavior the
+ * code already has. Ideas beyond these belong in the plan's risks or questions, not here.
+ */
+export const SPEC_SOURCE_PATTERN = /^(acceptance:[1-9]\d*|existing_behavior)$/;
+
 export const SpecRequirementSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
+  source: z
+    .string()
+    .regex(
+      SPEC_SOURCE_PATTERN,
+      'source must be "acceptance:<criterion number>" or "existing_behavior"',
+    ),
   /** Normative description: one behavior, using SHALL or MUST. */
   text: z
     .string()
@@ -81,3 +93,38 @@ export const OpenSpecIssueSchema = z.looseObject({
   message: z.string(),
 });
 export type OpenSpecIssue = z.infer<typeof OpenSpecIssueSchema>;
+
+export type SpecCheck = { ok: true; value: SpecChange } | { ok: false; issues: OpenSpecIssue[] };
+
+/**
+ * Validates a raw spec from the Planner: the Zod schema, plus every `acceptance:<n>` source
+ * must name an existing acceptance criterion. Failures are reported in the same shape as
+ * `openspec validate` issues, so both kinds go through the same single fix attempt.
+ */
+export function checkSpec(raw: unknown, criteriaCount: number): SpecCheck {
+  const parsed = SpecChangeSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      issues: parsed.error.issues.map((i) => ({
+        level: "ERROR",
+        path: i.path.join("."),
+        message: i.message,
+      })),
+    };
+  }
+  const issues: OpenSpecIssue[] = [];
+  parsed.data.capabilities.forEach((c, ci) => {
+    c.requirements.forEach((r, ri) => {
+      const m = /^acceptance:(\d+)$/.exec(r.source);
+      if (m && Number(m[1]) > criteriaCount) {
+        issues.push({
+          level: "ERROR",
+          path: `capabilities.${ci}.requirements.${ri}.source`,
+          message: `"${r.source}" does not exist: the task has ${criteriaCount} acceptance criteria`,
+        });
+      }
+    });
+  });
+  return issues.length ? { ok: false, issues } : { ok: true, value: parsed.data };
+}

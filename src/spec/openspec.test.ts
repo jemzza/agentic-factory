@@ -23,6 +23,7 @@ const SAMPLE_SPEC: SpecChange = {
       requirements: [
         {
           name: "Complete an active task",
+          source: "acceptance:1",
           text: "The system SHALL set the status to done, update updatedAt and return 200 with the task.",
           scenarios: [
             {
@@ -34,6 +35,7 @@ const SAMPLE_SPEC: SpecChange = {
         },
         {
           name: "Reject deleted tasks",
+          source: "acceptance:2",
           text: "The system MUST return 409 CONFLICT for a soft-deleted task.",
           scenarios: [
             {

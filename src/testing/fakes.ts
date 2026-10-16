@@ -30,6 +30,7 @@ export const FAKE_SPEC: SpecChange = {
       requirements: [
         {
           name: "Feature exists",
+          source: "acceptance:1",
           text: "The system SHALL export a feature constant from src/feature.ts.",
           scenarios: [
             { name: "Import", when: "src/feature.ts is imported", then: "feature is defined" },

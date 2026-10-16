@@ -92,7 +92,9 @@ export const RunState = new StateSchema({
   conventions: z.string().default(""),
 
   planResult: PlannerOutputSchema.nullable().default(null),
-  /** Current spec draft (from the plan, or the Planner's fix after a failed validation). */
+  /** Raw spec JSON as the Planner returned it (validated in spec_draft). */
+  specRaw: z.unknown().default(null),
+  /** Current validated spec (null until a draft passes the schema). */
   spec: SpecChangeSchema.nullable().default(null),
   /** Rendered OpenSpec files (repo-relative path → content), as committed. */
   specFiles: z.record(z.string(), z.string()).default({}),

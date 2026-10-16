@@ -3,7 +3,6 @@ import path from "node:path";
 import { developerPrompt, type FixFeedback } from "../agents/developer.js";
 import {
   parsePlannerResult,
-  parseSpecResult,
   PLANNER_OUTPUT_SCHEMA,
   plannerPrompt,
   SPEC_OUTPUT_SCHEMA,
@@ -11,6 +10,7 @@ import {
 } from "../agents/planner.js";
 import { interrupt, isGraphBubbleUp } from "@langchain/langgraph";
 import { changeDir, renderSpecFiles, validateChange, writeSpecFiles } from "../spec/openspec.js";
+import { checkSpec, type OpenSpecIssue } from "../schemas/spec.js";
 import { BASELINE_TAG, type RepoRef } from "../git/target-repo.js";
 import { buildSystemPrompt } from "../agents/prompts.js";
 import {
@@ -280,7 +280,8 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       return {
         ...update,
         planResult: planned.value,
-        spec: planned.value.spec ?? null,
+        specRaw: planned.value.spec ?? null,
+        spec: null,
         specFiles: {},
         specValid: false,
         specIssues: [],
@@ -293,34 +294,46 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     spec_draft: node("spec_draft", async (s) => {
       const wt = requireWorktree(s);
       const attempt = s.specAttempts + 1;
-      let spec = s.spec;
+      let raw: unknown = s.specRaw;
       let update: RunStateUpdate = {};
-      if (attempt > 1 && spec) {
-        // Second and last attempt: the Planner fixes its spec using the validator's output.
+      if (attempt > 1) {
+        // Second and last attempt: the Planner fixes its spec using the validation output.
         const fix = await agentStep(
           ctx,
           s,
           "planner",
           0,
-          specFixPrompt(s.task, spec, s.specIssues),
+          specFixPrompt(s.task, raw, s.specIssues),
           SPEC_OUTPUT_SCHEMA,
           "spec_draft",
         );
         update = fix.update;
         if (update.lastError) return { ...update, specAttempts: attempt };
-        const parsed = parseSpecResult(fix.res);
-        if (!parsed.ok) {
-          return {
-            ...update,
-            specAttempts: attempt,
-            lastError: { node: "spec_draft", ...parsed.error },
-          };
-        }
-        spec = parsed.value;
+        raw = fix.res.structured ?? null;
       }
-      if (!spec) throw new Error("spec_draft without a spec");
+      const prevSteps = (update.steps as StepResult[] | undefined) ?? [];
+      const invalid = (issues: OpenSpecIssue[]): RunStateUpdate => ({
+        ...update,
+        specRaw: raw,
+        specValid: false,
+        specIssues: issues,
+        specAttempts: attempt,
+        headCommit: wt.baseCommit,
+        steps: [...prevSteps, { kind: "spec", attempt, valid: false, issues, commit: null }],
+      });
 
-      // The spec is always the first change on the branch: start from the base commit.
+      // 1. Schema + sources. Failures take the same single fix attempt as openspec's.
+      const checked = checkSpec(raw, s.task.acceptance_criteria.length);
+      if (!checked.ok) {
+        ctx.log(
+          `  spec draft #${attempt}: schema check failed (${checked.issues.length} issue(s))`,
+        );
+        return { ...invalid(checked.issues), spec: null };
+      }
+      const spec = checked.value;
+
+      // 2. Render and `openspec validate`. The spec is always the first change on the
+      //    branch, so start from the base commit.
       await resetWorktree(wt, wt.baseCommit, worktreesRoot);
       const files = renderSpecFiles(
         s.task.id,
@@ -330,23 +343,10 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       await writeSpecFiles(wt.path, s.task.id, files);
       const validation = await validateChange(wt.path, s.task.id);
       if (validation.kind === "error") throw new Error(`openspec validate: ${validation.message}`);
-      const prevSteps = (update.steps as StepResult[] | undefined) ?? [];
       if (validation.kind === "invalid") {
         await resetWorktree(wt, wt.baseCommit, worktreesRoot);
         ctx.log(`  spec draft #${attempt}: invalid (${validation.issues.length} issue(s))`);
-        return {
-          ...update,
-          spec,
-          specFiles: files,
-          specValid: false,
-          specIssues: validation.issues,
-          specAttempts: attempt,
-          headCommit: wt.baseCommit,
-          steps: [
-            ...prevSteps,
-            { kind: "spec", attempt, valid: false, issues: validation.issues, commit: null },
-          ],
-        };
+        return { ...invalid(validation.issues), spec, specFiles: files };
       }
       const commit = await snapshot(
         wt,
@@ -356,6 +356,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       ctx.store?.updateRun(s.runId, { headCommit: commit });
       return {
         ...update,
+        specRaw: raw,
         spec,
         specFiles: files,
         specValid: true,

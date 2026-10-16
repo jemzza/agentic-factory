@@ -10,7 +10,7 @@ describe("agent JSON schemas", () => {
   it("require every planner and reviewer field", () => {
     expect(plannerJsonSchema).toMatchObject({
       type: "object",
-      required: ["plan", "files_to_change", "risks", "questions"],
+      required: ["plan", "files_to_change", "risks", "questions", "spec"],
       additionalProperties: false,
     });
     expect(reviewerJsonSchema).toMatchObject({

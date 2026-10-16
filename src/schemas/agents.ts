@@ -1,21 +1,24 @@
 import { z } from "zod";
 import { SpecChangeSchema } from "./spec.js";
 
+const plannerFields = {
+  plan: z.string().trim().min(1),
+  files_to_change: z.array(z.string().trim().min(1)),
+  risks: z.array(z.string().trim().min(1)),
+  questions: z.array(z.string().trim().min(1)),
+};
+
 /**
  * Planner answer. Non-empty `questions` stops the run with `needs_clarification`; otherwise
- * `spec` (the OpenSpec change proposal, rendered by the factory) is required. `spec` is
- * optional in the schema only so Week 1 reports (which had no spec) stay readable.
+ * `spec` (the OpenSpec change proposal, rendered by the factory) is required. The spec's
+ * content is validated later, in `spec_draft` (`checkSpec`), so an invalid spec gets the
+ * single fix attempt instead of failing the whole planner step. `spec` is optional only so
+ * Week 1 reports (which had no spec) stay readable.
  */
 export const PlannerOutputSchema = z
-  .strictObject({
-    plan: z.string().trim().min(1),
-    files_to_change: z.array(z.string().trim().min(1)),
-    risks: z.array(z.string().trim().min(1)),
-    questions: z.array(z.string().trim().min(1)),
-    spec: SpecChangeSchema.nullable().optional(),
-  })
+  .strictObject({ ...plannerFields, spec: z.unknown().optional() })
   .superRefine((p, ctx) => {
-    if (p.questions.length === 0 && !p.spec) {
+    if (p.questions.length === 0 && (p.spec === undefined || p.spec === null)) {
       ctx.addIssue({
         code: "custom",
         path: ["spec"],
@@ -62,5 +65,8 @@ export function toAgentJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return json;
 }
 
-export const plannerJsonSchema = toAgentJsonSchema(PlannerOutputSchema);
+/** Shape shown to the agent (full spec structure), stricter than what we parse up front. */
+export const plannerJsonSchema = toAgentJsonSchema(
+  z.strictObject({ ...plannerFields, spec: SpecChangeSchema.nullable() }),
+);
 export const reviewerJsonSchema = toAgentJsonSchema(ReviewVerdictSchema);

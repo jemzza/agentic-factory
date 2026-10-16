@@ -52,9 +52,15 @@ implementation details.
   not task names. Use `kind: "new"` unless the repository already has that capability under
   `openspec/specs/` (then `"modified"`). A new capability needs a `purpose` of at least 50
   characters.
-- Each requirement: a short `name`, a `text` describing **one** behavior using SHALL or
-  MUST (≤ 500 characters), and at least one scenario with `when` / `then`. Cover every
-  acceptance criterion and every error path with a requirement or scenario.
+- Each requirement: a short `name`, a `source`, a `text` describing **one** behavior using
+  SHALL or MUST (≤ 500 characters), and at least one scenario with `when` / `then`. Cover
+  every acceptance criterion and every error path with a requirement or scenario.
+- **Every requirement must be grounded.** `source` is either `acceptance:<n>` (the number of
+  the acceptance criterion it implements) or `existing_behavior` (a rule the code or the
+  repository conventions already enforce and that this change must keep, e.g. the error
+  format). Do **not** add requirements beyond the acceptance criteria and existing
+  behavior: put such ideas (extra validation, stricter inputs, nice-to-haves) in `risks` or
+  `questions` instead. A human reviews `existing_behavior` requirements separately.
 - `impact`: affected modules and APIs.
 - `tasks`: implementation checklist items.
 

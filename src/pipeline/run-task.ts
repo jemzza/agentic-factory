@@ -8,6 +8,7 @@ import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
 import type { AgentRuntime } from "../runtimes/types.js";
 import type { TargetConfig } from "../schemas/config.js";
 import type { RunReport } from "../schemas/report.js";
+import type { SpecChange } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { RunRow, Store } from "../store/store.js";
 import { Command, MemorySaver } from "@langchain/langgraph";
@@ -157,6 +158,7 @@ async function settle(
     runDir: string;
     specCommit: string | null;
     specFiles: Record<string, string>;
+    spec: SpecChange | null;
     task: TaskSpec;
   };
   const noticePath = path.join(values.runDir, "spec-approval.md");
@@ -176,13 +178,33 @@ async function settle(
 
 function renderSpecApprovalNotice(
   runId: string,
-  v: { specCommit: string | null; specFiles: Record<string, string>; task: TaskSpec },
+  v: {
+    specCommit: string | null;
+    specFiles: Record<string, string>;
+    spec: SpecChange | null;
+    task: TaskSpec;
+  },
 ): string {
   const files = Object.entries(v.specFiles)
     .filter(([p]) => p.endsWith(".md"))
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([p, c]) => `## \`${p}\`\n\n\`\`\`\`markdown\n${c.trim()}\n\`\`\`\``)
+    .map(([p, c]) => `### \`${p}\`\n\n\`\`\`\`markdown\n${c.trim()}\n\`\`\`\``)
     .join("\n\n");
+  const requirements = (v.spec?.capabilities ?? []).flatMap((c) =>
+    c.requirements.map((r) => ({ capability: c.path, ...r })),
+  );
+  const traced = requirements
+    .map((r) => {
+      const n = /^acceptance:(\d+)$/.exec(r.source)?.[1];
+      const criterion = n === undefined ? undefined : v.task.acceptance_criteria[Number(n) - 1];
+      const from =
+        criterion === undefined
+          ? "existing behavior"
+          : `acceptance criterion ${n ?? ""}: “${criterion}”`;
+      return `- **${r.name}** (\`${r.capability}\`) ← ${from}`;
+    })
+    .join("\n");
+  const fromExisting = requirements.filter((r) => r.source === "existing_behavior");
   return (
     [
       `# Spec approval needed — ${v.task.title} (\`${v.task.id}\`)`,
@@ -191,6 +213,14 @@ function renderSpecApprovalNotice(
       `npm run approve -- ${runId} spec`,
       `npm run reject -- ${runId} spec --comment "what to change"`,
       "```",
+      "## ⚠ Requirements based on existing behavior — check these",
+      fromExisting.length
+        ? "These are not acceptance criteria; the planner states the code already behaves this way. Approve only if that is true and intended.\n\n" +
+          fromExisting.map((r) => `- **${r.name}** (\`${r.capability}\`): ${r.text}`).join("\n")
+        : "None: every requirement traces to an acceptance criterion.",
+      "## Where each requirement comes from",
+      traced || "(no requirements)",
+      "## Files",
       files,
     ].join("\n\n") + "\n"
   );

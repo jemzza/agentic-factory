@@ -263,4 +263,79 @@ describe("spec drafting and approval", () => {
       db.close();
     }
   });
+
+  it("a requirement without source fails the schema check and gets one fix", async () => {
+    const noSource = structuredClone(FAKE_SPEC) as unknown as {
+      capabilities: { requirements: Record<string, unknown>[] }[];
+    };
+    const req = noSource.capabilities[0]?.requirements[0];
+    if (!req) throw new Error("fixture");
+    delete req["source"];
+    const script = standardScript();
+    script.planner = (_input, i) =>
+      Promise.resolve({ structured: i === 0 ? { ...FAKE_PLAN, spec: noSource } : FAKE_SPEC });
+    const { deps, runtime, db } = await setup(script, "auto");
+    try {
+      const out = await runTask(FAKE_TASK, deps);
+      if (out.kind !== "finished") throw new Error("expected a finished run");
+      expect(out.report.status).toBe("success");
+      expect(out.report.spec).toMatchObject({ valid: true, attempts: 2 });
+      const fix = runtime.calls.filter((c) => c.role === "planner")[1];
+      expect(fix?.prompt).toMatch(/capabilities\.0\.requirements\.0\.source/);
+      const first = out.report.steps.find((s) => s.kind === "spec");
+      expect(first?.kind === "spec" && first.valid).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a source that names a non-existent acceptance criterion is rejected, and stays an error if not fixed", async () => {
+    const bad = structuredClone(FAKE_SPEC);
+    const req = bad.capabilities[0]?.requirements[0];
+    if (!req) throw new Error("fixture");
+    req.source = "acceptance:9";
+    const script = standardScript();
+    script.planner = (_input, i) =>
+      Promise.resolve({ structured: i === 0 ? { ...FAKE_PLAN, spec: bad } : bad });
+    const { deps, db } = await setup(script, "auto");
+    try {
+      const out = await runTask(FAKE_TASK, deps);
+      if (out.kind !== "finished") throw new Error("expected a finished run");
+      expect(out.report.status).toBe("error");
+      expect(out.report.message).toMatch(
+        /acceptance:9" does not exist: the task has 2 acceptance criteria/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("the approval notice lists existing-behavior requirements separately and traces the rest", async () => {
+    const spec = structuredClone(FAKE_SPEC);
+    const cap = spec.capabilities[0];
+    if (!cap) throw new Error("fixture");
+    cap.requirements.push({
+      name: "Keep the error format",
+      source: "existing_behavior",
+      text: "Errors MUST keep the { error: { code, message } } format.",
+      scenarios: [{ name: "Error", when: "any error occurs", then: "the body has error.code" }],
+    });
+    const { deps, db } = await setup({ ...standardScript(), planner: plannerWith(spec) });
+    try {
+      const out = await runTask(FAKE_TASK, deps);
+      if (out.kind !== "awaiting") throw new Error("expected to wait");
+      const notice = await readFile(out.noticePath, "utf8");
+      const existing = notice.slice(
+        notice.indexOf("Requirements based on existing behavior"),
+        notice.indexOf("Where each requirement"),
+      );
+      expect(existing).toContain("Keep the error format");
+      expect(existing).not.toContain("Feature exists");
+      expect(notice).toContain(
+        "**Feature exists** (`feature-flags`) ← acceptance criterion 1: “feature exists”",
+      );
+    } finally {
+      db.close();
+    }
+  });
 });

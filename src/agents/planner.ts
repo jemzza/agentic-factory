@@ -4,7 +4,7 @@ import {
   toAgentJsonSchema,
   type PlannerOutput,
 } from "../schemas/agents.js";
-import { SpecChangeSchema, type OpenSpecIssue, type SpecChange } from "../schemas/spec.js";
+import { SpecChangeSchema, type OpenSpecIssue } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { AgentRunResult } from "../runtimes/types.js";
 import { describeIssues } from "../spec/openspec.js";
@@ -32,14 +32,14 @@ export function plannerPrompt(task: TaskSpec, rejections: readonly string[] = []
 /** Second (and last) attempt at the spec after `openspec validate` rejected the first one. */
 export function specFixPrompt(
   task: TaskSpec,
-  previous: SpecChange,
+  previous: unknown,
   issues: readonly OpenSpecIssue[],
 ): string {
   return [
     renderTask(task),
     "## Your previous specification JSON",
     "```json\n" + JSON.stringify(previous, null, 2) + "\n```",
-    "## `openspec validate --strict` output",
+    "## Validation output (schema check and `openspec validate --strict`)",
     describeIssues(issues) || "(no issue details)",
     "Return a corrected specification JSON (same schema) that fixes every issue above. Keep the requirements' meaning.",
   ].join("\n\n");
@@ -47,10 +47,6 @@ export function specFixPrompt(
 
 export function parsePlannerResult(result: AgentRunResult): StructuredOutcome<PlannerOutput> {
   return parseStructured(result, PlannerOutputSchema);
-}
-
-export function parseSpecResult(result: AgentRunResult): StructuredOutcome<SpecChange> {
-  return parseStructured(result, SpecChangeSchema);
 }
 
 export { renderSpecForPrompt };

@@ -18,6 +18,7 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
     mode: "interactive",
     specApprovalMode: "manual",
     repoRef: "main",
+    specRaw: null,
     spec: null,
     specFiles: {},
     specValid: true,
