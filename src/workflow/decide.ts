@@ -1,6 +1,13 @@
 import { isApproved } from "../agents/reviewer.js";
 import type { RunStatus } from "../schemas/report.js";
-import type { NodeName, RunStateValue, StepError } from "./state.js";
+import { describeIssues } from "../spec/openspec.js";
+import {
+  MAX_SPEC_ATTEMPTS,
+  MAX_SPEC_REJECTIONS,
+  type NodeName,
+  type RunStateValue,
+  type StepError,
+} from "./state.js";
 
 export type Decision =
   { kind: "next"; node: NodeName } | { kind: "stop"; status: RunStatus; message: string };
@@ -88,11 +95,30 @@ export function decide(s: RunStateValue, nowMs: number): Decision {
           `planner asked ${s.planResult.questions.length} question(s)`,
         );
       }
-      return { kind: "next", node: "spec_draft" };
+      return guarded(s, "spec_draft", nowMs);
     case "spec_draft":
-      return { kind: "next", node: "spec_approval" };
+      if (s.specValid) return { kind: "next", node: "spec_approval" };
+      if (s.specAttempts < MAX_SPEC_ATTEMPTS) {
+        // The retry asks the Planner to fix the spec: an agent call, so the budget applies.
+        if (budget - s.spentUsd <= 0) {
+          return stop("budget_exceeded", `budget $${budget} spent before planner (spec fix)`);
+        }
+        return guarded(s, "spec_draft", nowMs);
+      }
+      return stop(
+        "error",
+        `OpenSpec validation failed after ${s.specAttempts} attempt(s):\n${describeIssues(s.specIssues)}`,
+      );
     case "spec_approval":
-      return guarded(s, "develop", nowMs);
+      if (s.specDecision === "approve") return guarded(s, "develop", nowMs);
+      if (s.specDecision === "reject") {
+        if (s.specRejections.length <= MAX_SPEC_REJECTIONS) return guarded(s, "plan", nowMs);
+        return stop(
+          "needs_clarification",
+          `specification rejected ${s.specRejections.length} times; a human needs to clarify the task`,
+        );
+      }
+      return stop("error", "spec approval produced no decision");
     case "develop":
       return guarded(s, "gate", nowMs);
     case "gate":

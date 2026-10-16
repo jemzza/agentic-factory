@@ -1,6 +1,6 @@
 import type { PlannerOutput, ReviewIssue } from "../schemas/agents.js";
 import type { TaskSpec } from "../schemas/task.js";
-import { renderTask } from "./prompts.js";
+import { renderSpecForPrompt, renderTask } from "./prompts.js";
 
 export interface FixFeedback {
   cycle: number;
@@ -29,8 +29,11 @@ export function developerPrompt(
   task: TaskSpec,
   plan: PlannerOutput,
   feedback?: FixFeedback,
+  specFiles: Readonly<Record<string, string>> = {},
 ): string {
-  const parts = [renderTask(task), renderPlan(plan)];
+  const parts = [renderTask(task)];
+  if (Object.keys(specFiles).length > 0) parts.push(renderSpecForPrompt(specFiles));
+  parts.push(renderPlan(plan));
   if (feedback) {
     parts.push(
       `## Fix cycle ${feedback.cycle} of ${feedback.maxCycles}`,

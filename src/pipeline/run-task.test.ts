@@ -14,6 +14,7 @@ import type { TaskSpec } from "../schemas/task.js";
 import { openDb } from "../store/db.js";
 import { importRunReports } from "../store/import-runs.js";
 import { Store } from "../store/store.js";
+import { FAKE_PLAN, OPENSPEC_SKELETON } from "../testing/fakes.js";
 import { runTask } from "./run-task.js";
 
 let tmp: string;
@@ -33,12 +34,7 @@ const TASK: TaskSpec = {
   budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
 };
 
-const PLAN: PlannerOutput = {
-  plan: "Create src/feature.ts",
-  files_to_change: ["src/feature.ts"],
-  risks: [],
-  questions: [],
-};
+const PLAN: PlannerOutput = FAKE_PLAN;
 
 const APPROVE: ReviewVerdict = {
   verdict: "approve",
@@ -139,7 +135,7 @@ async function makeRepo(extraFiles: Record<string, string> = {}): Promise<Target
   await writeFile(path.join(dir, "package.json"), '{"name":"t"}\n');
   await writeFile(path.join(dir, "CLAUDE.md"), "# Target conventions\nUse the clock.\n");
   await writeFile(path.join(dir, "src", "index.ts"), "export {};\n");
-  for (const [rel, content] of Object.entries(extraFiles)) {
+  for (const [rel, content] of Object.entries({ ...OPENSPEC_SKELETON, ...extraFiles })) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
     await writeFile(path.join(dir, rel), content);
   }
@@ -176,15 +172,18 @@ async function run(
 ) {
   const runtime = new FakeRuntime(script);
   const repo = opts.repo ?? (await makeRepo());
-  const result = await runTask(opts.task ?? TASK, {
+  const outcome = await runTask(opts.task ?? TASK, {
     config: config(),
     runtime,
     runsDir: path.join(tmp, "runs"),
     ensureRepo: () => Promise.resolve(repo),
     makeSandboxExec: () => Promise.resolve(opts.exec ?? fakeExec),
+    // These tests exercise the development loop; spec approval is tested in spec.test.ts.
+    specApprovalMode: "auto",
     ...(opts.store ? { store: opts.store } : {}),
   });
-  return { ...result, runtime, repo };
+  if (outcome.kind !== "finished") throw new Error(`run paused at ${outcome.gate} approval`);
+  return { ...outcome, runtime, repo };
 }
 
 describe("runTask", () => {
@@ -197,7 +196,9 @@ describe("runTask", () => {
     expect(report.status).toBe("success");
     expect(report.fixCycles).toBe(0);
     expect(runtime.rolesCalled()).toEqual(["planner", "developer", "reviewer"]);
-    expect(report.changedFiles).toEqual(["src/feature.ts"]);
+    expect(report.changedFiles.filter((f) => !f.startsWith("openspec/"))).toEqual([
+      "src/feature.ts",
+    ]);
     expect(report.diff).toContain("+export const feature = 1;");
     expect(report.gate?.checks.map((c) => c.command.join(" "))).toEqual([
       "npm run typecheck",

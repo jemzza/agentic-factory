@@ -7,6 +7,7 @@ import type { TargetRepo } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
 import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
+import type { SpecChange } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
 
 export const FAKE_TASK: TaskSpec = {
@@ -18,11 +19,42 @@ export const FAKE_TASK: TaskSpec = {
   budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
 };
 
+export const FAKE_SPEC: SpecChange = {
+  why: "Clients need the feature, and its behavior must be specified before implementation.",
+  what_changes: ["Add the feature module"],
+  capabilities: [
+    {
+      path: "feature-flags",
+      kind: "new",
+      purpose: "Describes the feature module that the factory's fake tasks implement in tests.",
+      requirements: [
+        {
+          name: "Feature exists",
+          text: "The system SHALL export a feature constant from src/feature.ts.",
+          scenarios: [
+            { name: "Import", when: "src/feature.ts is imported", then: "feature is defined" },
+          ],
+        },
+      ],
+    },
+  ],
+  impact: "src/feature.ts",
+  tasks: ["Create src/feature.ts", "Add a test"],
+};
+
 export const FAKE_PLAN: PlannerOutput = {
   plan: "Create src/feature.ts",
   files_to_change: ["src/feature.ts"],
   risks: [],
   questions: [],
+  spec: FAKE_SPEC,
+};
+
+/** Minimal `openspec init --tools none` layout, so the real `openspec validate` can run. */
+export const OPENSPEC_SKELETON: Record<string, string> = {
+  "openspec/config.yaml": "schema: spec-driven\n",
+  "openspec/specs/.gitkeep": "",
+  "openspec/changes/archive/.gitkeep": "",
 };
 
 export const FAKE_APPROVE: ReviewVerdict = {
@@ -119,7 +151,7 @@ export async function makeFakeRepo(
   await writeFile(path.join(dir, "package.json"), '{"name":"t"}\n');
   await writeFile(path.join(dir, "CLAUDE.md"), "# Target conventions\nUse the clock.\n");
   await writeFile(path.join(dir, "src", "index.ts"), "export {};\n");
-  for (const [rel, content] of Object.entries(extraFiles)) {
+  for (const [rel, content] of Object.entries({ ...OPENSPEC_SKELETON, ...extraFiles })) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
     await writeFile(path.join(dir, rel), content);
   }

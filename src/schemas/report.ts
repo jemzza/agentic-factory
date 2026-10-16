@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PlannerOutputSchema, ReviewVerdictSchema } from "./agents.js";
+import { SpecChangeSchema } from "./spec.js";
 import { TaskSpecSchema } from "./task.js";
 
 export const RUN_STATUSES = [
@@ -39,6 +40,8 @@ export const GateResultSchema = z.strictObject({
   passed: z.boolean(),
   checks: z.array(CheckResultSchema),
   scope: ScopeResultSchema,
+  /** Policy violations, e.g. the approved spec was modified (absent in Week 1 reports). */
+  policyViolations: z.array(z.string()).default([]),
 });
 export type GateResult = z.infer<typeof GateResultSchema>;
 
@@ -63,6 +66,13 @@ export const StepResultSchema = z.discriminatedUnion("kind", [
     /** Agent's final message (developer summary; JSON for structured roles). Not evidence. */
     output: z.string(),
     error: AgentErrorSchema.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal("spec"),
+    attempt: z.number().int().positive(),
+    valid: z.boolean(),
+    issues: z.array(z.object({ level: z.string(), message: z.string() }).loose()),
+    commit: z.string().nullable(),
   }),
   z.strictObject({
     kind: z.literal("snapshot"),
@@ -99,6 +109,20 @@ export const RunReportSchema = z.strictObject({
     .strictObject({ path: z.string(), branch: z.string(), headCommit: z.string().nullable() })
     .nullable(),
   plan: PlannerOutputSchema.nullable(),
+  /** OpenSpec change: structured spec, rendered files, approvals (absent in Week 1 reports). */
+  spec: z
+    .strictObject({
+      changeId: z.string(),
+      approvalMode: z.enum(["manual", "auto"]),
+      commit: z.string().nullable(),
+      valid: z.boolean(),
+      attempts: z.number().int(),
+      change: SpecChangeSchema.nullable(),
+      files: z.record(z.string(), z.string()),
+      rejections: z.array(z.string()),
+    })
+    .nullable()
+    .default(null),
   /** Number of fix cycles performed (0 = first implementation passed or the run stopped earlier). */
   fixCycles: z.number().int().nonnegative(),
   steps: z.array(StepResultSchema),

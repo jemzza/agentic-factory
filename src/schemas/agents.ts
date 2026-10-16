@@ -1,12 +1,28 @@
 import { z } from "zod";
+import { SpecChangeSchema } from "./spec.js";
 
-/** Planner answer. Non-empty `questions` stops the run with `needs_clarification`. */
-export const PlannerOutputSchema = z.strictObject({
-  plan: z.string().trim().min(1),
-  files_to_change: z.array(z.string().trim().min(1)),
-  risks: z.array(z.string().trim().min(1)),
-  questions: z.array(z.string().trim().min(1)),
-});
+/**
+ * Planner answer. Non-empty `questions` stops the run with `needs_clarification`; otherwise
+ * `spec` (the OpenSpec change proposal, rendered by the factory) is required. `spec` is
+ * optional in the schema only so Week 1 reports (which had no spec) stay readable.
+ */
+export const PlannerOutputSchema = z
+  .strictObject({
+    plan: z.string().trim().min(1),
+    files_to_change: z.array(z.string().trim().min(1)),
+    risks: z.array(z.string().trim().min(1)),
+    questions: z.array(z.string().trim().min(1)),
+    spec: SpecChangeSchema.nullable().optional(),
+  })
+  .superRefine((p, ctx) => {
+    if (p.questions.length === 0 && !p.spec) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["spec"],
+        message: "spec is required when there are no questions",
+      });
+    }
+  });
 export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
 
 export const ISSUE_SEVERITIES = ["blocker", "major", "minor"] as const;

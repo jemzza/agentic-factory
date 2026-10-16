@@ -7,7 +7,21 @@ import {
   StepResultSchema,
   type StepResult,
 } from "../schemas/report.js";
+import { OpenSpecIssueSchema, SpecChangeSchema } from "../schemas/spec.js";
 import { TaskSpecSchema } from "../schemas/task.js";
+
+/** Spec rejections a human may send back to planning before the run asks for clarification. */
+export const MAX_SPEC_REJECTIONS = 2;
+/** Render+validate attempts per plan: the first draft plus one fix by the Planner. */
+export const MAX_SPEC_ATTEMPTS = 2;
+
+/** Resume value of the spec_approval interrupt (validated by LangGraph via responseSchema). */
+export const SpecApprovalAnswerSchema = z.strictObject({
+  decision: z.enum(["approve", "reject"]),
+  comment: z.string().optional(),
+  actor: z.string().min(1),
+});
+export type SpecApprovalAnswer = z.infer<typeof SpecApprovalAnswerSchema>;
 
 export const NODE_NAMES = [
   "prepare",
@@ -60,6 +74,11 @@ export const RunState = new StateSchema({
   task: TaskSpecSchema,
   /** Directory for this run's logs and reports (state, so a resumed process can find it). */
   runDir: z.string(),
+  mode: z.enum(["interactive", "eval"]).default("interactive"),
+  /** "auto" (eval) approves the spec without a human; "manual" interrupts for approval. */
+  specApprovalMode: z.enum(["manual", "auto"]).default("manual"),
+  /** Which commit tasks start from: the immutable baseline tag (eval) or main (interactive). */
+  repoRef: z.enum(["baseline", "main"]).default("main"),
   startedAtMs: z.number(),
   deadlineMs: z.number(),
 
@@ -73,6 +92,19 @@ export const RunState = new StateSchema({
   conventions: z.string().default(""),
 
   planResult: PlannerOutputSchema.nullable().default(null),
+  /** Current spec draft (from the plan, or the Planner's fix after a failed validation). */
+  spec: SpecChangeSchema.nullable().default(null),
+  /** Rendered OpenSpec files (repo-relative path → content), as committed. */
+  specFiles: z.record(z.string(), z.string()).default({}),
+  specValid: z.boolean().default(false),
+  specIssues: z.array(OpenSpecIssueSchema).default([]),
+  specAttempts: z.number().int().default(0),
+  /** Commit containing the validated spec; base of the developer's diff and scope. */
+  specCommit: z.string().nullable().default(null),
+  specDecision: z.enum(["approve", "reject"]).nullable().default(null),
+  /** Human rejection comments, oldest first (fed back to the Planner). */
+  specRejections: z.array(z.string()).default([]),
+
   /** Index of the latest developer run: -1 before the first, 0 = first implementation. */
   cycle: z.number().int().default(-1),
   gateResult: GateResultSchema.nullable().default(null),

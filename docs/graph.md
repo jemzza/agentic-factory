@@ -88,6 +88,25 @@ merged automatically.
 | `merge`          | base check, `runGate`, `git merge --no-ff`, `openspec archive -y --json`          | merge commit on target `main`, archive commit      | skips merge if branch head is already an ancestor of `main`; skips archive if `archive/*-<taskId>` exists |
 | `close`          | DB update                                                                         | `runs.status = closed`                             | overwrite-only                                                                                            |
 
+## Specification (Phase 4)
+
+- The Planner returns the spec as JSON (`SpecChangeSchema`, Zod) together with the plan.
+  `spec_draft` renders it deterministically into `openspec/changes/<taskId>/` (proposal,
+  delta specs, tasks), runs `openspec validate --strict --json` and commits it ("spec
+  commit"). If validation fails, the Planner gets its previous JSON plus the validator output
+  once (`spec_draft → spec_draft`); a second failure ends the run with `error`.
+- `spec_approval`: with `--auto-approve-spec` (always in eval) the approval is recorded as
+  `actor: auto`; otherwise the node calls `interrupt()`, the run becomes
+  `awaiting_spec_approval` and the process exits (see `runs/<runId>/spec-approval.md`).
+  `npm run approve -- <runId> spec` / `npm run reject -- <runId> spec --comment "…"` record the
+  decision in `approvals` and resume with it. A reject returns to `plan` with the comment;
+  the third reject ends with `needs_clarification`.
+- The developer gets the approved spec (read from the spec commit) as the primary source of
+  requirements; the reviewer checks the code diff (`specCommit..HEAD`) against the spec and
+  the acceptance criteria. The gate's scope check starts at the spec commit and a separate
+  policy check fails the gate if any approved spec file changed.
+- Eval runs start from the immutable `factory-baseline` tag; interactive runs from `main`.
+
 ## Run statuses
 
 `running` → one of: `needs_clarification` · `gate_failed` · `review_rejected` · `timeout` ·

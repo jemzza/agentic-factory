@@ -53,7 +53,7 @@ function insertReport(
     startedAt: report.startedAt,
   });
   for (const step of report.steps) {
-    if (step.kind === "snapshot") continue;
+    if (step.kind === "snapshot" || step.kind === "spec") continue;
     const node = step.kind === "agent" ? step.role : "gate";
     const row = store.startStep(report.runId, node, step.cycle);
     store.finishStep(row.id, {

@@ -102,6 +102,11 @@ export const EvalSummarySchema = z.strictObject({
   finishedAt: z.string(),
   models: z.record(z.string(), z.string()),
   runtime: z.string(),
+  /**
+   * Eval runs approve specs automatically (`approval: auto`); results with manual
+   * approval are never mixed into an eval summary.
+   */
+  specApproval: z.literal("auto").default("auto"),
   metrics: EvalMetricsSchema,
   tasks: z.array(EvalTaskResultSchema),
   /** Global spend cap for this eval run; when reached, remaining tasks are skipped. */

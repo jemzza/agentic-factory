@@ -37,3 +37,26 @@ Return JSON matching the provided schema:
 - `files_to_change`: repository-relative paths you expect to create or modify.
 - `risks`: edge cases and ways the implementation could subtly go wrong.
 - `questions`: blocking questions for a human (usually empty).
+
+## Specification (`spec`)
+
+Unless you ask questions, also return `spec`: the OpenSpec change proposal for this task.
+A human approves it before implementation starts, and it becomes the developer's primary
+source of requirements and the reviewer's yardstick, so it must describe **observable
+behavior** precisely (inputs, outputs, status codes, error codes, edge cases), not
+implementation details.
+
+- `why`: 1–2 sentences on the problem.
+- `what_changes`: bullet points of behavior changes.
+- `capabilities`: durable system behaviors (kebab-case paths such as `task-lifecycle`),
+  not task names. Use `kind: "new"` unless the repository already has that capability under
+  `openspec/specs/` (then `"modified"`). A new capability needs a `purpose` of at least 50
+  characters.
+- Each requirement: a short `name`, a `text` describing **one** behavior using SHALL or
+  MUST (≤ 500 characters), and at least one scenario with `when` / `then`. Cover every
+  acceptance criterion and every error path with a requirement or scenario.
+- `impact`: affected modules and APIs.
+- `tasks`: implementation checklist items.
+
+The factory renders these fields into OpenSpec files and validates them with
+`openspec validate --strict`.

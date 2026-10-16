@@ -25,6 +25,8 @@ function stepRow(step: StepResult): string {
   switch (step.kind) {
     case "agent":
       return `| ${step.cycle} | ${step.role} | ${step.ok ? "ok" : `**${step.error?.kind ?? "failed"}**`} | ${secs(step.durationMs)} | ${usd(step.costUsd)} | ${step.tokens ? `${step.tokens.input} / ${step.tokens.output}` : "?"} | ${step.permissionDenials.length} | \`${step.rawLogPath}\` |`;
+    case "spec":
+      return `| 0 | spec draft #${step.attempt} | ${step.valid ? "valid" : `**invalid** (${step.issues.length} issue(s))`} | | | | | ${step.commit ? `\`${step.commit.slice(0, 10)}\`` : ""} |`;
     case "snapshot":
       return `| ${step.cycle} | snapshot | \`${step.commit.slice(0, 10)}\` | | | | | |`;
     case "gate":
@@ -74,6 +76,26 @@ export function renderReportMarkdown(r: RunReport): string {
     if (r.plan.questions.length)
       out.push("### Questions for a human", r.plan.questions.map((q) => `- ${q}`).join("\n"));
     if (r.plan.risks.length) out.push("### Risks", r.plan.risks.map((q) => `- ${q}`).join("\n"));
+  }
+
+  if (r.spec) {
+    out.push(
+      `## Specification (OpenSpec \`openspec/changes/${r.spec.changeId}\`)`,
+      [
+        `- **Approval:** ${r.spec.approvalMode}`,
+        `- **Validation:** ${r.spec.valid ? "valid" : "invalid"} after ${r.spec.attempts} attempt(s)`,
+        `- **Spec commit:** ${r.spec.commit ? `\`${r.spec.commit.slice(0, 10)}\`` : "—"}`,
+        r.spec.rejections.length
+          ? `- **Rejected by a human ${r.spec.rejections.length} time(s):** ${r.spec.rejections.map((c) => `“${cell(c)}”`).join("; ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      ...Object.entries(r.spec.files)
+        .filter(([p]) => p.endsWith(".md"))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .flatMap(([p, content]) => [`### \`${p}\``, fence(content, "markdown")]),
+    );
   }
 
   out.push(

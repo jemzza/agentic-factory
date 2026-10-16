@@ -113,16 +113,12 @@ export interface ChangedFile {
   path: string;
 }
 
-/** Files changed between the base commit and HEAD (call after `snapshot`). */
-export async function changedFiles(wt: Worktree): Promise<ChangedFile[]> {
-  const out = await git(wt.path, [
-    "diff",
-    "--name-status",
-    "--no-renames",
-    "-z",
-    wt.baseCommit,
-    "HEAD",
-  ]);
+/** Files changed between `from` (default: the base commit) and HEAD (call after `snapshot`). */
+export async function changedFiles(
+  wt: Worktree,
+  from: string = wt.baseCommit,
+): Promise<ChangedFile[]> {
+  const out = await git(wt.path, ["diff", "--name-status", "--no-renames", "-z", from, "HEAD"]);
   const parts = out.split("\0").filter((p) => p !== "");
   const files: ChangedFile[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -131,9 +127,20 @@ export async function changedFiles(wt: Worktree): Promise<ChangedFile[]> {
   return files;
 }
 
-/** Unified diff between the base commit and HEAD. */
-export async function diffFromBase(wt: Worktree): Promise<string> {
-  return git(wt.path, ["diff", "--no-color", "--no-ext-diff", wt.baseCommit, "HEAD"]);
+/** Unified diff between `from` (default: the base commit) and HEAD. */
+export async function diffFromBase(wt: Worktree, from: string = wt.baseCommit): Promise<string> {
+  return git(wt.path, ["diff", "--no-color", "--no-ext-diff", from, "HEAD"]);
+}
+
+/** Reads files as they are in `commit` (not the working tree). */
+export async function filesAtCommit(
+  wt: Worktree,
+  commit: string,
+  paths: readonly string[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const p of paths) out[p] = await git(wt.path, ["show", `${commit}:${p}`]);
+  return out;
 }
 
 export async function headCommit(wt: Worktree): Promise<string> {

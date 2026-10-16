@@ -1,7 +1,17 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { developerPrompt, type FixFeedback } from "../agents/developer.js";
-import { parsePlannerResult, PLANNER_OUTPUT_SCHEMA, plannerPrompt } from "../agents/planner.js";
+import {
+  parsePlannerResult,
+  parseSpecResult,
+  PLANNER_OUTPUT_SCHEMA,
+  plannerPrompt,
+  SPEC_OUTPUT_SCHEMA,
+  specFixPrompt,
+} from "../agents/planner.js";
+import { interrupt, isGraphBubbleUp } from "@langchain/langgraph";
+import { changeDir, renderSpecFiles, validateChange, writeSpecFiles } from "../spec/openspec.js";
+import { BASELINE_TAG, type RepoRef } from "../git/target-repo.js";
 import { buildSystemPrompt } from "../agents/prompts.js";
 import {
   isApproved,
@@ -16,6 +26,7 @@ import {
   changedFiles,
   createWorktree,
   diffFromBase,
+  filesAtCommit,
   headCommit,
   resetWorktree,
   snapshot,
@@ -34,14 +45,20 @@ import type { TargetConfig } from "../schemas/config.js";
 import { RunReportSchema, type RunReport, type StepResult } from "../schemas/report.js";
 import type { Store } from "../store/store.js";
 import { decide } from "./decide.js";
-import type { NodeName, RunStateUpdate, RunStateValue, StepError } from "./state.js";
+import {
+  SpecApprovalAnswerSchema,
+  type NodeName,
+  type RunStateUpdate,
+  type RunStateValue,
+  type StepError,
+} from "./state.js";
 
 /** Everything nodes need that is not state: services, paths, clock. Never checkpointed. */
 export interface NodeContext {
   config: ResolvedConfig;
   runtime: AgentRuntime;
   store?: Store | undefined;
-  ensureRepo: (target: TargetConfig, workdir: string) => Promise<TargetRepo>;
+  ensureRepo: (target: TargetConfig, workdir: string, from: RepoRef) => Promise<TargetRepo>;
   makeSandboxExec: (repoDir: string) => Promise<SandboxExec>;
   now: () => Date;
   /**
@@ -75,6 +92,8 @@ function node(name: NodeName, body: (s: RunStateValue) => Promise<RunStateUpdate
     try {
       return { ...(await body(s)), lastNode: name };
     } catch (err) {
+      // interrupt() and other LangGraph control flow must propagate untouched.
+      if (isGraphBubbleUp(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
       const kind: StepError["kind"] = err instanceof SandboxInfraError ? "sandbox" : "exception";
       return { lastNode: name, lastError: { node: name, kind, message } };
@@ -90,6 +109,8 @@ async function agentStep(
   cycle: number,
   prompt: string,
   outputSchema?: Record<string, unknown>,
+  /** Node to blame in `lastError` (defaults to the role's own node). */
+  errorNode?: NodeName,
 ): Promise<{ res: AgentRunResult; update: RunStateUpdate }> {
   const wt = requireWorktree(s);
   const { config, runtime, store } = ctx;
@@ -147,7 +168,8 @@ async function agentStep(
   const update: RunStateUpdate = { spentUsd, unknownCostSteps, steps: [step] };
   if (!res.ok) {
     update.lastError = {
-      node: role === "planner" ? "plan" : role === "developer" ? "develop" : "review",
+      node:
+        errorNode ?? (role === "planner" ? "plan" : role === "developer" ? "develop" : "review"),
       kind: res.error?.kind ?? "process",
       message: res.error?.message ?? "agent run failed",
     };
@@ -187,10 +209,38 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     return execCache.exec;
   };
 
+  /** The approved spec as committed (never read from the working tree). */
+  const approvedSpec = async (s: RunStateValue): Promise<Record<string, string>> => {
+    if (!s.specCommit || !s.worktree) return {};
+    return filesAtCommit(s.worktree, s.specCommit, Object.keys(s.specFiles));
+  };
+
+  /** The approved spec files must be identical to the spec commit. */
+  const specPolicyViolations = async (s: RunStateValue): Promise<string[]> => {
+    if (!s.specCommit || !s.worktree) return [];
+    const changed = await changedFiles(s.worktree, s.specCommit);
+    return changed
+      .filter((f) => f.path.startsWith(`${changeDir(s.task.id)}/`))
+      .map(
+        (f) =>
+          `the approved specification file \`${f.path}\` was modified; revert it (the spec is read-only)`,
+      );
+  };
+
   return {
     prepare: node("prepare", async (s) => {
       await mkdir(logsDir(s), { recursive: true });
-      const repo = await ctx.ensureRepo(config.target, config.workdirAbs);
+      const fullRepo = await ctx.ensureRepo(config.target, config.workdirAbs, s.repoRef);
+      const repo = { dir: fullRepo.dir, baseCommit: fullRepo.baseCommit };
+      if (fullRepo.baselineCreated && fullRepo.baselineCommit && ctx.store) {
+        ctx.store.recordBaseline({
+          target: config.target.name,
+          tag: BASELINE_TAG,
+          commitHash: fullRepo.baselineCommit,
+          actor: "factory",
+          reason: "initial materialization",
+        });
+      }
       const wt = await createWorktree({
         repoDir: repo.dir,
         baseCommit: repo.baseCommit,
@@ -220,18 +270,138 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         s,
         "planner",
         0,
-        plannerPrompt(s.task),
+        plannerPrompt(s.task, s.specRejections),
         PLANNER_OUTPUT_SCHEMA,
       );
       if (update.lastError) return update;
       const planned = parsePlannerResult(res);
       if (!planned.ok) return { ...update, lastError: { node: "plan", ...planned.error } };
-      return { ...update, planResult: planned.value };
+      // A new plan starts a fresh spec draft (rejection comments are kept).
+      return {
+        ...update,
+        planResult: planned.value,
+        spec: planned.value.spec ?? null,
+        specFiles: {},
+        specValid: false,
+        specIssues: [],
+        specAttempts: 0,
+        specCommit: null,
+        specDecision: null,
+      };
     }),
 
-    // Phase 2 stubs: OpenSpec drafting and the approval interrupt arrive in Phases 4–5.
-    spec_draft: node("spec_draft", () => Promise.resolve({})),
-    spec_approval: node("spec_approval", () => Promise.resolve({})),
+    spec_draft: node("spec_draft", async (s) => {
+      const wt = requireWorktree(s);
+      const attempt = s.specAttempts + 1;
+      let spec = s.spec;
+      let update: RunStateUpdate = {};
+      if (attempt > 1 && spec) {
+        // Second and last attempt: the Planner fixes its spec using the validator's output.
+        const fix = await agentStep(
+          ctx,
+          s,
+          "planner",
+          0,
+          specFixPrompt(s.task, spec, s.specIssues),
+          SPEC_OUTPUT_SCHEMA,
+          "spec_draft",
+        );
+        update = fix.update;
+        if (update.lastError) return { ...update, specAttempts: attempt };
+        const parsed = parseSpecResult(fix.res);
+        if (!parsed.ok) {
+          return {
+            ...update,
+            specAttempts: attempt,
+            lastError: { node: "spec_draft", ...parsed.error },
+          };
+        }
+        spec = parsed.value;
+      }
+      if (!spec) throw new Error("spec_draft without a spec");
+
+      // The spec is always the first change on the branch: start from the base commit.
+      await resetWorktree(wt, wt.baseCommit, worktreesRoot);
+      const files = renderSpecFiles(
+        s.task.id,
+        spec,
+        new Date(s.startedAtMs).toISOString().slice(0, 10),
+      );
+      await writeSpecFiles(wt.path, s.task.id, files);
+      const validation = await validateChange(wt.path, s.task.id);
+      if (validation.kind === "error") throw new Error(`openspec validate: ${validation.message}`);
+      const prevSteps = (update.steps as StepResult[] | undefined) ?? [];
+      if (validation.kind === "invalid") {
+        await resetWorktree(wt, wt.baseCommit, worktreesRoot);
+        ctx.log(`  spec draft #${attempt}: invalid (${validation.issues.length} issue(s))`);
+        return {
+          ...update,
+          spec,
+          specFiles: files,
+          specValid: false,
+          specIssues: validation.issues,
+          specAttempts: attempt,
+          headCommit: wt.baseCommit,
+          steps: [
+            ...prevSteps,
+            { kind: "spec", attempt, valid: false, issues: validation.issues, commit: null },
+          ],
+        };
+      }
+      const commit = await snapshot(
+        wt,
+        `factory: ${s.task.id} OpenSpec change (draft #${attempt})`,
+      );
+      ctx.log(`  spec draft #${attempt}: valid (${changeDir(s.task.id)})`);
+      ctx.store?.updateRun(s.runId, { headCommit: commit });
+      return {
+        ...update,
+        spec,
+        specFiles: files,
+        specValid: true,
+        specIssues: validation.issues,
+        specAttempts: attempt,
+        specCommit: commit,
+        headCommit: commit,
+        steps: [
+          ...prevSteps,
+          { kind: "spec", attempt, valid: true, issues: validation.issues, commit },
+        ],
+      };
+    }),
+
+    // Pure apart from the auto-approval record: on resume LangGraph re-runs this node from
+    // its start, and interrupt() then returns the human's answer.
+    spec_approval: node("spec_approval", (s) => {
+      if (s.specApprovalMode === "auto") {
+        const already = ctx.store
+          ?.listApprovals(s.runId)
+          .some((a) => a.gate === "spec" && a.actor === "auto" && a.comment === s.specCommit);
+        if (ctx.store && !already) {
+          ctx.store.recordApproval({
+            runId: s.runId,
+            gate: "spec",
+            decision: "approve",
+            actor: "auto",
+            comment: s.specCommit,
+          });
+        }
+        return Promise.resolve({ specDecision: "approve" as const });
+      }
+      // interrupt() validates the resume value with responseSchema; parse again for the type.
+      const answer: unknown = interrupt(
+        { gate: "spec", runId: s.runId, changeId: s.task.id, specCommit: s.specCommit },
+        { responseSchema: SpecApprovalAnswerSchema },
+      );
+      const parsed = SpecApprovalAnswerSchema.parse(answer);
+      return Promise.resolve({
+        specDecision: parsed.decision,
+        specRejections:
+          parsed.decision === "reject"
+            ? [...s.specRejections, parsed.comment ?? ""]
+            : s.specRejections,
+      });
+    }),
 
     develop: node("develop", async (s) => {
       if (!s.planResult) throw new Error("develop without a plan");
@@ -246,7 +416,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         s,
         "developer",
         cycle,
-        developerPrompt(s.task, s.planResult, fixFeedback(s, cycle)),
+        developerPrompt(s.task, s.planResult, fixFeedback(s, cycle), await approvedSpec(s)),
       );
       if (update.lastError) return { ...update, cycle, reviewVerdict: null };
       const commit = await snapshot(wt, `factory: ${s.task.id} developer cycle ${cycle}`);
@@ -268,7 +438,9 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       const dbStep = ctx.store?.startStep(s.runId, "gate", s.cycle);
       const gate = await runGate({
         worktreePath: wt.path,
-        changedFiles: (await changedFiles(wt)).map((f) => f.path),
+        // Scope covers the developer's work only: everything after the approved spec commit.
+        changedFiles: (await changedFiles(wt, s.specCommit ?? wt.baseCommit)).map((f) => f.path),
+        policyViolations: await specPolicyViolations(s),
         allowedPaths: s.task.scope.allowed_paths,
         checks: config.target.checks,
         checkTimeoutMs: Math.max(
@@ -306,13 +478,13 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
 
     review: node("review", async (s) => {
       const wt = requireWorktree(s);
-      const diff = await diffFromBase(wt);
+      const diff = await diffFromBase(wt, s.specCommit ?? wt.baseCommit);
       const { res, update } = await agentStep(
         ctx,
         s,
         "reviewer",
         s.cycle,
-        reviewerPrompt(s.task, diff, config.maxDiffCharsForReview),
+        reviewerPrompt(s.task, diff, config.maxDiffCharsForReview, await approvedSpec(s)),
         REVIEWER_OUTPUT_SCHEMA,
       );
       if (update.lastError) return update;
@@ -370,6 +542,19 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           ? { path: s.worktree.path, branch: s.worktree.branch, headCommit: head }
           : null,
         plan: s.planResult,
+        spec:
+          s.specAttempts > 0
+            ? {
+                changeId: s.task.id,
+                approvalMode: s.specApprovalMode,
+                commit: s.specCommit,
+                valid: s.specValid,
+                attempts: s.specAttempts,
+                change: s.spec,
+                files: s.specFiles,
+                rejections: s.specRejections,
+              }
+            : null,
         fixCycles: Math.max(0, s.cycle),
         steps: s.steps,
         review: s.reviewVerdict,

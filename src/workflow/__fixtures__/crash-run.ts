@@ -50,6 +50,7 @@ await runTask(
     store,
     ensureRepo: () => Promise.resolve({ dir: args.repoDir, baseCommit: args.baseCommit }),
     makeSandboxExec: () => Promise.resolve(exec),
+    specApprovalMode: "auto",
   },
   { runId: args.runId },
 );

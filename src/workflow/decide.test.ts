@@ -15,6 +15,17 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
   return {
     runId: "r",
     runDir: "/runs/r",
+    mode: "interactive",
+    specApprovalMode: "manual",
+    repoRef: "main",
+    spec: null,
+    specFiles: {},
+    specValid: true,
+    specIssues: [],
+    specAttempts: 1,
+    specCommit: "spec-commit",
+    specDecision: "approve",
+    specRejections: [],
     task: {
       id: "t",
       title: "T",
@@ -48,6 +59,7 @@ const gate = (passed: boolean): GateResult => ({
   passed,
   checks: [],
   scope: { passed: true, changedFiles: ["src/a.ts"], violations: [], empty: false },
+  policyViolations: [],
 });
 const approve: ReviewVerdict = {
   verdict: "approve",
@@ -173,8 +185,10 @@ describe("graph structure", () => {
         "plan->spec_draft",
         "plan->report",
         "spec_draft->spec_approval",
+        "spec_draft->spec_draft",
         "spec_draft->report",
         "spec_approval->develop",
+        "spec_approval->plan",
         "spec_approval->report",
         "develop->gate",
         "develop->report",

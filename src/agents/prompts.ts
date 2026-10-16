@@ -35,3 +35,20 @@ export function renderTask(task: TaskSpec): string {
     task.scope.allowed_paths.map((p) => `- \`${p}\``).join("\n"),
   ].join("\n\n");
 }
+
+/**
+ * The approved OpenSpec change as prompt text (files from the spec commit). It is the
+ * primary source of requirements for the developer and the yardstick for the reviewer.
+ */
+export function renderSpecForPrompt(files: Readonly<Record<string, string>>): string {
+  const body = Object.entries(files)
+    .filter(([p]) => p.endsWith(".md"))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([p, content]) => `### \`${p}\`\n\n${content.trim()}`)
+    .join("\n\n");
+  return [
+    "## Approved specification (OpenSpec change)",
+    "This specification was approved before implementation. It is the primary source of requirements; the acceptance criteria above must also hold. The files under `openspec/` are read-only: never edit them.",
+    body,
+  ].join("\n\n");
+}

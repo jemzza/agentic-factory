@@ -38,6 +38,8 @@ export async function runGate(opts: {
   allowedPaths: readonly string[];
   checks: readonly Check[];
   checkTimeoutMs: number;
+  /** Policy violations found by the caller (e.g. the approved spec was modified). */
+  policyViolations?: readonly string[];
   exec: SandboxExec;
   logDir: string;
   logPrefix: string;
@@ -67,12 +69,19 @@ export async function runGate(opts: {
     });
   }
 
-  return { passed: scope.passed && checks.every((c) => c.passed), checks, scope };
+  const policyViolations = [...(opts.policyViolations ?? [])];
+  return {
+    passed: scope.passed && policyViolations.length === 0 && checks.every((c) => c.passed),
+    checks,
+    scope,
+    policyViolations,
+  };
 }
 
 /** Human-readable gate failures for the developer's fix cycle. */
 export function describeGateFailures(gate: GateResult): string {
   const parts: string[] = [];
+  for (const p of gate.policyViolations) parts.push(`- Policy violation: ${p}`);
   if (gate.scope.empty) parts.push("- No files were changed. The task requires code changes.");
   for (const v of gate.scope.violations) {
     parts.push(`- Scope violation: \`${v}\` is outside the allowed paths. Revert changes to it.`);

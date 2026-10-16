@@ -1,7 +1,7 @@
 import { reviewerJsonSchema, ReviewVerdictSchema, type ReviewVerdict } from "../schemas/agents.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { AgentRunResult } from "../runtimes/types.js";
-import { renderTask } from "./prompts.js";
+import { renderSpecForPrompt, renderTask } from "./prompts.js";
 import { parseStructured, type StructuredOutcome } from "./structured.js";
 
 export const REVIEWER_OUTPUT_SCHEMA = reviewerJsonSchema;
@@ -9,11 +9,21 @@ export const REVIEWER_OUTPUT_SCHEMA = reviewerJsonSchema;
 /**
  * Reviewer input: task, criteria and the diff only — never the developer's messages.
  */
-export function reviewerPrompt(task: TaskSpec, diff: string, maxDiffChars: number): string {
+export function reviewerPrompt(
+  task: TaskSpec,
+  diff: string,
+  maxDiffChars: number,
+  specFiles: Readonly<Record<string, string>> = {},
+): string {
   const truncated = diff.length > maxDiffChars;
   const shown = truncated ? diff.slice(0, maxDiffChars) : diff;
+  const hasSpec = Object.keys(specFiles).length > 0;
   return [
     renderTask(task),
+    hasSpec ? renderSpecForPrompt(specFiles) : "",
+    hasSpec
+      ? "Check the diff against BOTH the approved specification (every requirement and scenario) and the acceptance criteria. A requirement of the spec that is not implemented is a blocker."
+      : "",
     "## Diff under review (base → proposed change)",
     truncated
       ? `The diff is ${diff.length} characters; only the first ${maxDiffChars} are shown. Read the changed files in the working directory for the rest.`

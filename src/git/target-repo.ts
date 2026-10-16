@@ -8,11 +8,23 @@ import { git } from "./git.js";
 
 const SKIP = new Set(["node_modules", ".git", "dist", "coverage"]);
 
+/**
+ * Immutable tag marking the eval baseline. Factory code never moves it; only an explicit
+ * baseline update does (recorded in the DB). Eval runs always start from it.
+ */
+export const BASELINE_TAG = "factory-baseline";
+
+export type RepoRef = "baseline" | "main";
+
 export interface TargetRepo {
   /** Absolute path of the target's main checkout (its own git repository). */
   dir: string;
-  /** Commit every task starts from. */
+  /** Commit this task starts from (the baseline tag for eval runs, main's HEAD otherwise). */
   baseCommit: string;
+  /** Commit the baseline tag points to. */
+  baselineCommit?: string;
+  /** True when this call created the baseline tag (to be recorded in the DB). */
+  baselineCreated?: boolean;
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -57,7 +69,11 @@ export async function hashDirectory(dir: string): Promise<string> {
  * `node_modules` is added to the repo's info/exclude so the per-worktree symlink never
  * shows up in diffs, whatever the target's own .gitignore says.
  */
-export async function ensureTargetRepo(target: TargetConfig, workdir: string): Promise<TargetRepo> {
+export async function ensureTargetRepo(
+  target: TargetConfig,
+  workdir: string,
+  from: RepoRef = "main",
+): Promise<TargetRepo> {
   const reposDir = path.join(workdir, "repos");
   await mkdir(reposDir, { recursive: true });
 
@@ -103,6 +119,14 @@ export async function ensureTargetRepo(target: TargetConfig, workdir: string): P
     }
   }
 
-  const baseCommit = (await git(dir, ["rev-parse", "HEAD"])).trim();
-  return { dir, baseCommit };
+  let baselineCreated = false;
+  const tagged = await git(dir, ["tag", "--list", BASELINE_TAG]);
+  if (tagged.trim() === "") {
+    await git(dir, ["tag", BASELINE_TAG, "HEAD"]);
+    baselineCreated = true;
+  }
+  const baselineCommit = (await git(dir, ["rev-parse", `${BASELINE_TAG}^{commit}`])).trim();
+  const baseCommit =
+    from === "baseline" ? baselineCommit : (await git(dir, ["rev-parse", "HEAD"])).trim();
+  return { dir, baseCommit, baselineCommit, baselineCreated };
 }

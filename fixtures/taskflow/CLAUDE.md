@@ -79,6 +79,8 @@ Every error response has the shape `{ "error": { "code", "message", "details?" }
 
 - Do not add dependencies or change `package.json`, `package-lock.json`, `tsconfig*.json`,
   or `vitest.config.ts`.
+- Do not edit anything under `openspec/`: specifications are written and approved before
+  implementation and are managed by the factory.
 - Do not weaken, skip, or delete existing tests to make a change pass.
 - Do not change existing behavior that a request does not explicitly ask to change. If a
   request contradicts the rules above, stop and ask instead of implementing it.

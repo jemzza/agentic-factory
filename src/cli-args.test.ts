@@ -10,6 +10,12 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["run", "complete-task"])).toEqual({
       kind: "run",
       taskId: "complete-task",
+      autoApproveSpec: false,
+    });
+    expect(parseCliArgs(["run", "complete-task", "--auto-approve-spec"])).toEqual({
+      kind: "run",
+      taskId: "complete-task",
+      autoApproveSpec: true,
     });
   });
 
@@ -49,6 +55,27 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["runs", "5"])).toEqual({ kind: "runs", limit: 5 });
     expect(parseCliArgs(["runs", "x"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["db-import"])).toEqual({ kind: "db-import" });
+  });
+
+  it("parses approve and reject for the spec gate", () => {
+    const id = "20261015-171000-ab12";
+    expect(parseCliArgs(["approve", id, "spec"])).toEqual({
+      kind: "decide",
+      runId: id,
+      gate: "spec",
+      decision: "approve",
+      comment: null,
+    });
+    expect(parseCliArgs(["reject", id, "spec", "--comment", "split it"])).toEqual({
+      kind: "decide",
+      runId: id,
+      gate: "spec",
+      decision: "reject",
+      comment: "split it",
+    });
+    expect(parseCliArgs(["reject", id, "spec"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["approve", id, "merge"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["approve", "bad-id", "spec"])).toMatchObject({ kind: "invalid" });
   });
 
   it("parses resume <runId>", () => {

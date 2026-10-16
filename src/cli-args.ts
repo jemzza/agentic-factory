@@ -3,7 +3,14 @@ import { TASK_ID_PATTERN } from "./schemas/task.js";
 export const RUN_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
 
 export type CliCommand =
-  | { kind: "run"; taskId: string }
+  | { kind: "run"; taskId: string; autoApproveSpec: boolean }
+  | {
+      kind: "decide";
+      runId: string;
+      gate: "spec";
+      decision: "approve" | "reject";
+      comment: string | null;
+    }
   | { kind: "eval"; taskIds: string[] }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
@@ -13,7 +20,11 @@ export type CliCommand =
   | { kind: "invalid"; message: string };
 
 export const USAGE = `Usage:
-  npm run run-task -- <taskId>   Run one task through Planner → Developer → Quality Gate → Reviewer
+  npm run run-task -- <taskId> [--auto-approve-spec]
+                                 Run one task; stops for spec approval unless --auto-approve-spec
+  npm run approve -- <runId> spec
+  npm run reject -- <runId> spec --comment "..."
+                                 Approve the OpenSpec change, or send it back to planning
   npm run eval [-- <taskId>...]  Run the eval suite (all tasks, or the given ones) and verify
                                  successes with hidden tests
   npm run verify-hidden [-- <taskId>]
@@ -31,7 +42,8 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     case "-h":
       return { kind: "help" };
     case "run": {
-      const [taskId, ...extra] = rest;
+      const autoApproveSpec = rest.includes("--auto-approve-spec");
+      const [taskId, ...extra] = rest.filter((a) => a !== "--auto-approve-spec");
       if (taskId === undefined) return { kind: "invalid", message: "run: missing <taskId>" };
       if (!TASK_ID_PATTERN.test(taskId)) {
         return {
@@ -42,7 +54,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       if (extra.length > 0) {
         return { kind: "invalid", message: `run: unexpected arguments: ${extra.join(" ")}` };
       }
-      return { kind: "run", taskId };
+      return { kind: "run", taskId, autoApproveSpec };
     }
     case "eval": {
       const bad = rest.filter((id) => !TASK_ID_PATTERN.test(id));
@@ -70,6 +82,24 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: "runs: expected an optional positive limit" };
       }
       return { kind: "runs", limit: limit === undefined ? 20 : Number(limit) };
+    }
+    case "approve":
+    case "reject": {
+      const [runId, gate, ...flags] = rest;
+      if (runId === undefined || !RUN_ID_PATTERN.test(runId) || gate !== "spec") {
+        return { kind: "invalid", message: `${command}: expected <runId> spec` };
+      }
+      let comment: string | null = null;
+      if (flags.length > 0) {
+        if (flags[0] !== "--comment" || flags.length !== 2 || !flags[1]?.trim()) {
+          return { kind: "invalid", message: `${command}: only --comment "<text>" is accepted` };
+        }
+        comment = flags[1].trim();
+      }
+      if (command === "reject" && comment === null) {
+        return { kind: "invalid", message: 'reject: --comment "<what to change>" is required' };
+      }
+      return { kind: "decide", runId, gate, decision: command, comment };
     }
     case "resume": {
       const [runId, ...extra] = rest;

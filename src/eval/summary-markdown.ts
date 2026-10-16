@@ -13,6 +13,7 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       `- **Runtime / models:** ${s.runtime} — ${Object.entries(s.models)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")}`,
+      `- **Spec approval:** ${s.specApproval} (eval runs are unattended; manual approvals are not mixed into these metrics)`,
     ].join("\n"),
   );
 

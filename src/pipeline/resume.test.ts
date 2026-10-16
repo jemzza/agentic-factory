@@ -73,6 +73,7 @@ function resumeDeps(
     store,
     ensureRepo: () => Promise.resolve(a.repo),
     makeSandboxExec: () => Promise.resolve(fakeExec),
+    specApprovalMode: "auto",
   };
 }
 
@@ -103,16 +104,18 @@ describe("resume after a crash", () => {
 
       const runtime = goodRuntime();
       const res = await resumeRun(a.runId, resumeDeps(a, store, runtime));
-      expect(res.kind).toBe("resumed");
-      if (res.kind !== "resumed") return;
-      const report = res.result.report;
+      if (res.kind !== "resumed" || res.outcome.kind !== "finished")
+        throw new Error("expected a finished run");
+      const report = res.outcome.report;
       expect(report.status).toBe("success");
       // Planner was checkpointed before the crash: only develop onwards ran again.
       expect(runtime.rolesCalled()).toEqual(["developer", "reviewer"]);
       // Exactly one copy of the change, both on disk and in the diff.
       expect(await readFile(path.join(wtPath, "src", "feature.ts"), "utf8")).toBe(LINE);
       expect(report.diff.split("+export const feature = 1;").length - 1).toBe(1);
-      expect(report.changedFiles).toEqual(["src/feature.ts"]);
+      expect(report.changedFiles.filter((f) => !f.startsWith("openspec/"))).toEqual([
+        "src/feature.ts",
+      ]);
       // The abandoned attempt is visible and its cost is counted as unknown.
       expect(
         store
@@ -142,9 +145,10 @@ describe("resume after a crash", () => {
       expect(store.listSteps(a.runId).at(-1)).toMatchObject({ node: "gate", status: "running" });
       const runtime = goodRuntime();
       const res = await resumeRun(a.runId, resumeDeps(a, store, runtime));
-      if (res.kind !== "resumed") throw new Error("expected a resumed run");
-      expect(res.result.report.status).toBe("success");
-      expect(res.result.report.gate?.passed).toBe(true);
+      if (res.kind !== "resumed" || res.outcome.kind !== "finished")
+        throw new Error("expected a finished run");
+      expect(res.outcome.report.status).toBe("success");
+      expect(res.outcome.report.gate?.passed).toBe(true);
       // develop had completed before the crash: it is not repeated.
       expect(runtime.rolesCalled()).toEqual(["reviewer"]);
       expect(
@@ -156,7 +160,7 @@ describe("resume after a crash", () => {
         [1, "abandoned"],
         [2, "ok"],
       ]);
-      expect(res.result.report.diff.split("+export const feature = 1;").length - 1).toBe(1);
+      expect(res.outcome.report.diff.split("+export const feature = 1;").length - 1).toBe(1);
     } finally {
       db.close();
     }

@@ -1,12 +1,13 @@
+import os from "node:os";
 import path from "node:path";
 import { parseCliArgs, USAGE } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { runEval } from "./eval/run-eval.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
-import { ensureTargetRepo } from "./git/target-repo.js";
+import { BASELINE_TAG, ensureTargetRepo } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
-import { defaultSandboxExec, resumeRun, runTask } from "./pipeline/run-task.js";
+import { defaultSandboxExec, resumeRun, runTask, type RunOutcome } from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
@@ -43,30 +44,78 @@ async function verifyHidden(taskId: string | null): Promise<number> {
 
 export const RUNS_DIR = path.join(FACTORY_ROOT, "runs");
 
-async function runOne(taskId: string): Promise<number> {
+function printOutcome(outcome: RunOutcome): number {
+  if (outcome.kind === "awaiting") {
+    console.log(
+      `\nAWAITING ${outcome.gate.toUpperCase()} APPROVAL: review ${path.relative(process.cwd(), outcome.noticePath)}\n` +
+        `  npm run approve -- ${outcome.runId} ${outcome.gate}\n` +
+        `  npm run reject -- ${outcome.runId} ${outcome.gate} --comment "what to change"`,
+    );
+    return 0;
+  }
+  const { report } = outcome;
+  console.log(
+    `\n${report.status.toUpperCase()}: ${report.message}\n` +
+      `cost $${report.cost.totalUsd.toFixed(3)}, ${Math.round(report.durationMs / 1000)}s, fix cycles ${report.fixCycles}\n` +
+      `report: ${path.relative(process.cwd(), outcome.reportMdPath)}`,
+  );
+  return report.status === "success" ? 0 : 1;
+}
+
+const consoleLog = (m: string) => {
+  console.log(m);
+};
+
+async function runOne(taskId: string, autoApproveSpec: boolean): Promise<number> {
   const config = await loadConfig();
   const task = await loadTaskSpec(taskId);
   const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
   console.log(
-    `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min)`,
+    `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min, spec approval: ${autoApproveSpec ? "auto" : "manual"})`,
   );
   const store = new Store(openDb());
-  const { report, reportMdPath } = await runTask(task, {
-    config,
-    runtime,
-    runsDir: RUNS_DIR,
-    store,
-    log: (m) => {
-      console.log(m);
-    },
-  });
-  store.db.close();
-  console.log(
-    `\n${report.status.toUpperCase()}: ${report.message}\n` +
-      `cost $${report.cost.totalUsd.toFixed(3)}, ${Math.round(report.durationMs / 1000)}s, fix cycles ${report.fixCycles}\n` +
-      `report: ${path.relative(process.cwd(), reportMdPath)}`,
-  );
-  return report.status === "success" ? 0 : 1;
+  try {
+    const outcome = await runTask(task, {
+      config,
+      runtime,
+      runsDir: RUNS_DIR,
+      store,
+      specApprovalMode: autoApproveSpec ? "auto" : "manual",
+      log: consoleLog,
+    });
+    return printOutcome(outcome);
+  } finally {
+    store.db.close();
+  }
+}
+
+/** Human decision at the spec gate: record it, then resume the run with it. */
+async function decideGate(
+  runId: string,
+  decision: "approve" | "reject",
+  comment: string | null,
+): Promise<number> {
+  const config = await loadConfig();
+  const store = new Store(openDb());
+  try {
+    const run = store.requireRun(runId);
+    if (run.status !== "awaiting_spec_approval") {
+      console.error(`error: run ${runId} is not waiting for spec approval (status: ${run.status})`);
+      return 2;
+    }
+    const actor = os.userInfo().username;
+    store.recordApproval({ runId, gate: "spec", decision, actor, comment });
+    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const res = await resumeRun(
+      runId,
+      { config, runtime, runsDir: RUNS_DIR, store, log: consoleLog },
+      { answer: { decision, actor, ...(comment ? { comment } : {}) } },
+    );
+    if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
+    return printOutcome(res.outcome);
+  } finally {
+    store.db.close();
+  }
 }
 
 async function evalSuite(taskIds: string[]): Promise<number> {
@@ -74,7 +123,8 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   const ids = taskIds.length > 0 ? taskIds : await listTaskIds();
   const tasks = [];
   for (const id of ids) tasks.push({ task: await loadTaskSpec(id), meta: await loadEvalMeta(id) });
-  const repo = await ensureTargetRepo(config.target, config.workdirAbs);
+  // Eval always starts from the immutable baseline tag.
+  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
   const exec = await defaultSandboxExec(repo.dir);
   const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
   const log = (m: string) => {
@@ -82,6 +132,15 @@ async function evalSuite(taskIds: string[]): Promise<number> {
   };
 
   const store = new Store(openDb());
+  if (repo.baselineCreated && repo.baselineCommit) {
+    store.recordBaseline({
+      target: config.target.name,
+      tag: BASELINE_TAG,
+      commitHash: repo.baselineCommit,
+      actor: "factory",
+      reason: "initial materialization",
+    });
+  }
   // Set by the runTask callback (assigned in a closure, so kept in an object).
   const current: { evalId: string | null } = { evalId: null };
   console.log(`Eval: ${tasks.length} task(s), sequential`);
@@ -103,7 +162,7 @@ async function evalSuite(taskIds: string[]): Promise<number> {
           costCapUsd: null,
         });
       }
-      return runTask(task, {
+      const outcome = await runTask(task, {
         config,
         runtime,
         runsDir,
@@ -112,6 +171,10 @@ async function evalSuite(taskIds: string[]): Promise<number> {
         makeSandboxExec: () => Promise.resolve(exec),
         log,
       });
+      // Eval approves specs automatically, so a run can only pause at the merge gate (Phase 5).
+      if (outcome.kind !== "finished")
+        throw new Error(`eval run paused at ${outcome.gate} approval`);
+      return outcome;
     },
     runHidden: (worktreePath, taskId) =>
       runHiddenTests({
@@ -154,6 +217,12 @@ async function resumeOne(runId: string): Promise<number> {
         console.log(m);
       },
     });
+    if (res.kind === "awaiting_human") {
+      console.log(
+        `run ${runId} is waiting for a human decision (${res.run.status}); use approve/reject`,
+      );
+      return 0;
+    }
     if (res.kind === "finished") {
       console.log(
         `run ${runId} is already finished: ${res.run.status}${res.run.status_message ? ` (${res.run.status_message})` : ""}` +
@@ -163,13 +232,7 @@ async function resumeOne(runId: string): Promise<number> {
       );
       return 0;
     }
-    const report = res.result.report;
-    console.log(
-      `\n${report.status.toUpperCase()}: ${report.message}\n` +
-        `cost $${report.cost.totalUsd.toFixed(3)}, fix cycles ${report.fixCycles}\n` +
-        `report: ${path.relative(process.cwd(), res.result.reportMdPath)}`,
-    );
-    return report.status === "success" ? 0 : 1;
+    return printOutcome(res.outcome);
   } finally {
     store.db.close();
   }
@@ -212,7 +275,9 @@ async function main(argv: readonly string[]): Promise<number> {
     case "verify-hidden":
       return verifyHidden(cmd.taskId);
     case "run":
-      return runOne(cmd.taskId);
+      return runOne(cmd.taskId, cmd.autoApproveSpec);
+    case "decide":
+      return decideGate(cmd.runId, cmd.decision, cmd.comment);
     case "eval":
       return evalSuite(cmd.taskIds);
     case "runs":

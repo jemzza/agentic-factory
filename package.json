@@ -22,9 +22,12 @@
     "smoke:claude": "tsx scripts/smoke-claude.ts",
     "runs": "tsx src/cli.ts runs",
     "resume": "tsx src/cli.ts resume",
+    "approve": "tsx src/cli.ts approve",
+    "reject": "tsx src/cli.ts reject",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
+    "@fission-ai/openspec": "1.14.2",
     "@langchain/core": "1.2.17",
     "@langchain/langgraph": "1.5.0",
     "@langchain/langgraph-checkpoint-sqlite": "1.1.0",
