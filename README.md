@@ -2,116 +2,139 @@
 
 Takes a development task against a target repository and drives it to a **verified** result:
 
-1. **Planner** — explores the code read-only and produces a structured plan (or asks questions).
-2. **Developer** — implements the plan in an isolated git worktree.
-3. **Quality Gate** — typecheck and tests run by the factory (not the agent) in a Docker
-   sandbox with `--network none`, plus a scope check of the diff.
-4. **Reviewer** — independent read-only review of the diff against acceptance criteria.
-5. **Report** — diff, actual command output, verdict, time and cost.
+1. **Planner** — explores the code read-only and returns a structured plan plus an
+   **OpenSpec change** (requirements grounded in the acceptance criteria), or asks questions.
+2. **Spec approval** — a human approves or rejects the spec (`--auto-approve-spec` in eval).
+3. **Developer** — implements the approved spec in an isolated git worktree.
+4. **Quality Gate** — typecheck and tests run by the factory (not the agent) in a Docker
+   sandbox with `--network none`, plus scope and spec-immutability checks of the diff.
+5. **Reviewer** — independent read-only review, by a model from **another vendor**
+   (OpenCode), of the diff against the spec and the acceptance criteria.
+6. **Report**, then **merge approval** — a human merges or closes; the gate re-runs on the
+   merge result before `main` moves. Nothing is ever merged automatically.
 
-A human always does the merge.
-
-> Status: Week 1 — one reliable, measurable loop with Claude Code as the only runtime.
-> LangGraph, OpenSpec, Mem0, OpenCode and Pi are planned for later weeks; the
-> `AgentRuntime` interface and the per-target config are the extension points.
+> Status: Week 2 — the loop is a LangGraph.js state graph with SQLite checkpoints (resume
+> after a crash), OpenSpec specs with an approval gate, a merge gate, and OpenCode as the
+> independent reviewer. Week 2 results: [docs/week2-results.md](docs/week2-results.md).
 
 ## Architecture
 
-```
-npm run run-task -- <id>          npm run eval
-        │                               │  (sequential, all tasks or a subset)
-        ▼                               ▼
-  pipeline/run-task.ts  ◄──────── eval/run-eval.ts ──► hidden tests on a COPY of the
-        │                               │               final worktree (sandbox)
-        │                               ▼
-        │                         runs/eval-<ts>/summary.{md,json}
-        ▼
- 1 prepare   git/target-repo.ts   target repo under $FACTORY_WORKDIR/repos (outside this repo)
-             git/worktree.ts      worktree on branch factory/<task>-<run>; hidden-artifact guard
- 2 planner   agents/planner.ts    read-only; Zod { plan, files_to_change, risks, questions }
-             questions ≠ []  ──►  needs_clarification
- 3 developer agents/developer.ts  edits + exact Bash allow-list; snapshot commit after each cycle
- 4 gate      quality/gate.ts      scope (git diff ⊆ allowed_paths, non-empty) +
-             quality/sandbox.ts   typecheck, test in Docker --network none
- 5 reviewer  agents/reviewer.ts   read-only; sees task + criteria + diff only;
-                                  Zod { verdict, issues, criteria_check }
- 6 fix loop  ≤ max_fix_cycles (2) with gate output / review findings
- 7 report    report/markdown.ts   runs/<run>/report.{json,md} + raw agent & check logs
+```mermaid
+flowchart TD
+    START([START]) --> prepare --> plan
+    plan -->|questions| report
+    plan --> spec_draft
+    spec_draft -->|invalid, one retry| spec_draft
+    spec_draft --> spec_approval{{"⏸ spec_approval"}}
+    spec_approval -->|reject ≤ 2| plan
+    spec_approval -->|approve| develop --> gate
+    gate -->|failed, cycle < max| develop
+    gate -->|passed| review
+    review -->|changes requested, cycle < max| develop
+    review -->|approved| report
+    report -->|success| merge_approval{{"⏸ merge_approval"}}
+    report -->|any other status| END([END])
+    merge_approval -->|merge| merge
+    merge_approval -->|close| close --> END
+    merge -->|merged| END
+    merge -->|conflict / gate failed / main moved| merge_approval
 ```
 
-- `runtimes/types.ts` — `AgentRuntime` contract; `runtimes/claude-code.ts` — headless
-  Claude Code adapter (`claude -p --output-format stream-json`), `runtimes/tool-policy.ts` —
-  per-role tool policy enforced in code.
-- `schemas/` — Zod schemas at every boundary: task specs, eval metadata, config, agent
-  answers, step results, run reports, eval summaries. An agent answer that does not match
-  its schema is a step error (`invalid_response`), never repaired.
-- `prompts/` — role system prompts; the target's `CLAUDE.md` is appended by the factory.
-- `fixtures/taskflow/` — the first target (Fastify + TypeScript service), materialized as a
-  real git repository by the factory.
+Errors, timeouts and budget stops from any node go to `report`. The full graph with every
+edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design decisions:
+[docs/week2-design.md](docs/week2-design.md).
+
+- **The graph routes, nodes execute.** `src/workflow/decide.ts` is the single routing rule
+  (transitions, limits on edges, errors); `src/workflow/nodes.ts` holds thin nodes that call
+  `agents/`, `git/`, `quality/`, `spec/`, `runtimes/`. The edges are tested against
+  `docs/graph.md`.
+- **State and checkpoints:** `data/factory.db` (better-sqlite3, migrations in `migrations/`)
+  holds runs, steps, attempts, events, approvals, baselines and evals; LangGraph's
+  `SqliteSaver` writes a checkpoint after every node (`thread_id = runId`). Secrets are masked
+  before anything is stored.
+- **Idempotent replay:** a node that changes files first resets the worktree to the last
+  committed head (path-guarded to managed worktrees), so a node re-run after a crash never
+  works on top of partial changes.
+- `runtimes/` — `AgentRuntime` contract; `claude-code.ts` (headless `claude -p`),
+  `opencode.ts` (`opencode run --format json`, read-only roles only), per-role tool policy.
+- `schemas/` — Zod at every boundary: tasks, specs, config, agent answers, steps, reports,
+  eval summaries. An answer that does not match its schema is a step error, never repaired.
+- `spec/openspec.ts` — renders the planner's spec JSON into `openspec/changes/<taskId>/`,
+  `openspec validate --strict`, `openspec archive` at merge time.
+- `fixtures/taskflow/` — the target (Fastify + TypeScript), materialized as a real git repo
+  under `FACTORY_WORKDIR`; eval starts from its immutable `factory-baseline` tag.
 - `evals/tasks/` (visible) · `evals/hidden/` (hidden tests + eval metadata) ·
   `evals/reference/` (reference patches) — the last two are never reachable from agents.
+  `evals/review/` — frozen reviewer evaluation set (15 diffs with known defects / clean).
 
 ### Statuses and limits
 
-`success` · `gate_failed` · `review_rejected` · `needs_clarification` · `timeout` ·
-`budget_exceeded` · `error`. Every step has a timeout capped by the task deadline
-(`timeout_minutes`); each agent call gets only the remaining budget and the run stops
-hard once `max_cost_usd` is exceeded; at most 2 fix cycles. A run is `success` only if
-the sandboxed checks exit 0 and the reviewer's structured verdict approves with every
-criterion met — the developer's own claims are never evidence. In eval, a `success` is
-then checked by hidden tests: `verified` or `false_success`.
+`needs_clarification` · `gate_failed` · `review_rejected` · `timeout` · `budget_exceeded` ·
+`error` (terminal) · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
+`closed`. Every step has a timeout capped by the task deadline; each agent call gets only the
+remaining budget; at most `max_fix_cycles` (≤ 2) develop→gate/review cycles; at most 2 spec
+rejections and one spec repair attempt. A run reaches `awaiting_merge_approval` only if the
+sandboxed checks exit 0 and the reviewer's structured verdict approves with every criterion
+met. In eval, that success claim is checked by hidden tests: `verified` or `false_success`.
 
 ## How to run
 
 ```bash
 npm ci
-cp .env.example .env          # optional: CLAUDE_BIN, FACTORY_WORKDIR
-claude auth status            # the agent CLI must be logged in
-npm run run-task -- complete-task      # one task → runs/<runId>/report.md
-npm run eval                           # all 10 tasks → runs/eval-<ts>/summary.md
-npm run eval -- pagination due-date    # a subset
+cp .env.example .env          # OPENAI_API_KEY for the OpenCode reviewer; optional paths
+claude auth status            # the Claude Code CLI must be logged in
 ```
 
-Configuration lives in `factory.config.json` (target repo, checks, per-role models, step
-timeouts). Successful runs leave their branch in the worktree for a human to review and
-merge; the factory never merges.
+| Command                                              | What it does                                                                           |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `npm run run-task -- <taskId> [--auto-approve-spec]` | Run one task from `main`; stops at spec approval (see `runs/<runId>/spec-approval.md`) |
+| `npm run approve -- <runId> spec`                    | Approve the spec and continue to development                                           |
+| `npm run reject -- <runId> spec --comment "…"`       | Send the spec back to the planner with the comment (≤ 2 times)                         |
+| `npm run merge -- <runId>`                           | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
+| `npm run close -- <runId> --comment "…"`             | Close a successful run without merging                                                 |
+| `npm run resume -- <runId>`                          | Continue an interrupted run from its last checkpoint                                   |
+| `npm run runs [-- <limit>]`                          | List recent runs from the database                                                     |
+| `npm run eval [-- [--repeat N] <taskId>...]`         | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
+| `npm run eval:review [-- --only <runtime>]`          | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
+| `npm run verify-hidden [-- <taskId>]`                | Hidden tests fail on baseline and pass on reference patches                            |
+| `npm run baseline:update -- --reason "…"`            | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
+| `npm run reopen-merge -- <runId>`                    | One-time: put a pre-merge-gate success run at the merge gate                           |
+| `npm run db:import`                                  | Import Week 1 run reports from `runs/` into the database                               |
+
+### Runtime configuration (`factory.config.ts`)
+
+```ts
+roles: {
+  planner:   { runtime: "claude-code", model: "opus" },
+  developer: { runtime: "claude-code", model: "opus" },
+  reviewer:  { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
+},
+reviewEval: { reviewers: [/* reviewers compared by eval:review */] },
+secretEnv: ["OPENAI_API_KEY", /* … */],   // never passed to Claude Code or the sandbox
+evalCostCapUsd: 10,                       // shared by all repeats of one eval
+```
+
+The config is validated with Zod at load time: OpenCode can only take read-only roles, its
+model must be an exact `provider/model` (no `latest`) different from the developer's, and
+every `keyEnv` must also be listed in `secretEnv`.
 
 ## Latest metrics
 
-`npm run eval` on 2026-10-15 (`eval-20261015-130103`), Claude Code 2.1.300, Opus for all roles,
-TaskFlow target, 10 tasks run sequentially.
+Week 2 pipeline (spec → develop → gate → review, stopping at the merge gate) on TaskFlow,
+10 tasks, planner and developer Claude Code Opus, one repeat per reviewer (2026-10-16):
 
-| Metric                                     | Value                       |
-| ------------------------------------------ | --------------------------- |
-| Verified rate (correct / total)            | **100%** (10/10)            |
-| False success rate                         | **0%** (0/9 success claims) |
-| Average fix cycles                         | 0                           |
-| Average time per task                      | 146.2s                      |
-| Total cost (list-price estimate)           | $5.28                       |
-| Hidden-test files found in agent worktrees | 0                           |
+| Metric                    | Sol reviewer (OpenCode `openai/gpt-6.1-sol`) | Opus reviewer (Claude Code) | Week 1 baseline |
+| ------------------------- | -------------------------------------------- | --------------------------- | --------------- |
+| Verified rate             | **90%** (9/10)                               | **100%** (10/10)            | 100% (10/10)    |
+| False success rate        | 0% (0/8)                                     | 0% (0/9)                    | 0% (0/9)        |
+| Avg fix cycles            | 0.44                                         | 0                           | 0               |
+| Avg time per task         | 158.3s                                       | 119.1s                      | 147.1s          |
+| Total cost                | $6.03                                        | $5.82                       | $5.29           |
+| Hidden files in worktrees | 0                                            | 0                           | 0               |
 
-| Task             | Difficulty | Outcome             | Hidden tests | Fix cycles | Time | Cost   |
-| ---------------- | ---------- | ------------------- | ------------ | ---------- | ---- | ------ |
-| `bulk-status`    | medium     | verified            | 11/11        | 0          | 104s | $0.496 |
-| `complete-task`  | simple     | verified            | 4/4          | 0          | 79s  | $0.398 |
-| `due-date`       | medium     | verified            | 20/20        | 0          | 157s | $0.809 |
-| `hard-delete`    | simple     | needs_clarification | —            | 0          | 15s  | $0.051 |
-| `pagination`     | hard       | verified            | 19/19        | 0          | 187s | $0.868 |
-| `reopen-task`    | simple     | verified            | 5/5          | 0          | 73s  | $0.379 |
-| `restore-task`   | medium     | verified            | 6/6          | 0          | 476s | $0.418 |
-| `search-tasks`   | simple     | verified            | 8/8          | 0          | 112s | $0.600 |
-| `sort-tasks`     | medium     | verified            | 10/10        | 0          | 117s | $0.554 |
-| `status-history` | hard       | verified            | 9/9          | 0          | 137s | $0.708 |
-
-**How to read this.** This is a single run, so run-to-run variance is not measured yet.
-Every implementable task passed the gate and review on the first attempt (0 fix cycles),
-and the contradictory `hard-delete` stopped with `needs_clarification`. The result means
-the suite is close to saturated for Opus: the fix-cycle path and `false_success` detection
-were exercised only by unit tests (fake runtime) and by the reference/mutation checks of the
-hidden tests, not by a real failing agent. Next steps: harder tasks, a cheaper model
-(e.g. `sonnet` via `factory.config.json`) to calibrate, and repeated runs to measure variance.
-The slowest task (`restore-task`, ~8 min) spent most of its time in API retries
-(`api_retry` events in the agent log), not in the pipeline.
+Sol lost `bulk-status` by demanding atomicity under repository failures beyond the task's
+scope. Details, the reviewer eval, caveats (the baseline commit changed in Phase 4) and the
+spend: [docs/week2-results.md](docs/week2-results.md).
 
 ## Security model
 
@@ -134,9 +157,22 @@ Docker container with:
 
 The image build itself needs network (base image pull, `npm ci`). Checks never do.
 
-### Known limitation: the agent runs on the host (Week 1)
+### OpenCode reviewer (`src/runtimes/opencode.ts`)
 
-Claude Code needs access to the Anthropic API, so in Week 1 the agent process runs on
+- Read-only roles only: the runtime refuses the developer role, and `OPENCODE_PERMISSION`
+  denies every tool except `read`, `grep`, `glob`, `list` (and `external_directory`). Without
+  `--auto`, `opencode run` rejects every permission request instead of waiting.
+- Isolation from the user's setup: `--pure`, no project config, no `~/.claude` prompts or
+  skills, no plugins, no sharing, no auto-update.
+- The child environment is built explicitly (base variables + the role's `keyEnv`); provider
+  keys are never given to Claude Code (`agentEnv` allow-list) or to the check sandbox, and are
+  masked in logs and in the database.
+- Verified live (2026-10-16): write/bash tools are not offered, and a read outside the
+  worktree is denied.
+
+### Known limitation: the agent runs on the host (Weeks 1–2)
+
+Claude Code needs access to the Anthropic API, so the agent process runs on
 the host, with its working directory set to an isolated git worktree under
 `FACTORY_WORKDIR` (outside this repository, so hidden tests and reference patches are not
 reachable by relative paths). It is constrained by Claude Code's own permission system
@@ -179,6 +215,7 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - Git ≥ 2.40
 - Docker (daemon running)
 - Claude Code CLI (`claude`), authenticated
+- `OPENAI_API_KEY` in `.env` for the OpenCode reviewer (OpenCode itself is an npm dependency)
 
 ## Development
 
