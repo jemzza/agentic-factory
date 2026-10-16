@@ -291,7 +291,7 @@ async function resumeOne(runId: string): Promise<number> {
     });
     if (res.kind === "awaiting_human") {
       console.log(
-        `run ${runId} is waiting for a human decision (${res.run.status}); use approve/reject`,
+        `run ${runId} is waiting for a human decision (${res.run.status}); use ${res.run.status === "awaiting_merge_approval" ? "merge/close" : "approve/reject"}`,
       );
       return 0;
     }

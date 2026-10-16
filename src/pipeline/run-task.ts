@@ -195,10 +195,12 @@ async function settle(
           : `The run passed the sandboxed gate and the review. Nothing is merged without you.`,
         `- Branch: \`${values.worktree?.branch ?? "?"}\``,
         `- Report: ${result.reportMdPath}`,
-        "```bash",
-        `npm run merge -- ${runId}`,
-        `npm run close -- ${runId} --comment "why not merged"`,
-        "```",
+        [
+          "```bash",
+          `npm run merge -- ${runId}`,
+          `npm run close -- ${runId} --comment "why not merged"`,
+          "```",
+        ].join("\n"),
         "`merge` re-runs the gate on the merge result with the current main and moves main only if it passes.",
       ].join("\n\n") + "\n",
     );
@@ -270,10 +272,12 @@ function renderSpecApprovalNotice(
     [
       `# Spec approval needed — ${v.task.title} (\`${v.task.id}\`)`,
       `Run \`${runId}\`, spec commit \`${v.specCommit ?? "?"}\`. Implementation starts only after approval.`,
-      "```bash",
-      `npm run approve -- ${runId} spec`,
-      `npm run reject -- ${runId} spec --comment "what to change"`,
-      "```",
+      [
+        "```bash",
+        `npm run approve -- ${runId} spec`,
+        `npm run reject -- ${runId} spec --comment "what to change"`,
+        "```",
+      ].join("\n"),
       "## ⚠ Requirements based on existing behavior — check these",
       fromExisting.length
         ? "These are not acceptance criteria; the planner states the code already behaves this way. Approve only if that is true and intended.\n\n" +
