@@ -130,3 +130,17 @@ export async function ensureTargetRepo(
     from === "baseline" ? baselineCommit : (await git(dir, ["rev-parse", "HEAD"])).trim();
   return { dir, baseCommit, baselineCommit, baselineCreated };
 }
+
+/**
+ * Explicitly moves the baseline tag to main's current head (`npm run baseline:update`).
+ * The only code path that changes the tag; merges never do. Returns both commits so the
+ * caller can record who moved it, when and from where.
+ */
+export async function moveBaselineTag(
+  repoDir: string,
+): Promise<{ previous: string; current: string }> {
+  const previous = (await git(repoDir, ["rev-parse", `${BASELINE_TAG}^{commit}`])).trim();
+  const current = (await git(repoDir, ["rev-parse", "main^{commit}"])).trim();
+  if (previous !== current) await git(repoDir, ["tag", "-f", BASELINE_TAG, current]);
+  return { previous, current };
+}

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { ensureTargetRepo, type RepoRef, type TargetRepo } from "../git/target-repo.js";
@@ -7,7 +7,7 @@ import type { SandboxExec } from "../quality/gate.js";
 import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
 import type { AgentRuntime } from "../runtimes/types.js";
 import type { TargetConfig } from "../schemas/config.js";
-import type { RunReport } from "../schemas/report.js";
+import { RunReportSchema, type RunReport } from "../schemas/report.js";
 import type { SpecChange } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { RunRow, Store } from "../store/store.js";
@@ -51,10 +51,26 @@ export interface RunTaskResult {
   reportMdPath: string;
 }
 
-/** A run either finished (with a report) or is paused at a human approval gate. */
+/**
+ * A run either finished (with a report) or is paused at a human approval gate. At the merge
+ * gate the report already exists (`result`): the run succeeded and waits for a human merge.
+ */
 export type RunOutcome =
   | ({ kind: "finished" } & RunTaskResult)
-  | { kind: "awaiting"; gate: "spec" | "merge"; runId: string; noticePath: string };
+  | {
+      kind: "awaiting";
+      gate: "spec" | "merge";
+      runId: string;
+      noticePath: string;
+      result?: RunTaskResult;
+    };
+
+/** Report written by an earlier process (e.g. before a merge decision). */
+async function loadResult(runDir: string): Promise<RunTaskResult> {
+  const reportJsonPath = path.join(runDir, "report.json");
+  const report = RunReportSchema.parse(JSON.parse(await readFile(reportJsonPath, "utf8")));
+  return { report, reportJsonPath, reportMdPath: path.join(runDir, "report.md") };
+}
 
 export function makeRunId(now: Date): string {
   const ts = now.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -115,6 +131,7 @@ async function drive(
 ): Promise<void> {
   const store = deps.store;
   let prev: { node: string; update: unknown } = { node: fromNode, update: null };
+  let interrupted = false;
   const stream = await graph.stream(input as Parameters<typeof graph.stream>[0], {
     ...threadConfig(runId),
     streamMode: "updates",
@@ -122,6 +139,11 @@ async function drive(
   });
   for await (const chunk of stream) {
     for (const [nodeName, update] of Object.entries(chunk as Record<string, unknown>)) {
+      // A pause is reported as a pseudo-node; the transition goes to the waiting node below.
+      if (nodeName === "__interrupt__") {
+        interrupted = true;
+        continue;
+      }
       store?.appendEvent(runId, {
         kind: "transition",
         node: prev.node,
@@ -131,12 +153,10 @@ async function drive(
       prev = { node: nodeName, update };
     }
   }
-  store?.appendEvent(runId, {
-    kind: "transition",
-    node: prev.node,
-    next: "__end__",
-    payload: prev.update,
-  });
+  const next = interrupted
+    ? ((await graph.getState(threadConfig(runId))).next[0] ?? "__interrupt__")
+    : "__end__";
+  store?.appendEvent(runId, { kind: "transition", node: prev.node, next, payload: prev.update });
 }
 
 /** After the stream ends: either the run finished (report written) or it waits for a human. */
@@ -147,20 +167,58 @@ async function settle(
   runId: string,
 ): Promise<RunOutcome> {
   const snap = await graph.getState(threadConfig(runId));
-  if (snap.next.length === 0) {
-    if (!ctx.result) throw new Error(`run ${runId} finished without a report`);
-    return { kind: "finished", ...ctx.result };
-  }
-  if (!snap.next.includes("spec_approval")) {
-    throw new Error(`run ${runId} stopped unexpectedly before ${snap.next.join(", ")}`);
-  }
   const values = snap.values as {
     runDir: string;
     specCommit: string | null;
     specFiles: Record<string, string>;
     spec: SpecChange | null;
     task: TaskSpec;
+    worktree: { branch: string } | null;
+    mergeOutcome: { kind: string; reason?: string } | null;
   };
+  if (snap.next.length === 0) {
+    return { kind: "finished", ...(ctx.result ?? (await loadResult(values.runDir))) };
+  }
+
+  if (snap.next.includes("merge_approval")) {
+    const result = ctx.result ?? (await loadResult(values.runDir));
+    const blockedReason =
+      values.mergeOutcome?.kind === "blocked" ? (values.mergeOutcome.reason ?? "") : null;
+    const noticePath = path.join(values.runDir, "merge-approval.md");
+    await writeFile(
+      noticePath,
+      [
+        `# Merge decision needed — ${values.task.title} (\`${values.task.id}\`)`,
+        blockedReason
+          ? `**The last merge attempt was blocked:** ${blockedReason}`
+          : `The run passed the sandboxed gate and the review. Nothing is merged without you.`,
+        `- Branch: \`${values.worktree?.branch ?? "?"}\``,
+        `- Report: ${result.reportMdPath}`,
+        "```bash",
+        `npm run merge -- ${runId}`,
+        `npm run close -- ${runId} --comment "why not merged"`,
+        "```",
+        "`merge` re-runs the gate on the merge result with the current main and moves main only if it passes.",
+      ].join("\n\n") + "\n",
+    );
+    deps.store?.updateRun(runId, {
+      status: "awaiting_merge_approval",
+      statusMessage: blockedReason
+        ? `merge blocked: ${blockedReason}`
+        : `ready to merge: ${noticePath}`,
+    });
+    deps.store?.appendEvent(runId, {
+      kind: "interrupt",
+      node: "merge_approval",
+      payload: { blocked: blockedReason },
+    });
+    deps.log?.(`⏸ waiting for a merge decision — see ${noticePath}`);
+    return { kind: "awaiting", gate: "merge", runId, noticePath, result };
+  }
+
+  if (!snap.next.includes("spec_approval")) {
+    throw new Error(`run ${runId} stopped unexpectedly before ${snap.next.join(", ")}`);
+  }
   const noticePath = path.join(values.runDir, "spec-approval.md");
   await writeFile(noticePath, renderSpecApprovalNotice(runId, values));
   deps.store?.updateRun(runId, {
@@ -311,7 +369,8 @@ export async function resumeRun(
   if (!values.runId) throw new Error(`run ${runId} has no checkpoint to resume from`);
   if (snapshot.next.length === 0) return { kind: "finished", run };
   const atGate =
-    snapshot.next.includes("spec_approval") && snapshot.tasks.some((t) => t.interrupts.length > 0);
+    (snapshot.next.includes("spec_approval") || snapshot.next.includes("merge_approval")) &&
+    snapshot.tasks.some((t) => t.interrupts.length > 0);
   if (atGate && opts.answer === undefined) return { kind: "awaiting_human", run };
   if (!atGate && opts.answer !== undefined) {
     throw new Error(`run ${runId} is not waiting for an approval (status ${run.status})`);

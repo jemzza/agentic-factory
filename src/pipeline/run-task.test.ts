@@ -14,7 +14,7 @@ import type { TaskSpec } from "../schemas/task.js";
 import { openDb } from "../store/db.js";
 import { importRunReports } from "../store/import-runs.js";
 import { Store } from "../store/store.js";
-import { FAKE_PLAN, OPENSPEC_SKELETON } from "../testing/fakes.js";
+import { FAKE_PLAN, OPENSPEC_SKELETON, resultOf } from "../testing/fakes.js";
 import { runTask } from "./run-task.js";
 
 let tmp: string;
@@ -182,8 +182,7 @@ async function run(
     specApprovalMode: "auto",
     ...(opts.store ? { store: opts.store } : {}),
   });
-  if (outcome.kind !== "finished") throw new Error(`run paused at ${outcome.gate} approval`);
-  return { ...outcome, runtime, repo };
+  return { ...resultOf(outcome), runtime, repo };
 }
 
 describe("runTask", () => {
@@ -470,7 +469,8 @@ describe("runTask with the database", () => {
       );
       const row = store.requireRun(report.runId);
       expect(row).toMatchObject({
-        status: "success",
+        // A successful run waits for a human merge decision.
+        status: "awaiting_merge_approval",
         mode: "interactive",
         fix_cycles: 1,
         report_path: reportMdPath,
@@ -488,9 +488,9 @@ describe("runTask with the database", () => {
         ["reviewer", 1, "ok"],
       ]);
       const events = store.listEvents(report.runId);
-      expect(events.filter((e) => e.kind === "status").at(-1)?.payload).toContain(
-        '"status":"success"',
-      );
+      const statuses = events.filter((e) => e.kind === "status").map((e) => e.payload ?? "");
+      expect(statuses.some((p) => p.includes('"status":"success"'))).toBe(true);
+      expect(statuses.at(-1)).toContain("awaiting_merge_approval");
       // Every state change is journaled as a graph transition, in order.
       expect(
         events.filter((e) => e.kind === "transition").map((e) => `${e.node}→${e.next}`),
@@ -505,7 +505,7 @@ describe("runTask with the database", () => {
         "develop→gate",
         "gate→review",
         "review→report",
-        "report→__end__",
+        "report→merge_approval",
       ]);
     } finally {
       db.close();

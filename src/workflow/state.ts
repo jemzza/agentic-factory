@@ -23,6 +23,26 @@ export const SpecApprovalAnswerSchema = z.strictObject({
 });
 export type SpecApprovalAnswer = z.infer<typeof SpecApprovalAnswerSchema>;
 
+/** Resume value of the merge_approval interrupt. */
+export const MergeAnswerSchema = z.strictObject({
+  decision: z.enum(["merge", "close"]),
+  comment: z.string().optional(),
+  actor: z.string().min(1),
+});
+export type MergeAnswer = z.infer<typeof MergeAnswerSchema>;
+
+export const MergeOutcomeSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("merged"),
+    mergeCommit: z.string(),
+    mainBefore: z.string(),
+    archivedAs: z.string().nullable(),
+  }),
+  /** Not merged; the run goes back to waiting for a human (reason explains what to do). */
+  z.strictObject({ kind: z.literal("blocked"), reason: z.string() }),
+]);
+export type MergeOutcome = z.infer<typeof MergeOutcomeSchema>;
+
 export const NODE_NAMES = [
   "prepare",
   "plan",
@@ -32,6 +52,9 @@ export const NODE_NAMES = [
   "gate",
   "review",
   "report",
+  "merge_approval",
+  "merge",
+  "close",
 ] as const;
 export type NodeName = (typeof NODE_NAMES)[number];
 
@@ -117,6 +140,10 @@ export const RunState = new StateSchema({
   lastError: StepErrorSchema.nullable().default(null),
   status: z.enum(RUN_STATUSES).nullable().default(null),
   statusMessage: z.string().default(""),
+
+  mergeDecision: z.enum(["merge", "close"]).nullable().default(null),
+  mergeComment: z.string().nullable().default(null),
+  mergeOutcome: MergeOutcomeSchema.nullable().default(null),
 
   steps: new ReducedValue(
     z.array(StepResultSchema).default(() => []),

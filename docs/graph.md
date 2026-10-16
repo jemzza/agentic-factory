@@ -58,12 +58,12 @@ flowchart TD
     report -->|status success| merge_approval
     report -->|any other status| END([END])
 
-    merge_approval{{"⏸ interrupt: merge_approval<br/>status awaiting_merge_approval"}}
+    merge_approval{{"⏸ interrupt: merge_approval<br/>status awaiting_merge_approval<br/>(eval runs stop here)"}}
     merge_approval -->|npm run merge| merge
     merge_approval -->|npm run close| close
 
-    merge -->|merged| END
-    merge -->|main moved / gate failed| END
+    merge -->|merged: main fast-forwarded| END
+    merge -->|conflict / gate failed on merge result / main moved| merge_approval
     close --> END
 ```
 
@@ -106,6 +106,24 @@ merged automatically.
   the acceptance criteria. The gate's scope check starts at the spec commit and a separate
   policy check fails the gate if any approved spec file changed.
 - Eval runs start from the immutable `factory-baseline` tag; interactive runs from `main`.
+
+## Merge (Phase 5)
+
+- After `report`, only a `success` run continues to `merge_approval` (interrupt, status
+  `awaiting_merge_approval`, `runs/<runId>/merge-approval.md`); every other status ends the
+  run. Eval runs stop here too: nothing is merged automatically in any mode.
+- `npm run merge -- <runId>` records the decision and resumes into `merge`:
+  1. a temporary worktree `<workdir>/worktrees/merge-<runId>` is created at main's **current**
+     head; `git merge --no-ff --no-commit factory/<task>-<run>`; a conflict blocks the merge;
+  2. `openspec archive` runs inside that worktree, and the merge and the archive become ONE
+     merge commit (message: title, task, report path, `Factory-Run:` / `Factory-Task:`);
+  3. the gate (checks + scope incl. `openspec/**`) runs on that merge commit, not the branch;
+  4. only if it passes, main fast-forwards to it — and only if main did not move meanwhile.
+     A blocked merge (conflict, gate failure, main moved) leaves main untouched and returns to
+     `merge_approval` with the reason. A run already on main is detected (idempotent replay).
+- `npm run close -- <runId> --comment "…"` ends the run as `closed` without merging.
+- The `factory-baseline` tag is never moved by a merge; only
+  `npm run baseline:update -- --reason "…"` moves it, recorded in `baselines`.
 
 ## Run statuses
 

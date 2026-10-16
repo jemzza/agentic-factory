@@ -16,6 +16,7 @@ import {
   fakeReviewer,
   FakeRuntime,
   makeFakeRepo,
+  resultOf,
 } from "../testing/fakes.js";
 import { resumeRun, type RunTaskDeps } from "./run-task.js";
 
@@ -104,9 +105,8 @@ describe("resume after a crash", () => {
 
       const runtime = goodRuntime();
       const res = await resumeRun(a.runId, resumeDeps(a, store, runtime));
-      if (res.kind !== "resumed" || res.outcome.kind !== "finished")
-        throw new Error("expected a finished run");
-      const report = res.outcome.report;
+      if (res.kind !== "resumed") throw new Error("expected a resumed run");
+      const report = resultOf(res.outcome).report;
       expect(report.status).toBe("success");
       // Planner was checkpointed before the crash: only develop onwards ran again.
       expect(runtime.rolesCalled()).toEqual(["developer", "reviewer"]);
@@ -127,7 +127,10 @@ describe("resume after a crash", () => {
         [2, "ok"],
       ]);
       expect(report.cost.unknownCostSteps).toBe(1);
-      expect(store.requireRun(a.runId)).toMatchObject({ status: "success", locked_by: null });
+      expect(store.requireRun(a.runId)).toMatchObject({
+        status: "awaiting_merge_approval",
+        locked_by: null,
+      });
       expect(store.listEvents(a.runId).some((e) => e.kind === "resume")).toBe(true);
       // The worktree is clean at the final snapshot.
       expect((await git(wtPath, ["status", "--porcelain"])).trim()).toBe("");
@@ -145,10 +148,10 @@ describe("resume after a crash", () => {
       expect(store.listSteps(a.runId).at(-1)).toMatchObject({ node: "gate", status: "running" });
       const runtime = goodRuntime();
       const res = await resumeRun(a.runId, resumeDeps(a, store, runtime));
-      if (res.kind !== "resumed" || res.outcome.kind !== "finished")
-        throw new Error("expected a finished run");
-      expect(res.outcome.report.status).toBe("success");
-      expect(res.outcome.report.gate?.passed).toBe(true);
+      if (res.kind !== "resumed") throw new Error("expected a resumed run");
+      const result = resultOf(res.outcome);
+      expect(result.report.status).toBe("success");
+      expect(result.report.gate?.passed).toBe(true);
       // develop had completed before the crash: it is not repeated.
       expect(runtime.rolesCalled()).toEqual(["reviewer"]);
       expect(
@@ -160,7 +163,7 @@ describe("resume after a crash", () => {
         [1, "abandoned"],
         [2, "ok"],
       ]);
-      expect(res.outcome.report.diff.split("+export const feature = 1;").length - 1).toBe(1);
+      expect(result.report.diff.split("+export const feature = 1;").length - 1).toBe(1);
     } finally {
       db.close();
     }
@@ -173,12 +176,22 @@ describe("resume after a crash", () => {
     try {
       const first = await resumeRun(a.runId, resumeDeps(a, store, goodRuntime()));
       expect(first.kind).toBe("resumed");
+      // A plain resume while waiting for the merge decision does nothing either.
+      expect(await resumeRun(a.runId, resumeDeps(a, store, goodRuntime()))).toMatchObject({
+        kind: "awaiting_human",
+        run: { status: "awaiting_merge_approval" },
+      });
+      // Close it, then a resume of the finished run is a no-op that reports the status.
+      const closed = await resumeRun(a.runId, resumeDeps(a, store, goodRuntime()), {
+        answer: { decision: "close", actor: "tester", comment: "not needed" },
+      });
+      expect(closed.kind).toBe("resumed");
       const eventsBefore = store.listEvents(a.runId).length;
       const stepsBefore = store.listSteps(a.runId).length;
 
       const runtime = goodRuntime();
       const again = await resumeRun(a.runId, resumeDeps(a, store, runtime));
-      expect(again).toMatchObject({ kind: "finished", run: { status: "success" } });
+      expect(again).toMatchObject({ kind: "finished", run: { status: "closed" } });
       expect(runtime.calls).toHaveLength(0);
       expect(store.listEvents(a.runId)).toHaveLength(eventsBefore);
       expect(store.listSteps(a.runId)).toHaveLength(stepsBefore);

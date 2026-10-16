@@ -27,6 +27,9 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
     specCommit: "spec-commit",
     specDecision: "approve",
     specRejections: [],
+    mergeDecision: null,
+    mergeComment: null,
+    mergeOutcome: null,
     task: {
       id: "t",
       title: "T",
@@ -198,7 +201,13 @@ describe("graph structure", () => {
         "gate->report",
         "review->develop",
         "review->report",
+        "report->merge_approval",
         "report->__end__",
+        "merge_approval->merge",
+        "merge_approval->close",
+        "merge->merge_approval",
+        "merge->__end__",
+        "close->__end__",
       ].sort(),
     );
     // Every node of the graph appears in the Mermaid diagram.

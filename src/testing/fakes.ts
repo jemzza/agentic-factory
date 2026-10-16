@@ -9,6 +9,7 @@ import type { AgentRunInput, AgentRunResult, AgentRuntime } from "../runtimes/ty
 import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
 import type { SpecChange } from "../schemas/spec.js";
 import type { TaskSpec } from "../schemas/task.js";
+import type { RunOutcome, RunTaskResult } from "../pipeline/run-task.js";
 
 export const FAKE_TASK: TaskSpec = {
   id: "add-feature",
@@ -159,6 +160,7 @@ export async function makeFakeRepo(
   await git(dir, ["init", "-q", "-b", "main"]);
   await git(dir, ["add", "-A"]);
   await git(dir, ["commit", "-q", "-m", "baseline"]);
+  await git(dir, ["tag", "factory-baseline"]);
   return { dir, baseCommit: (await git(dir, ["rev-parse", "HEAD"])).trim() };
 }
 
@@ -181,4 +183,14 @@ export function fakeConfig(workdir: string): ResolvedConfig {
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
   };
+}
+
+/**
+ * The report of a run that is done with its work: either finished, or (after success)
+ * waiting at the merge gate with its report already written.
+ */
+export function resultOf(outcome: RunOutcome): RunTaskResult {
+  if (outcome.kind === "finished") return outcome;
+  if (outcome.result) return outcome.result;
+  throw new Error(`run paused at ${outcome.gate} approval without a report`);
 }

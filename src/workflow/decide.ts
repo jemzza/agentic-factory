@@ -137,7 +137,11 @@ export function decide(s: RunStateValue, nowMs: number): Decision {
         return stop("review_rejected", `reviewer did not approve after ${s.cycle} fix cycle(s)`);
       }
       return guarded(s, "develop", nowMs);
+    // After the report the run outcome is fixed; merge routing uses routeAfterReport & co.
     case "report":
+    case "merge_approval":
+    case "merge":
+    case "close":
       return s.status ? stop(s.status, s.statusMessage) : stop("error", "report without status");
     default:
       return stop("error", `unknown node "${s.lastNode}"`);
@@ -148,4 +152,21 @@ export function decide(s: RunStateValue, nowMs: number): Decision {
 export function routeAfter(s: RunStateValue, nowMs: number): NodeName {
   const d = decide(s, nowMs);
   return d.kind === "next" ? d.node : "report";
+}
+
+/**
+ * Routing after the report: only a successful run is offered for merge (always via a human
+ * decision; nothing merges automatically, in any mode). Every other status ends the run.
+ */
+export function routeAfterReport(s: RunStateValue): "merge_approval" | "__end__" {
+  return s.status === "success" ? "merge_approval" : "__end__";
+}
+
+export function routeAfterMergeApproval(s: RunStateValue): "merge" | "close" {
+  return s.mergeDecision === "merge" ? "merge" : "close";
+}
+
+/** A blocked merge (conflict, gate failure on the merge result) waits for a human again. */
+export function routeAfterMerge(s: RunStateValue): "merge_approval" | "__end__" {
+  return s.mergeOutcome?.kind === "merged" || s.lastError ? "__end__" : "merge_approval";
 }

@@ -1,5 +1,10 @@
 import { END, START, StateGraph, type BaseCheckpointSaver } from "@langchain/langgraph";
-import { routeAfter } from "./decide.js";
+import {
+  routeAfter,
+  routeAfterMerge,
+  routeAfterMergeApproval,
+  routeAfterReport,
+} from "./decide.js";
 import type { NodeFn } from "./nodes.js";
 import { RunState, type NodeName } from "./state.js";
 
@@ -24,6 +29,9 @@ export function buildGraph(
     .addNode("gate", nodes.gate)
     .addNode("review", nodes.review)
     .addNode("report", nodes.report)
+    .addNode("merge_approval", nodes.merge_approval)
+    .addNode("merge", nodes.merge)
+    .addNode("close", nodes.close)
     .addEdge(START, "prepare")
     .addConditionalEdges("prepare", route, targets("plan", "report"))
     .addConditionalEdges("plan", route, targets("spec_draft", "report"))
@@ -32,7 +40,16 @@ export function buildGraph(
     .addConditionalEdges("develop", route, targets("gate", "report"))
     .addConditionalEdges("gate", route, targets("review", "develop", "report"))
     .addConditionalEdges("review", route, targets("develop", "report"))
-    .addEdge("report", END);
+    .addConditionalEdges("report", routeAfterReport, {
+      merge_approval: "merge_approval",
+      __end__: END,
+    })
+    .addConditionalEdges("merge_approval", routeAfterMergeApproval, ["merge", "close"])
+    .addConditionalEdges("merge", routeAfterMerge, {
+      merge_approval: "merge_approval",
+      __end__: END,
+    })
+    .addEdge("close", END);
 
   return graph.compile(opts.checkpointer ? { checkpointer: opts.checkpointer } : {});
 }

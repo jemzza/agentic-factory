@@ -160,18 +160,16 @@ const ArchiveOutputSchema = z.looseObject({
 });
 
 /**
- * Archives an approved, merged change. Idempotent: if the change is already archived
- * (changes/archive/<date>-<id>) its archive name is returned without calling the CLI again.
+ * Archives a change: moves openspec/changes/<id> to changes/archive/<date>-<id> and merges its
+ * deltas into openspec/specs. If the change directory no longer exists (already archived in
+ * this tree), returns null instead of calling the CLI again.
  */
 export async function archiveChange(
   repoDir: string,
   changeId: string,
-): Promise<{ archivedAs: string }> {
-  const archiveDir = path.join(repoDir, "openspec", "changes", "archive");
-  const existing = (await readdir(archiveDir).catch(() => [])).find((d) =>
-    d.endsWith(`-${changeId}`),
-  );
-  if (existing) return { archivedAs: existing };
+): Promise<{ archivedAs: string } | null> {
+  const active = await readdir(path.join(repoDir, changeDir(changeId))).catch(() => null);
+  if (active === null) return null;
   const res = await runCommand(OPENSPEC_BIN, ["archive", changeId, "-y", "--json"], {
     cwd: repoDir,
     timeoutMs: TIMEOUT_MS,

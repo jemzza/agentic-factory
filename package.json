@@ -24,6 +24,9 @@
     "resume": "tsx src/cli.ts resume",
     "approve": "tsx src/cli.ts approve",
     "reject": "tsx src/cli.ts reject",
+    "merge": "tsx src/cli.ts merge",
+    "close": "tsx src/cli.ts close",
+    "baseline:update": "tsx src/cli.ts baseline-update",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {

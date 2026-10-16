@@ -11,6 +11,15 @@ import {
 import { interrupt, isGraphBubbleUp } from "@langchain/langgraph";
 import { changeDir, renderSpecFiles, validateChange, writeSpecFiles } from "../spec/openspec.js";
 import { checkSpec, type OpenSpecIssue } from "../schemas/spec.js";
+import { archiveChange } from "../spec/openspec.js";
+import { git } from "../git/git.js";
+import {
+  fastForwardMain,
+  findMergeCommit,
+  isMergedIntoMain,
+  prepareMergeCandidate,
+  removeTempWorktree,
+} from "../git/merge.js";
 import { BASELINE_TAG, type RepoRef } from "../git/target-repo.js";
 import { buildSystemPrompt } from "../agents/prompts.js";
 import {
@@ -46,6 +55,7 @@ import { RunReportSchema, type RunReport, type StepResult } from "../schemas/rep
 import type { Store } from "../store/store.js";
 import { decide } from "./decide.js";
 import {
+  MergeAnswerSchema,
   SpecApprovalAnswerSchema,
   type NodeName,
   type RunStateUpdate,
@@ -593,6 +603,161 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       }
       ctx.result = { report, reportJsonPath, reportMdPath };
       return { status, statusMessage: message };
+    }),
+
+    // Pure: on resume LangGraph re-runs it from the start and interrupt() returns the answer.
+    merge_approval: node("merge_approval", (s) => {
+      const answer: unknown = interrupt(
+        {
+          gate: "merge",
+          runId: s.runId,
+          branch: s.worktree?.branch ?? null,
+          headCommit: s.headCommit,
+          blocked: s.mergeOutcome?.kind === "blocked" ? s.mergeOutcome.reason : null,
+        },
+        { responseSchema: MergeAnswerSchema },
+      );
+      const parsed = MergeAnswerSchema.parse(answer);
+      return Promise.resolve({
+        mergeDecision: parsed.decision,
+        mergeComment: parsed.comment ?? null,
+        mergeOutcome: null,
+      });
+    }),
+
+    /**
+     * Merge, decided by a human only. The candidate is built from main's CURRENT head
+     * (`--no-ff`, OpenSpec archived in the same commit), the gate runs on that candidate,
+     * and only then main fast-forwards to it — if main did not move meanwhile.
+     * The factory-baseline tag is never touched here.
+     */
+    merge: node("merge", async (s) => {
+      const wt = requireWorktree(s);
+      if (!s.repo || !s.headCommit) throw new Error("merge without a repo or head commit");
+      const repoDir = s.repo.dir;
+      const blocked = (reason: string): RunStateUpdate => {
+        ctx.log(`  merge blocked: ${reason}`);
+        return { mergeOutcome: { kind: "blocked", reason } };
+      };
+
+      // Replay after a crash: the branch may already be on main.
+      if (await isMergedIntoMain(repoDir, s.headCommit)) {
+        const mergeCommit = (await findMergeCommit(repoDir, s.runId)) ?? s.headCommit;
+        ctx.store?.updateRun(s.runId, {
+          status: "merged",
+          statusMessage: `merged as ${mergeCommit}`,
+        });
+        return {
+          mergeOutcome: { kind: "merged", mergeCommit, mainBefore: mergeCommit, archivedAs: null },
+        };
+      }
+
+      const reportPath = path.join(s.runDir, "report.md");
+      const message = [
+        `Merge factory run ${s.runId}: ${s.task.title}`,
+        "",
+        `Task: ${s.task.id}`,
+        `Report: ${reportPath}`,
+        `Approved by: ${s.mergeComment ? `human (${s.mergeComment})` : "human"}`,
+        "",
+        `Factory-Run: ${s.runId}`,
+        `Factory-Task: ${s.task.id}`,
+      ].join("\n");
+      ctx.log("→ merge: building the merge result from current main…");
+      const candidate = await prepareMergeCandidate({
+        repoDir,
+        branch: wt.branch,
+        worktreesRoot,
+        runId: s.runId,
+        message,
+        archive: async (dir) => (await archiveChange(dir, s.task.id))?.archivedAs ?? null,
+      });
+      if (candidate.kind === "conflict") {
+        return blocked(
+          `merge conflicts with changes on main in: ${candidate.files.join(", ") || "(unknown files)"}. ` +
+            `Rebase branch ${wt.branch} onto main (or re-run the task), then retry.`,
+        );
+      }
+
+      try {
+        ctx.log("→ quality gate on the merge result…");
+        const changed = (
+          await git(candidate.worktreePath, [
+            "diff",
+            "--name-only",
+            candidate.mainBefore,
+            candidate.mergeCommit,
+          ])
+        )
+          .split("\n")
+          .filter((f) => f.trim() !== "");
+        const dbStep = ctx.store?.startStep(s.runId, "merge_gate", 0);
+        const gate = await runGate({
+          worktreePath: candidate.worktreePath,
+          changedFiles: changed,
+          // The merge also carries the approved spec and its archive.
+          allowedPaths: [...s.task.scope.allowed_paths, "openspec/**"],
+          checks: config.target.checks,
+          checkTimeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+          exec: await execFor(repoDir),
+          logDir: checksDir(s),
+          logPrefix: "merge",
+        });
+        if (dbStep) {
+          ctx.store?.finishStep(dbStep.id, {
+            status: gate.passed ? "ok" : "failed",
+            logPath: checksDir(s),
+            error: gate.passed
+              ? null
+              : { kind: "gate_failed", message: describeGateFailures(gate) },
+          });
+        }
+        if (!gate.passed) {
+          return blocked(
+            `the quality gate failed on the merge result with current main:\n${describeGateFailures(gate)}`,
+          );
+        }
+        const ff = await fastForwardMain(repoDir, candidate.mainBefore, candidate.mergeCommit);
+        if (ff.kind === "main_moved") {
+          return blocked(
+            `main moved to ${ff.mainNow.slice(0, 10)} while the merge was being checked; retry the merge`,
+          );
+        }
+      } finally {
+        await removeTempWorktree(repoDir, candidate.worktreePath);
+      }
+
+      ctx.log(`  merged into main as ${candidate.mergeCommit.slice(0, 10)}`);
+      ctx.store?.updateRun(s.runId, {
+        status: "merged",
+        statusMessage: `merged into main as ${candidate.mergeCommit}${candidate.archivedAs ? `; OpenSpec change archived as ${candidate.archivedAs}` : ""}`,
+      });
+      await writeFile(
+        path.join(s.runDir, "merge.md"),
+        [
+          `# Merged — ${s.task.title} (\`${s.task.id}\`)`,
+          `- Merge commit: \`${candidate.mergeCommit}\` (\`--no-ff\`, on top of main \`${candidate.mainBefore}\`)`,
+          `- OpenSpec: ${candidate.archivedAs ? `archived as \`${candidate.archivedAs}\` in the same commit` : "nothing to archive"}`,
+          `- Gate re-run on the merge result: passed`,
+          `- Run report: ${reportPath}`,
+        ].join("\n") + "\n",
+      );
+      return {
+        mergeOutcome: {
+          kind: "merged",
+          mergeCommit: candidate.mergeCommit,
+          mainBefore: candidate.mainBefore,
+          archivedAs: candidate.archivedAs,
+        },
+      };
+    }),
+
+    close: node("close", (s) => {
+      ctx.store?.updateRun(s.runId, {
+        status: "closed",
+        statusMessage: `closed without merge${s.mergeComment ? `: ${s.mergeComment}` : ""}`,
+      });
+      return Promise.resolve({});
     }),
   };
 }

@@ -18,6 +18,7 @@ import {
   fakeReviewer,
   FakeRuntime,
   makeFakeRepo,
+  resultOf,
   type FakeScript,
 } from "../testing/fakes.js";
 import { resumeRun, runTask, type RunOutcome, type RunTaskDeps } from "./run-task.js";
@@ -116,12 +117,14 @@ describe("spec drafting and approval", () => {
       expect(await readFile(specFile, "utf8")).toContain("## Why");
 
       const done = await decide(deps, store, first.runId, "approve");
-      if (done.kind !== "finished") throw new Error("expected a finished run");
-      expect(done.report.status).toBe("success");
+      const doneResult = resultOf(done);
+      expect(doneResult.report.status).toBe("success");
       // Waiting for the human is not active time.
-      expect(done.report.activeDurationMs).toBeLessThanOrEqual(done.report.wallDurationMs ?? 0);
-      expect(store.requireRun(first.runId).wall_duration_ms).toBe(done.report.wallDurationMs);
-      expect(done.report.spec).toMatchObject({
+      expect(doneResult.report.activeDurationMs).toBeLessThanOrEqual(
+        doneResult.report.wallDurationMs ?? 0,
+      );
+      expect(store.requireRun(first.runId).wall_duration_ms).toBe(doneResult.report.wallDurationMs);
+      expect(doneResult.report.spec).toMatchObject({
         approvalMode: "manual",
         valid: true,
         attempts: 1,
@@ -155,9 +158,9 @@ describe("spec drafting and approval", () => {
         "awaiting",
       );
       const last = await decide(deps, store, first.runId, "reject", "give up");
-      if (last.kind !== "finished") throw new Error("expected a finished run");
-      expect(last.report.status).toBe("needs_clarification");
-      expect(last.report.spec?.rejections).toEqual([
+      const lastResult = resultOf(last);
+      expect(lastResult.report.status).toBe("needs_clarification");
+      expect(lastResult.report.spec?.rejections).toEqual([
         "cover the 404 case",
         "still missing",
         "give up",
@@ -172,8 +175,7 @@ describe("spec drafting and approval", () => {
   it("auto approval records approval: auto and never pauses", async () => {
     const { deps, store, db } = await setup(standardScript(), "auto");
     try {
-      const out = await runTask(FAKE_TASK, deps);
-      if (out.kind !== "finished") throw new Error("expected a finished run");
+      const out = resultOf(await runTask(FAKE_TASK, deps));
       expect(out.report.status).toBe("success");
       expect(out.report.spec?.approvalMode).toBe("auto");
       expect(store.requireRun(out.report.runId).spec_approval).toBe("auto");
@@ -191,8 +193,7 @@ describe("spec drafting and approval", () => {
         : Promise.resolve({ structured: FAKE_SPEC }); // spec-fix call returns a bare spec
     const { deps, runtime, db } = await setup(script, "auto");
     try {
-      const out = await runTask(FAKE_TASK, deps);
-      if (out.kind !== "finished") throw new Error("expected a finished run");
+      const out = resultOf(await runTask(FAKE_TASK, deps));
       expect(out.report.status).toBe("success");
       expect(out.report.spec).toMatchObject({ valid: true, attempts: 2 });
       const fix = runtime.calls.filter((c) => c.role === "planner")[1];
@@ -214,8 +215,7 @@ describe("spec drafting and approval", () => {
       });
     const { deps, runtime, db } = await setup(script, "auto");
     try {
-      const out = await runTask(FAKE_TASK, deps);
-      if (out.kind !== "finished") throw new Error("expected a finished run");
+      const out = resultOf(await runTask(FAKE_TASK, deps));
       expect(out.report.status).toBe("error");
       expect(out.report.message).toMatch(/OpenSpec validation failed after 2 attempt/);
       expect(runtime.rolesCalled()).toEqual(["planner", "planner"]);
@@ -237,11 +237,9 @@ describe("spec drafting and approval", () => {
     };
     const { deps, runtime, db } = await setup(script, "auto");
     try {
-      const out = await runTask(
-        { ...FAKE_TASK, budget: { ...FAKE_TASK.budget, max_fix_cycles: 0 } },
-        deps,
+      const out = resultOf(
+        await runTask({ ...FAKE_TASK, budget: { ...FAKE_TASK.budget, max_fix_cycles: 0 } }, deps),
       );
-      if (out.kind !== "finished") throw new Error("expected a finished run");
       expect(out.report.status).toBe("gate_failed");
       expect(out.report.gate?.policyViolations.join("\n")).toMatch(
         /approved specification file .*proposal\.md/,
@@ -279,8 +277,7 @@ describe("spec drafting and approval", () => {
       Promise.resolve({ structured: i === 0 ? { ...FAKE_PLAN, spec: noSource } : FAKE_SPEC });
     const { deps, runtime, db } = await setup(script, "auto");
     try {
-      const out = await runTask(FAKE_TASK, deps);
-      if (out.kind !== "finished") throw new Error("expected a finished run");
+      const out = resultOf(await runTask(FAKE_TASK, deps));
       expect(out.report.status).toBe("success");
       expect(out.report.spec).toMatchObject({ valid: true, attempts: 2 });
       const fix = runtime.calls.filter((c) => c.role === "planner")[1];
@@ -302,8 +299,7 @@ describe("spec drafting and approval", () => {
       Promise.resolve({ structured: i === 0 ? { ...FAKE_PLAN, spec: bad } : bad });
     const { deps, db } = await setup(script, "auto");
     try {
-      const out = await runTask(FAKE_TASK, deps);
-      if (out.kind !== "finished") throw new Error("expected a finished run");
+      const out = resultOf(await runTask(FAKE_TASK, deps));
       expect(out.report.status).toBe("error");
       expect(out.report.message).toMatch(
         /acceptance:9" does not exist: the task has 2 acceptance criteria/,

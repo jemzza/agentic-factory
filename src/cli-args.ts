@@ -7,10 +7,11 @@ export type CliCommand =
   | {
       kind: "decide";
       runId: string;
-      gate: "spec";
-      decision: "approve" | "reject";
+      gate: "spec" | "merge";
+      decision: "approve" | "reject" | "merge" | "close";
       comment: string | null;
     }
+  | { kind: "baseline-update"; reason: string }
   | { kind: "eval"; taskIds: string[] }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
@@ -25,6 +26,11 @@ export const USAGE = `Usage:
   npm run approve -- <runId> spec
   npm run reject -- <runId> spec --comment "..."
                                  Approve the OpenSpec change, or send it back to planning
+  npm run merge -- <runId>       Merge a successful run into main (gate re-runs on the merge result)
+  npm run close -- <runId> --comment "..."
+                                 Close a successful run without merging
+  npm run baseline:update -- --reason "..."
+                                 Move the factory-baseline tag to main (recorded in the DB)
   npm run eval [-- <taskId>...]  Run the eval suite (all tasks, or the given ones) and verify
                                  successes with hidden tests
   npm run verify-hidden [-- <taskId>]
@@ -100,6 +106,30 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'reject: --comment "<what to change>" is required' };
       }
       return { kind: "decide", runId, gate, decision: command, comment };
+    }
+    case "merge":
+    case "close": {
+      const [runId, ...flags] = rest;
+      if (runId === undefined || !RUN_ID_PATTERN.test(runId)) {
+        return { kind: "invalid", message: `${command}: expected <runId>` };
+      }
+      let comment: string | null = null;
+      if (flags.length > 0) {
+        if (flags[0] !== "--comment" || flags.length !== 2 || !flags[1]?.trim()) {
+          return { kind: "invalid", message: `${command}: only --comment "<text>" is accepted` };
+        }
+        comment = flags[1].trim();
+      }
+      if (command === "close" && comment === null) {
+        return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
+      }
+      return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "baseline-update": {
+      if (rest[0] !== "--reason" || rest.length !== 2 || !rest[1]?.trim()) {
+        return { kind: "invalid", message: 'baseline-update: --reason "<why>" is required' };
+      }
+      return { kind: "baseline-update", reason: rest[1].trim() };
     }
     case "resume": {
       const [runId, ...extra] = rest;

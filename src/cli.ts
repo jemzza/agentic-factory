@@ -5,7 +5,7 @@ import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { runEval } from "./eval/run-eval.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
-import { BASELINE_TAG, ensureTargetRepo } from "./git/target-repo.js";
+import { BASELINE_TAG, ensureTargetRepo, moveBaselineTag } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
 import { defaultSandboxExec, resumeRun, runTask, type RunOutcome } from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
@@ -89,22 +89,35 @@ async function runOne(taskId: string, autoApproveSpec: boolean): Promise<number>
   }
 }
 
-/** Human decision at the spec gate: record it, then resume the run with it. */
+const GATE_STATUS = { spec: "awaiting_spec_approval", merge: "awaiting_merge_approval" } as const;
+
+/**
+ * Human decision at an approval gate: record it in `approvals`, then resume the run with it.
+ * Merge: a run already merged is a no-op that reports its status; any other status than
+ * awaiting_merge_approval is refused. Nothing is ever merged without this command.
+ */
 async function decideGate(
   runId: string,
-  decision: "approve" | "reject",
+  gate: "spec" | "merge",
+  decision: "approve" | "reject" | "merge" | "close",
   comment: string | null,
 ): Promise<number> {
   const config = await loadConfig();
   const store = new Store(openDb());
   try {
     const run = store.requireRun(runId);
-    if (run.status !== "awaiting_spec_approval") {
-      console.error(`error: run ${runId} is not waiting for spec approval (status: ${run.status})`);
+    if (gate === "merge" && (run.status === "merged" || run.status === "closed")) {
+      console.log(`run ${runId} is already ${run.status}: ${run.status_message}`);
+      return 0;
+    }
+    if (run.status !== GATE_STATUS[gate]) {
+      console.error(
+        `error: run ${runId} is not waiting for a ${gate} decision (status: ${run.status}; expected ${GATE_STATUS[gate]})`,
+      );
       return 2;
     }
     const actor = os.userInfo().username;
-    store.recordApproval({ runId, gate: "spec", decision, actor, comment });
+    store.recordApproval({ runId, gate, decision, actor, comment });
     const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
     const res = await resumeRun(
       runId,
@@ -112,7 +125,42 @@ async function decideGate(
       { answer: { decision, actor, ...(comment ? { comment } : {}) } },
     );
     if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
+    if (gate === "merge") {
+      const after = store.requireRun(runId);
+      console.log(`\n${after.status.toUpperCase()}: ${after.status_message}`);
+      return after.status === "merged" || after.status === "closed" ? 0 : 1;
+    }
     return printOutcome(res.outcome);
+  } finally {
+    store.db.close();
+  }
+}
+
+/** Explicit, recorded move of the eval baseline tag (merges never move it). */
+async function baselineUpdate(reason: string): Promise<number> {
+  const config = await loadConfig();
+  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "main");
+  const store = new Store(openDb());
+  try {
+    const { previous, current } = await moveBaselineTag(repo.dir);
+    if (previous === current) {
+      console.log(
+        `${BASELINE_TAG} already points at main (${current.slice(0, 10)}); nothing to do`,
+      );
+      return 0;
+    }
+    store.recordBaseline({
+      target: config.target.name,
+      tag: BASELINE_TAG,
+      commitHash: current,
+      previousHash: previous,
+      actor: os.userInfo().username,
+      reason,
+    });
+    console.log(
+      `${BASELINE_TAG}: ${previous.slice(0, 10)} → ${current.slice(0, 10)} (recorded). Eval metrics before and after are not comparable.`,
+    );
+    return 0;
   } finally {
     store.db.close();
   }
@@ -277,7 +325,9 @@ async function main(argv: readonly string[]): Promise<number> {
     case "run":
       return runOne(cmd.taskId, cmd.autoApproveSpec);
     case "decide":
-      return decideGate(cmd.runId, cmd.decision, cmd.comment);
+      return decideGate(cmd.runId, cmd.gate, cmd.decision, cmd.comment);
+    case "baseline-update":
+      return baselineUpdate(cmd.reason);
     case "eval":
       return evalSuite(cmd.taskIds);
     case "runs":

@@ -135,7 +135,7 @@ describe("openspec CLI (real, offline)", () => {
     );
   });
 
-  it("archives once, and a repeated archive is a no-op", async () => {
+  it("archives once; a repeated archive in the same tree is a no-op", async () => {
     const repo = await repoWithOpenSpec();
     await writeSpecFiles(
       repo,
@@ -143,8 +143,9 @@ describe("openspec CLI (real, offline)", () => {
       renderSpecFiles("complete-task", SAMPLE_SPEC, "2026-10-16"),
     );
     const first = await archiveChange(repo, "complete-task");
+    if (!first) throw new Error("expected the change to be archived");
     expect(first.archivedAs).toMatch(/-complete-task$/);
-    expect(await archiveChange(repo, "complete-task")).toEqual(first);
+    expect(await archiveChange(repo, "complete-task")).toBeNull();
     expect(await readdir(path.join(repo, "openspec", "changes", "archive"))).toContain(
       first.archivedAs,
     );

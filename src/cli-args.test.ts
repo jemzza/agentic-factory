@@ -78,6 +78,27 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["approve", "bad-id", "spec"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses merge, close and baseline-update", () => {
+    const id = "20261015-171000-ab12";
+    expect(parseCliArgs(["merge", id])).toEqual({
+      kind: "decide",
+      runId: id,
+      gate: "merge",
+      decision: "merge",
+      comment: null,
+    });
+    expect(parseCliArgs(["close", id, "--comment", "dup"])).toMatchObject({
+      decision: "close",
+      comment: "dup",
+    });
+    expect(parseCliArgs(["close", id])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["baseline-update", "--reason", "new fixture"])).toEqual({
+      kind: "baseline-update",
+      reason: "new fixture",
+    });
+    expect(parseCliArgs(["baseline-update"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("parses resume <runId>", () => {
     expect(parseCliArgs(["resume", "20261015-171000-ab12"])).toEqual({
       kind: "resume",
