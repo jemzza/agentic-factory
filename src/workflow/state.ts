@@ -3,6 +3,7 @@ import { z } from "zod";
 import { PlannerOutputSchema, ReviewVerdictSchema } from "../schemas/agents.js";
 import {
   GateResultSchema,
+  ReworkSchema,
   RUN_STATUSES,
   StepResultSchema,
   type StepResult,
@@ -141,6 +142,8 @@ export const RunState = new StateSchema({
   gateFixCycles: z.number().int().default(0),
   /** Developer re-runs caused by reviewer request_changes (limit: budget.max_review_cycles). */
   reviewCycles: z.number().int().default(0),
+  /** Every rework started, in order, with its reason. */
+  reworks: z.array(ReworkSchema).default([]),
   gateResult: GateResultSchema.nullable().default(null),
   reviewVerdict: ReviewVerdictSchema.nullable().default(null),
 

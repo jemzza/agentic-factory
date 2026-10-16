@@ -55,6 +55,7 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
     cycle: 0,
     gateFixCycles: 0,
     reviewCycles: 0,
+    reworks: [],
     gateResult: null,
     reviewVerdict: null,
     lastNode: "",

@@ -1,4 +1,5 @@
 import type { PlannerOutput, ReviewIssue } from "../schemas/agents.js";
+import type { FixReason } from "../schemas/report.js";
 import type { TaskContent } from "../schemas/task.js";
 import { renderSpecForPrompt, renderTask } from "./prompts.js";
 
@@ -6,7 +7,7 @@ import { renderSpecForPrompt, renderTask } from "./prompts.js";
  * Why the developer runs again. Each reason spends its own budget:
  * `gate_failure` → max_gate_fix_cycles, `review_feedback` → max_review_cycles.
  */
-export type FixReason = "gate_failure" | "review_feedback";
+export type { FixReason };
 
 export interface FixFeedback {
   reason: FixReason;

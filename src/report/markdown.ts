@@ -1,11 +1,31 @@
 import type { RunReport, StepResult } from "../schemas/report.js";
 import { cycleLimits } from "../schemas/task.js";
 
-function fixCycleLimits(r: RunReport): string {
+function fixCycleLines(r: RunReport): string[] {
   const limits = cycleLimits(r.task.budget);
-  return limits
-    ? `(limits: ${limits.gateFix} gate fix, ${limits.review} review)`
-    : `of ${"max_fix_cycles" in r.task.budget ? r.task.budget.max_fix_cycles : "?"} (legacy shared limit)`;
+  if (!limits || r.gateFixCycles === undefined || r.reviewCycles === undefined) {
+    const legacy = "max_fix_cycles" in r.task.budget ? r.task.budget.max_fix_cycles : "?";
+    return [`- **Fix cycles:** ${r.fixCycles} of ${legacy} (legacy shared limit)`];
+  }
+  const lines = [
+    `- **Fix cycles:** ${r.gateFixCycles} of ${limits.gateFix} after the gate, ` +
+      `${r.reviewCycles} of ${limits.review} after review (${r.fixCycles} in total)`,
+  ];
+  if (r.reworks.length) {
+    lines.push(
+      `- **Reworks:** ${r.reworks
+        .map(
+          (w) =>
+            `#${w.cycle} ${w.reason === "gate_failure" ? `gate failure (${w.ofKind}/${limits.gateFix})` : `review feedback (${w.ofKind}/${limits.review})`}`,
+        )
+        .join(", ")}`,
+    );
+  }
+  if (r.specRevisions !== undefined) lines.push(`- **Spec revisions:** ${r.specRevisions}`);
+  lines.push(
+    `- **First pass:** ${r.firstPass === null ? "not decided (only an eval with hidden tests decides it)" : r.firstPass ? "yes" : "no"}`,
+  );
+  return lines;
 }
 
 const STATUS_ICON: Record<RunReport["status"], string> = {
@@ -58,7 +78,7 @@ export function renderReportMarkdown(r: RunReport): string {
             : "")
         : `- **Time:** ${secs(r.durationMs)} (limit ${r.task.budget.timeout_minutes} min)`,
       `- **Cost:** ${usd(r.cost.totalUsd)} of ${usd(r.cost.budgetUsd)}${r.cost.unknownCostSteps ? ` (+${r.cost.unknownCostSteps} step(s) with unknown cost)` : ""}`,
-      `- **Fix cycles:** ${r.fixCycles} ${fixCycleLimits(r)}`,
+      ...fixCycleLines(r),
       `- **Runtime / models:** ${r.runtime} — ${Object.entries(r.models)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")}`,

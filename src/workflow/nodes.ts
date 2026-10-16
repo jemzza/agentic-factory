@@ -449,9 +449,21 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       const cycle = s.cycle + 1;
       // Which budget this run spends was decided on the edge into develop; count it here.
       const reason = fixReason(s);
+      const gateFixCycles = s.gateFixCycles + (reason === "gate_failure" ? 1 : 0);
+      const reviewCycles = s.reviewCycles + (reason === "review_feedback" ? 1 : 0);
       const counters = {
-        gateFixCycles: s.gateFixCycles + (reason === "gate_failure" ? 1 : 0),
-        reviewCycles: s.reviewCycles + (reason === "review_feedback" ? 1 : 0),
+        gateFixCycles,
+        reviewCycles,
+        reworks: reason
+          ? [
+              ...s.reworks,
+              {
+                cycle,
+                reason,
+                ofKind: reason === "gate_failure" ? gateFixCycles : reviewCycles,
+              },
+            ]
+          : s.reworks,
       };
       const { update } = await agentStep(
         ctx,
@@ -467,7 +479,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         ...(update.steps as StepResult[]),
         { kind: "snapshot", cycle, commit, message: `developer cycle ${cycle}` },
       ];
-      ctx.store?.updateRun(s.runId, { headCommit: commit, fixCycles: cycle, ...counters });
+      ctx.store?.updateRun(s.runId, {
+        headCommit: commit,
+        fixCycles: cycle,
+        gateFixCycles,
+        reviewCycles,
+      });
       return { ...update, ...counters, steps, cycle, headCommit: commit, reviewVerdict: null };
     }),
 
@@ -632,6 +649,11 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
               }
             : null,
         fixCycles: Math.max(0, s.cycle),
+        gateFixCycles: s.gateFixCycles,
+        reviewCycles: s.reviewCycles,
+        reworks: s.reworks,
+        specRevisions: s.specRejections.length,
+        firstPass: null,
         steps: s.steps,
         review: s.reviewVerdict,
         gate: s.gateResult,

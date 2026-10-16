@@ -13,6 +13,7 @@ import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
 import type { TaskBudget, TaskSpec } from "../schemas/task.js";
 import { openDb } from "../store/db.js";
 import { importRunReports } from "../store/import-runs.js";
+import { writeFirstPass } from "../report/first-pass.js";
 import { ClaudeCodeRuntime } from "../runtimes/claude-code.js";
 import { Store } from "../store/store.js";
 import { FAKE_PLAN, OPENSPEC_SKELETON, resultOf } from "../testing/fakes.js";
@@ -721,6 +722,35 @@ describe("cycle budgets (gate fix and review are counted and capped separately)"
     // With max_review_cycles = 1 a second review rework would be impossible: the review after
     // the gate fix was the second review call, and it decided the run.
     expect(roles(calls, "reviewer")).toHaveLength(2);
+    // The report carries both counters and the reason of every rework.
+    expect(report).toMatchObject({
+      fixCycles: 2,
+      gateFixCycles: 1,
+      reviewCycles: 1,
+      specRevisions: 0,
+      firstPass: null,
+      reworks: [
+        { cycle: 1, reason: "review_feedback", ofKind: 1 },
+        { cycle: 2, reason: "gate_failure", ofKind: 1 },
+      ],
+    });
+  });
+
+  it("the eval's first-pass decision is written into report.json and report.md", async () => {
+    const { report, reportJsonPath, reportMdPath } = await run({
+      planner: planner(),
+      developer: writeFeature(["v1\n"]),
+      reviewer: reviewer(APPROVE),
+    });
+    const md = await readFile(reportMdPath, "utf8");
+    expect(md).toContain("- **First pass:** not decided");
+    expect(md).toContain(
+      "- **Fix cycles:** 0 of 2 after the gate, 0 of 1 after review (0 in total)",
+    );
+    await writeFirstPass({ reportJsonPath, reportMdPath }, true);
+    const updated = JSON.parse(await readFile(reportJsonPath, "utf8")) as typeof report;
+    expect(updated).toMatchObject({ runId: report.runId, firstPass: true, gateFixCycles: 0 });
+    expect(await readFile(reportMdPath, "utf8")).toContain("- **First pass:** yes");
   });
 
   it("5. limits 0 and 0 → any failure is final at once", async () => {

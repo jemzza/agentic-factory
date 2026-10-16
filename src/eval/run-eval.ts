@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { RunTaskResult } from "../pipeline/run-task.js";
 import { RUN_STATUSES, type RunReport, type RunStatus } from "../schemas/report.js";
-import { EXPECTED_OUTCOMES, type EvalMeta, type TaskSpec } from "../schemas/task.js";
+import { cycleLimits, EXPECTED_OUTCOMES, type EvalMeta, type TaskSpec } from "../schemas/task.js";
 import { findHiddenArtifacts } from "./hidden-guard.js";
 import type { HiddenTestResult } from "./hidden-tests.js";
 import { renderEvalSummaryMarkdown } from "./summary-markdown.js";
@@ -54,7 +54,21 @@ export const EvalTaskResultSchema = z.strictObject({
   correct: z.boolean(),
   message: z.string(),
   fixCycles: z.number().int().nonnegative(),
+  /**
+   * Split counters (null in results recorded before the split, or when unknown).
+   * fixCycles stays their sum.
+   */
+  gateFixCycles: z.number().int().nonnegative().nullable().default(null),
+  reviewCycles: z.number().int().nonnegative().nullable().default(null),
+  /** The task's review budget, to tell whether a run used all of it. */
+  maxReviewCycles: z.number().int().nonnegative().nullable().default(null),
+  /** Human spec rejections; never counts against firstPass. */
+  specRevisions: z.number().int().nonnegative().nullable().default(null),
+  /** See firstPassOf(); null when not applicable (clarification task, infra_error). */
+  firstPass: z.boolean().nullable().default(null),
   reachedDeveloper: z.boolean(),
+  /** A reviewer ran at least once (default false in results recorded before the split). */
+  reachedReview: z.boolean().default(false),
   durationMs: z.number().int().nonnegative(),
   costUsd: z.number().nonnegative(),
   unknownCostSteps: z.number().int().nonnegative(),
@@ -75,6 +89,23 @@ export const EvalTaskResultSchema = z.strictObject({
 });
 export type EvalTaskResult = z.infer<typeof EvalTaskResultSchema>;
 
+/**
+ * First pass: the task was implemented correctly (verified by hidden tests) with no rework of
+ * either kind. Applies only to tasks whose correct outcome is an implementation, and never to
+ * infra_error. Spec revisions do not matter. A result without split counters (recorded before
+ * the split) is still decidable: fixCycles = 0 means both counters are 0.
+ */
+export function firstPassOf(
+  r: Pick<EvalTaskResult, "expected" | "outcome" | "fixCycles" | "gateFixCycles" | "reviewCycles">,
+): boolean | null {
+  if (r.expected !== "implemented" || r.outcome === "infra_error") return null;
+  if (r.outcome !== "verified") return false;
+  if (r.gateFixCycles !== null && r.reviewCycles !== null) {
+    return r.gateFixCycles === 0 && r.reviewCycles === 0;
+  }
+  return r.fixCycles === 0;
+}
+
 export const EvalMetricsSchema = z.strictObject({
   total: z.number().int(),
   correct: z.number().int(),
@@ -85,8 +116,28 @@ export const EvalMetricsSchema = z.strictObject({
   falseSuccess: z.number().int(),
   /** falseSuccess / successClaims (null if nothing was claimed): the honesty metric. */
   falseSuccessRate: z.number().nullable(),
+  /** Verified with no rework / tasks whose correct outcome is an implementation (no infra). */
+  firstPass: z.number().int().default(0),
+  firstPassDenominator: z.number().int().default(0),
+  firstPassRate: z.number().nullable().default(null),
+  /** Tasks whose correct outcome is needs_clarification: outside the first-pass denominator. */
+  clarificationTasks: z.number().int().default(0),
+  clarificationCorrect: z.number().int().default(0),
   /** Mean fix cycles over tasks that reached the developer. */
   avgFixCycles: z.number().nullable(),
+  /** Means of the split counters over tasks that reached the developer and have them. */
+  avgGateFixCycles: z.number().nullable().default(null),
+  avgReviewCycles: z.number().nullable().default(null),
+  /** Tasks counted in the two means above (results without split counters are left out). */
+  splitCyclesKnown: z.number().int().default(0),
+  gateFailed: z.number().int().default(0),
+  reviewRejected: z.number().int().default(0),
+  /** Tasks that reached review. */
+  reviewed: z.number().int().default(0),
+  /** review_rejected / reviewed: runs stopped by the review limit. */
+  reviewLimitStopRate: z.number().nullable().default(null),
+  /** Tasks that used their whole review budget (reviewCycles = max_review_cycles > 0), any outcome. */
+  reviewBudgetExhausted: z.number().int().default(0),
   avgDurationSec: z.number(),
   totalCostUsd: z.number(),
   unknownCostSteps: z.number().int(),
@@ -148,6 +199,14 @@ export function computeMetrics(all: readonly EvalTaskResult[]): EvalMetrics {
   const successClaims = results.filter((r) => r.status === "success").length;
   const falseSuccess = results.filter((r) => r.outcome === "false_success").length;
   const dev = results.filter((r) => r.reachedDeveloper);
+  const split = dev.filter((r) => r.gateFixCycles !== null && r.reviewCycles !== null);
+  const mean = (xs: number[]) =>
+    xs.length ? round(xs.reduce((a, b) => a + b, 0) / xs.length, 2) : null;
+  const firstPassFlags = results.map(firstPassOf).filter((f): f is boolean => f !== null);
+  const firstPass = firstPassFlags.filter(Boolean).length;
+  const clarification = results.filter((r) => r.expected === "needs_clarification");
+  const reviewed = results.filter((r) => r.reachedReview).length;
+  const reviewRejected = results.filter((r) => r.outcome === "review_rejected").length;
   const byOutcome: Record<string, number> = {};
   for (const r of results) byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + 1;
   return {
@@ -157,9 +216,25 @@ export function computeMetrics(all: readonly EvalTaskResult[]): EvalMetrics {
     successClaims,
     falseSuccess,
     falseSuccessRate: successClaims ? round(falseSuccess / successClaims, 4) : null,
+    firstPass,
+    firstPassDenominator: firstPassFlags.length,
+    firstPassRate: firstPassFlags.length ? round(firstPass / firstPassFlags.length, 4) : null,
+    clarificationTasks: clarification.length,
+    clarificationCorrect: clarification.filter((r) => r.correct).length,
     avgFixCycles: dev.length
       ? round(dev.reduce((s, r) => s + r.fixCycles, 0) / dev.length, 2)
       : null,
+    avgGateFixCycles: mean(split.map((r) => r.gateFixCycles ?? 0)),
+    avgReviewCycles: mean(split.map((r) => r.reviewCycles ?? 0)),
+    splitCyclesKnown: split.length,
+    gateFailed: results.filter((r) => r.outcome === "gate_failed").length,
+    reviewRejected,
+    reviewed,
+    reviewLimitStopRate: reviewed ? round(reviewRejected / reviewed, 4) : null,
+    reviewBudgetExhausted: results.filter(
+      (r) =>
+        r.maxReviewCycles !== null && r.maxReviewCycles > 0 && r.reviewCycles === r.maxReviewCycles,
+    ).length,
     avgDurationSec: total
       ? round(results.reduce((s, r) => s + r.durationMs, 0) / total / 1000, 1)
       : 0,
@@ -198,6 +273,11 @@ export interface RunEvalDeps {
    * ended in infra_error or never started are run.
    */
   previous?: EvalSummary;
+  /**
+   * Records the eval's first-pass decision for a finished run (database row, report files).
+   * Called once per task the pipeline finished, after the hidden tests.
+   */
+  recordFirstPass?: (run: RunTaskResult, firstPass: boolean | null) => Promise<void>;
   models: Record<string, string>;
   now?: () => Date;
   log?: (message: string) => void;
@@ -265,10 +345,12 @@ export async function runEval(
     );
     const taskStarted = now();
     let report: RunReport | null = null;
+    let finished: RunTaskResult | null = null;
     let reportPath: string | null = null;
     let crash: string | null = null;
     try {
       const res = await deps.runTask(task, evalDir);
+      finished = res;
       report = res.report;
       reportPath = path.relative(evalDir, res.reportMdPath);
     } catch (err) {
@@ -301,6 +383,16 @@ export async function runEval(
     }
 
     const { outcome, correct } = classify(status, meta.expected_outcome, hidden);
+    const agentRoles = new Set(
+      (report?.steps ?? []).flatMap((s) => (s.kind === "agent" ? [s.role] : [])),
+    );
+    const limits = cycleLimits(task.budget);
+    const counters = {
+      fixCycles: report?.fixCycles ?? 0,
+      gateFixCycles: report?.gateFixCycles ?? null,
+      reviewCycles: report?.reviewCycles ?? null,
+    };
+    const firstPass = firstPassOf({ expected: meta.expected_outcome, outcome, ...counters });
     const result = EvalTaskResultSchema.parse({
       taskId: task.id,
       title: task.title,
@@ -310,9 +402,12 @@ export async function runEval(
       outcome,
       correct,
       message: crash ? `pipeline crashed: ${crash}` : (report?.message ?? ""),
-      fixCycles: report?.fixCycles ?? 0,
-      reachedDeveloper:
-        report?.steps.some((s) => s.kind === "agent" && s.role === "developer") ?? false,
+      ...counters,
+      maxReviewCycles: limits?.review ?? null,
+      specRevisions: report?.specRevisions ?? null,
+      firstPass,
+      reachedDeveloper: agentRoles.has("developer"),
+      reachedReview: agentRoles.has("reviewer"),
       durationMs: report?.durationMs ?? now().getTime() - taskStarted.getTime(),
       costUsd: report?.cost.totalUsd ?? 0,
       unknownCostSteps: report?.cost.unknownCostSteps ?? 0,
@@ -329,6 +424,7 @@ export async function runEval(
       reportPath,
     });
     results.push(result);
+    if (finished && deps.recordFirstPass) await deps.recordFirstPass(finished, firstPass);
     log(
       `  → ${outcome}${correct ? " ✓" : " ✗"}` +
         (hidden

@@ -92,6 +92,19 @@ export const StepResultSchema = z.discriminatedUnion("kind", [
 ]);
 export type StepResult = z.infer<typeof StepResultSchema>;
 
+/** Why the developer ran again; each reason spends its own cycle budget. */
+export const FIX_REASONS = ["gate_failure", "review_feedback"] as const;
+export type FixReason = (typeof FIX_REASONS)[number];
+
+export const ReworkSchema = z.strictObject({
+  /** Developer run index (1 = first rework), as in step logs. */
+  cycle: z.number().int().positive(),
+  reason: z.enum(FIX_REASONS),
+  /** Position within the budget of this reason (1 = first rework of this kind). */
+  ofKind: z.number().int().positive(),
+});
+export type Rework = z.infer<typeof ReworkSchema>;
+
 export const RunReportSchema = z.strictObject({
   schemaVersion: z.literal(1),
   runId: z.string(),
@@ -132,6 +145,18 @@ export const RunReportSchema = z.strictObject({
     .default(null),
   /** Number of fix cycles performed (0 = first implementation passed or the run stopped earlier). */
   fixCycles: z.number().int().nonnegative(),
+  /** Developer re-runs after a failed gate / after reviewer request_changes (absent before the split). */
+  gateFixCycles: z.number().int().nonnegative().optional(),
+  reviewCycles: z.number().int().nonnegative().optional(),
+  /** Every rework in order, with its reason (empty before the split). */
+  reworks: z.array(ReworkSchema).default([]),
+  /** Human spec rejections (absent before the split). Does not affect firstPass. */
+  specRevisions: z.number().int().nonnegative().optional(),
+  /**
+   * Verified by hidden tests with no rework at all. Only an eval can decide it: null when the
+   * pipeline writes the report; the eval fills it in after the hidden tests ran.
+   */
+  firstPass: z.boolean().nullable().default(null),
   steps: z.array(StepResultSchema),
   /** Final reviewer verdict, if a review happened. */
   review: ReviewVerdictSchema.nullable(),

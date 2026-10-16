@@ -7,7 +7,7 @@ import type { RunReport, RunStatus } from "../schemas/report.js";
 import type { EvalMeta, TaskSpec } from "../schemas/task.js";
 import type { HiddenTestResult } from "./hidden-tests.js";
 import { parseVitestJson } from "./hidden-tests.js";
-import { classify, computeMetrics, runEval, type EvalTaskResult } from "./run-eval.js";
+import { classify, computeMetrics, firstPassOf, runEval, type EvalTaskResult } from "./run-eval.js";
 
 let tmp: string;
 beforeAll(async () => {
@@ -81,7 +81,13 @@ function result(overrides: Partial<EvalTaskResult>): EvalTaskResult {
     correct: true,
     message: "",
     fixCycles: 0,
+    gateFixCycles: 0,
+    reviewCycles: 0,
+    maxReviewCycles: 1,
+    specRevisions: 0,
+    firstPass: null,
     reachedDeveloper: true,
+    reachedReview: true,
     durationMs: 10_000,
     costUsd: 0.5,
     unknownCostSteps: 0,
@@ -144,6 +150,92 @@ describe("computeMetrics", () => {
     });
   });
 
+  it("first-pass rate: verified with no rework, over implementable tasks; split cycle means", () => {
+    const rejected = {
+      status: "review_rejected",
+      outcome: "review_rejected",
+      correct: false,
+    } as const;
+    const m = computeMetrics([
+      result({ taskId: "clean" }),
+      result({ taskId: "after-review", fixCycles: 1, reviewCycles: 1 }),
+      result({ taskId: "after-gate", fixCycles: 1, gateFixCycles: 1 }),
+      result({ taskId: "rejected", ...rejected, fixCycles: 1, reviewCycles: 1 }),
+      result({
+        taskId: "gate-failed",
+        status: "gate_failed",
+        outcome: "gate_failed",
+        correct: false,
+        fixCycles: 2,
+        gateFixCycles: 2,
+        reachedReview: false,
+      }),
+      // Recorded before the split (NULL counters): still decidable from fixCycles, but left
+      // out of the split-cycle means.
+      result({ taskId: "legacy-clean", gateFixCycles: null, reviewCycles: null }),
+      result({ taskId: "legacy-fixed", fixCycles: 1, gateFixCycles: null, reviewCycles: null }),
+      // Contradictory task: right answer and wrong answer; neither is in the denominator.
+      result({
+        taskId: "contradiction-ok",
+        expected: "needs_clarification",
+        status: "needs_clarification",
+        outcome: "needs_clarification",
+        reachedDeveloper: false,
+        reachedReview: false,
+      }),
+      result({
+        taskId: "contradiction-implemented",
+        expected: "needs_clarification",
+        correct: false,
+      }),
+      // Provider limit: out of every metric.
+      result({
+        taskId: "limited",
+        status: "infra_error",
+        outcome: "infra_error",
+        correct: false,
+        reachedReview: false,
+      }),
+    ]);
+    expect(m).toMatchObject({
+      firstPass: 2, // clean, legacy-clean
+      firstPassDenominator: 7,
+      firstPassRate: 0.2857,
+      clarificationTasks: 2,
+      clarificationCorrect: 1,
+      // Tasks that reached the developer with known counters (incl. the implemented
+      // contradiction): gate (0+0+1+0+2+0)/6, review (0+1+0+1+0+0)/6.
+      avgGateFixCycles: 0.5,
+      avgReviewCycles: 0.33,
+      splitCyclesKnown: 6,
+      gateFailed: 1,
+      reviewRejected: 1,
+      reviewed: 7,
+      reviewLimitStopRate: 0.1429,
+      reviewBudgetExhausted: 2, // after-review, rejected
+      excludedInfra: 1,
+    });
+  });
+
+  it("firstPassOf ignores spec revisions and is undefined for clarification and infra", () => {
+    const base = { expected: "implemented", outcome: "verified", fixCycles: 0 } as const;
+    expect(firstPassOf({ ...base, gateFixCycles: 0, reviewCycles: 0 })).toBe(true);
+    expect(firstPassOf({ ...base, gateFixCycles: 0, reviewCycles: 1, fixCycles: 1 })).toBe(false);
+    expect(
+      firstPassOf({ ...base, outcome: "false_success", gateFixCycles: 0, reviewCycles: 0 }),
+    ).toBe(false);
+    expect(firstPassOf({ ...base, gateFixCycles: null, reviewCycles: null })).toBe(true);
+    expect(
+      firstPassOf({ ...base, expected: "needs_clarification", gateFixCycles: 0, reviewCycles: 0 }),
+    ).toBeNull();
+    expect(
+      firstPassOf({ ...base, outcome: "infra_error", gateFixCycles: 0, reviewCycles: 0 }),
+    ).toBeNull();
+    // A spec rejected by a human twice, then implemented cleanly, is still first pass.
+    const spec = result({ specRevisions: 2 });
+    expect(firstPassOf(spec)).toBe(true);
+  });
+
   it("reports a null false success rate when nothing was claimed", () => {
     expect(
       computeMetrics([result({ status: "error", outcome: "error", correct: false })])
@@ -199,6 +291,7 @@ async function fakeRun(
   runsDir: string,
   status: RunStatus,
   worktree: string,
+  extra: Partial<RunReport> = {},
 ): Promise<RunTaskResult> {
   const dir = path.join(runsDir, `run-${task.id}`);
   await mkdir(dir, { recursive: true });
@@ -210,6 +303,7 @@ async function fakeRun(
     cost: { totalUsd: 0.25, budgetUsd: 1, unknownCostSteps: 0 },
     worktree: { path: worktree, branch: "b", headCommit: "h" },
     steps: status === "needs_clarification" ? [] : [{ kind: "agent", role: "developer" }],
+    ...extra,
   } as unknown as RunReport;
   return {
     report,
@@ -272,6 +366,60 @@ describe("runEval", () => {
     expect(md).toContain("**false_success**");
     expect(md).toContain("expected 409");
     expect(JSON.parse(await readFile(summaryJsonPath, "utf8"))).toMatchObject({ schemaVersion: 1 });
+  });
+
+  it("records the first-pass decision per finished run and carries split counters", async () => {
+    const wt = path.join(tmp, "fp-wt");
+    await mkdir(wt, { recursive: true });
+    const recorded: [string, boolean | null][] = [];
+    const steps = [
+      { kind: "agent", role: "developer" },
+      { kind: "agent", role: "reviewer" },
+    ] as unknown as RunReport["steps"];
+    const { summary } = await runEval(
+      [
+        { task: TASK("clean"), meta: META("implemented") },
+        { task: TASK("reworked"), meta: META("implemented") },
+        { task: TASK("contradiction"), meta: META("needs_clarification") },
+      ],
+      {
+        runsDir: tmp,
+        runtimeName: "fake",
+        models: {},
+        runTask: (task, runsDir) =>
+          task.id === "contradiction"
+            ? fakeRun(task, runsDir, "needs_clarification", wt)
+            : fakeRun(task, runsDir, "success", wt, {
+                steps,
+                fixCycles: task.id === "clean" ? 0 : 1,
+                gateFixCycles: 0,
+                reviewCycles: task.id === "clean" ? 0 : 1,
+                specRevisions: 1,
+              }),
+        runHidden: () => Promise.resolve(hidden(true)),
+        recordFirstPass: (run, firstPass) => {
+          recorded.push([path.basename(path.dirname(run.reportJsonPath)), firstPass]);
+          return Promise.resolve();
+        },
+      },
+    );
+    expect(recorded).toEqual([
+      ["run-clean", true],
+      ["run-reworked", false],
+      ["run-contradiction", null],
+    ]);
+    expect(
+      summary.tasks.map((t) => [t.taskId, t.firstPass, t.reviewCycles, t.reachedReview]),
+    ).toEqual([
+      ["clean", true, 0, true],
+      ["reworked", false, 1, true],
+      ["contradiction", null, null, false],
+    ]);
+    expect(summary.metrics).toMatchObject({
+      firstPass: 1,
+      firstPassDenominator: 2,
+      firstPassRate: 0.5,
+    });
   });
 
   it("detects hidden test files left in an agent worktree", async () => {
