@@ -18,7 +18,11 @@ import {
   FakeRuntime,
   makeFakeRepo,
 } from "../testing/fakes.js";
-import { resumeRun, runTask, type RunTaskDeps } from "./run-task.js";
+import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { buildGraph } from "../workflow/graph.js";
+import type { NodeFn } from "../workflow/nodes.js";
+import { NODE_NAMES, type NodeName } from "../workflow/state.js";
+import { reopenForMerge, resumeRun, runTask, type RunTaskDeps } from "./run-task.js";
 
 let tmp: string;
 beforeAll(async () => {
@@ -286,6 +290,61 @@ describe("merge gate", () => {
       });
     } finally {
       c.db.close();
+    }
+  });
+
+  it("reopen-merge puts a success run from before the merge gate at the gate; then merge works", async () => {
+    const c = await successfulRun();
+    try {
+      // Simulate a pre-Phase-5 run: checkpoint finished right after `report` (no merge gate).
+      const noop: NodeFn = () => Promise.resolve({});
+      const nodes = Object.fromEntries(NODE_NAMES.map((name) => [name, noop])) as Record<
+        NodeName,
+        NodeFn
+      >;
+      const legacy = buildGraph(nodes, {
+        deadlineNow: () => Date.now(),
+        checkpointer: new SqliteSaver(c.db),
+      });
+      await legacy.updateState({ configurable: { thread_id: c.runId } }, {}, "close");
+      c.store.updateRun(c.runId, { status: "success" });
+      expect((await legacy.getState({ configurable: { thread_id: c.runId } })).next).toEqual([]);
+
+      const reopened = await reopenForMerge(c.runId, c.deps, "tester");
+      expect(reopened).toMatchObject({ kind: "awaiting", gate: "merge" });
+      expect(c.store.requireRun(c.runId).status).toBe("awaiting_merge_approval");
+      const migration = c.store
+        .listEvents(c.runId)
+        .find((e) => e.kind === "transition" && (e.payload ?? "").includes("reopen-merge"));
+      expect(migration).toMatchObject({ node: "report", next: "merge_approval" });
+
+      await decide(c, "merge");
+      expect(c.store.requireRun(c.runId).status).toBe("merged");
+      expect(await head(c.repo.dir, "factory-baseline")).toBe(c.baseline);
+    } finally {
+      c.db.close();
+    }
+  });
+
+  it("reopen-merge refuses runs that are not a finished success at the report", async () => {
+    const waiting = await successfulRun();
+    try {
+      // Already at the merge gate.
+      await expect(reopenForMerge(waiting.runId, waiting.deps, "tester")).rejects.toThrow(
+        /only a finished "success" run/,
+      );
+      await decide(waiting, "close", "no");
+      // Closed run: status closed.
+      await expect(reopenForMerge(waiting.runId, waiting.deps, "tester")).rejects.toThrow(
+        /status closed/,
+      );
+      // Even if someone flips the DB status, the checkpoint did not end at the report.
+      waiting.store.updateRun(waiting.runId, { status: "success" });
+      await expect(reopenForMerge(waiting.runId, waiting.deps, "tester")).rejects.toThrow(
+        /did not end at a successful report/,
+      );
+    } finally {
+      waiting.db.close();
     }
   });
 });

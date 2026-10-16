@@ -12,6 +12,7 @@ export type CliCommand =
       comment: string | null;
     }
   | { kind: "baseline-update"; reason: string }
+  | { kind: "reopen-merge"; runId: string }
   | { kind: "eval"; taskIds: string[] }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "runs"; limit: number }
@@ -29,6 +30,7 @@ export const USAGE = `Usage:
   npm run merge -- <runId>       Merge a successful run into main (gate re-runs on the merge result)
   npm run close -- <runId> --comment "..."
                                  Close a successful run without merging
+  npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
   npm run eval [-- <taskId>...]  Run the eval suite (all tasks, or the given ones) and verify
@@ -124,6 +126,13 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
       }
       return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "reopen-merge": {
+      const [runId, ...extra] = rest;
+      if (runId === undefined || extra.length > 0 || !RUN_ID_PATTERN.test(runId)) {
+        return { kind: "invalid", message: "reopen-merge: expected exactly one <runId>" };
+      }
+      return { kind: "reopen-merge", runId };
     }
     case "baseline-update": {
       if (rest[0] !== "--reason" || rest.length !== 2 || !rest[1]?.trim()) {

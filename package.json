@@ -27,6 +27,7 @@
     "merge": "tsx src/cli.ts merge",
     "close": "tsx src/cli.ts close",
     "baseline:update": "tsx src/cli.ts baseline-update",
+    "reopen-merge": "tsx src/cli.ts reopen-merge",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {

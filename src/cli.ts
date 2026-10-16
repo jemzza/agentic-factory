@@ -7,7 +7,13 @@ import { runEval } from "./eval/run-eval.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { BASELINE_TAG, ensureTargetRepo, moveBaselineTag } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
-import { defaultSandboxExec, resumeRun, runTask, type RunOutcome } from "./pipeline/run-task.js";
+import {
+  defaultSandboxExec,
+  reopenForMerge,
+  resumeRun,
+  runTask,
+  type RunOutcome,
+} from "./pipeline/run-task.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import type { CommandResult } from "./process/run-command.js";
@@ -46,10 +52,12 @@ export const RUNS_DIR = path.join(FACTORY_ROOT, "runs");
 
 function printOutcome(outcome: RunOutcome): number {
   if (outcome.kind === "awaiting") {
+    const next =
+      outcome.gate === "spec"
+        ? `  npm run approve -- ${outcome.runId} spec\n  npm run reject -- ${outcome.runId} spec --comment "what to change"`
+        : `  npm run merge -- ${outcome.runId}\n  npm run close -- ${outcome.runId} --comment "why not merged"`;
     console.log(
-      `\nAWAITING ${outcome.gate.toUpperCase()} APPROVAL: review ${path.relative(process.cwd(), outcome.noticePath)}\n` +
-        `  npm run approve -- ${outcome.runId} ${outcome.gate}\n` +
-        `  npm run reject -- ${outcome.runId} ${outcome.gate} --comment "what to change"`,
+      `\nAWAITING ${outcome.gate.toUpperCase()} DECISION: review ${path.relative(process.cwd(), outcome.noticePath)}\n${next}`,
     );
     return 0;
   }
@@ -131,6 +139,22 @@ async function decideGate(
       return after.status === "merged" || after.status === "closed" ? 0 : 1;
     }
     return printOutcome(res.outcome);
+  } finally {
+    store.db.close();
+  }
+}
+
+async function reopenMerge(runId: string): Promise<number> {
+  const config = await loadConfig();
+  const store = new Store(openDb());
+  try {
+    const runtime = new ClaudeCodeRuntime({ logDir: RUNS_DIR, models: config.models });
+    const outcome = await reopenForMerge(
+      runId,
+      { config, runtime, runsDir: RUNS_DIR, store, log: consoleLog },
+      os.userInfo().username,
+    );
+    return printOutcome(outcome);
   } finally {
     store.db.close();
   }
@@ -328,6 +352,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return decideGate(cmd.runId, cmd.gate, cmd.decision, cmd.comment);
     case "baseline-update":
       return baselineUpdate(cmd.reason);
+    case "reopen-merge":
+      return reopenMerge(cmd.runId);
     case "eval":
       return evalSuite(cmd.taskIds);
     case "runs":

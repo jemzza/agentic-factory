@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
+import { git } from "../git/git.js";
 import { ensureTargetRepo, type RepoRef, type TargetRepo } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
 import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
@@ -403,6 +404,76 @@ export async function resumeRun(
     const input = opts.answer === undefined ? null : new Command({ resume: opts.answer });
     await drive(deps, graph, runId, input, values.lastNode ?? "__start__");
     return { kind: "resumed", outcome: await settle(deps, graph, ctx, runId) };
+  } finally {
+    store.releaseLock(runId);
+  }
+}
+
+/**
+ * One-time migration for runs that finished before the merge gate existed (Phase 5): their
+ * checkpoint ended at `report` with status success, so they never reached `merge_approval`.
+ * Only such runs are accepted. Using LangGraph's `updateState` as the `report` node, the
+ * checkpoint is re-routed through the CURRENT graph (success → merge_approval); the run then
+ * pauses at the merge gate like any new run. No agent is called. The migration is journaled.
+ */
+export async function reopenForMerge(
+  runId: string,
+  deps: RunTaskDeps,
+  actor: string,
+): Promise<RunOutcome> {
+  const store = deps.store;
+  if (!store) throw new Error("reopen-merge requires the factory database");
+  const run = store.requireRun(runId);
+  if (run.status !== "success") {
+    throw new Error(
+      `run ${runId} has status ${run.status}; only a finished "success" run from before the merge gate can be reopened`,
+    );
+  }
+  const { ctx, graph } = prepareGraph(deps, 0);
+  const config = threadConfig(runId);
+  const snap = await graph.getState(config);
+  const values = snap.values as Partial<{
+    runId: string;
+    lastNode: string;
+    status: string;
+    worktree: { path: string; branch: string } | null;
+    repo: { dir: string } | null;
+  }>;
+  if (!values.runId) throw new Error(`run ${runId} has no checkpoint`);
+  if (snap.next.length > 0)
+    throw new Error(`run ${runId} is not finished (next: ${snap.next.join(", ")})`);
+  if (values.lastNode !== "report" || values.status !== "success") {
+    throw new Error(
+      `run ${runId} did not end at a successful report (last node ${values.lastNode ?? "?"})`,
+    );
+  }
+  if (!values.worktree || !values.repo)
+    throw new Error(`run ${runId} has no worktree or repo in its state`);
+  await access(values.worktree.path);
+  await git(values.repo.dir, ["rev-parse", "--verify", `refs/heads/${values.worktree.branch}`]);
+
+  store.acquireLock(runId);
+  try {
+    await graph.updateState(config, {}, "report");
+    const after = await graph.getState(config);
+    if (!after.next.includes("merge_approval")) {
+      throw new Error(
+        `re-routing ${runId} did not reach merge_approval (next: ${after.next.join(", ") || "none"})`,
+      );
+    }
+    store.appendEvent(runId, {
+      kind: "transition",
+      node: "report",
+      next: "merge_approval",
+      payload: {
+        migration: "reopen-merge",
+        reason: "run finished before the merge gate existed",
+        actor,
+      },
+    });
+    store.updateRun(runId, { status: "running", statusMessage: "reopened for the merge gate" });
+    await drive(deps, graph, runId, null, "report");
+    return await settle(deps, graph, ctx, runId);
   } finally {
     store.releaseLock(runId);
   }
