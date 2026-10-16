@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { developerPrompt, type FixFeedback } from "../agents/developer.js";
+import { developerPrompt, type FixFeedback, type FixReason } from "../agents/developer.js";
 import {
   parsePlannerResult,
   PLANNER_OUTPUT_SCHEMA,
@@ -194,22 +194,32 @@ async function agentStep(
  * Why the developer is about to run again: a failed gate, or reviewer change requests after a
  * passed gate. Null for the first implementation.
  */
-export function fixReason(s: RunStateValue): "gate_failure" | "review_feedback" | null {
+export function fixReason(s: RunStateValue): FixReason | null {
   if (s.cycle < 0 || !s.gateResult) return null;
   if (!s.gateResult.passed) return "gate_failure";
   return s.reviewVerdict ? "review_feedback" : null;
 }
 
 function fixFeedback(s: RunStateValue, cycle: number): FixFeedback | undefined {
-  if (cycle === 0 || !s.gateResult) return undefined;
-  const review = s.gateResult.passed ? s.reviewVerdict : null;
+  const reason = fixReason(s);
+  if (cycle === 0 || !reason || !s.gateResult) return undefined;
   const limits = cycleLimits(s.task.budget);
-  const gateFailed = !s.gateResult.passed;
+  if (reason === "gate_failure") {
+    return {
+      reason,
+      cycle: s.gateFixCycles + 1,
+      maxCycles: limits?.gateFix ?? 0,
+      gateFailures: describeGateFailures(s.gateResult),
+      reviewIssues: [],
+      unmetCriteria: [],
+    };
+  }
+  const review = s.reviewVerdict;
   return {
-    // Position within the budget being spent: gate fix cycles or review cycles.
-    cycle: gateFailed ? s.gateFixCycles + 1 : s.reviewCycles + 1,
-    maxCycles: limits ? (gateFailed ? limits.gateFix : limits.review) : 0,
-    gateFailures: s.gateResult.passed ? "" : describeGateFailures(s.gateResult),
+    reason,
+    cycle: s.reviewCycles + 1,
+    maxCycles: limits?.review ?? 0,
+    gateFailures: "",
     reviewIssues: review ? review.issues : [],
     unmetCriteria: review
       ? review.criteria_check

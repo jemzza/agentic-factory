@@ -69,6 +69,16 @@ export const FAKE_APPROVE: ReviewVerdict = {
   })),
 };
 
+export const FAKE_REJECT: ReviewVerdict = {
+  verdict: "request_changes",
+  issues: [{ severity: "major", file: "src/feature.ts", description: "no edge case" }],
+  criteria_check: FAKE_TASK.acceptance_criteria.map((criterion, i) => ({
+    criterion,
+    met: i === 0,
+    evidence: i === 0 ? "ok" : "missing test",
+  })),
+};
+
 export type FakeScript = Partial<
   Record<
     AgentRunInput["role"],

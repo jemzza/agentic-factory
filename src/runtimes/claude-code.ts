@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { runCommand, type CommandResult } from "../process/run-command.js";
+import { exitIsProviderUnavailable, resultIsProviderUnavailable } from "./provider-errors.js";
 import { assertToolsAllowed, parseToolEntry, SECRET_PATH_PATTERNS } from "./tool-policy.js";
 import type {
   AgentRole,
@@ -70,25 +71,9 @@ const ResultEventSchema = z.looseObject({
 });
 type ResultEvent = z.infer<typeof ResultEventSchema>;
 
-/**
- * The provider refused the call: a subscription usage limit, a rate limit, or an overloaded /
- * failing API. Observed live (Claude Code 2.1.300, subscription session limit):
- *   {"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",
- *    "api_error_status":429,"api_error":"usage_limit_reached",
- *    "result":"You've hit your session limit · resets 7:10pm (Europe/Moscow)", ...}
- * Only the structured fields are used, never the message text. Other 4xx (a bad request
- * the factory built) stay `process` errors.
- */
+/** The provider refused the call; the patterns live in provider-errors.ts. */
 export function isProviderUnavailable(event: ResultEvent): boolean {
-  if (!event.is_error) return false;
-  const status = event.api_error_status;
-  return (
-    status === 429 ||
-    (typeof status === "number" && status >= 500) ||
-    event.api_error === "usage_limit_reached" ||
-    event.api_error === "rate_limit_error" ||
-    event.api_error === "overloaded_error"
-  );
+  return resultIsProviderUnavailable(event);
 }
 
 export type StreamParse =
@@ -257,6 +242,12 @@ export function interpretRun(
     return fail("process", `failed to start agent: ${proc.spawnError}`);
   if (parse.kind === "invalid") return fail("parse", parse.message);
   if (!event) {
+    if (exitIsProviderUnavailable(proc.exitCode, proc.stderr)) {
+      return fail(
+        "infra",
+        `provider unreachable (exit ${proc.exitCode ?? "null"}): ${tail(proc.stderr)}`,
+      );
+    }
     return proc.exitCode === 0
       ? fail("parse", "agent output has no result event")
       : fail(

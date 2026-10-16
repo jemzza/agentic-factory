@@ -46,14 +46,14 @@ flowchart TD
     develop -->|error / timeout / budget| report
 
     gate -->|passed| review
-    gate -->|failed, cycle < max| develop
-    gate -->|failed, cycle = max| report
+    gate -->|"failed, gateFixCycles < max_gate_fix_cycles (default 2)<br/>gateFixCycles += 1, gate_failure"| develop
+    gate -->|"failed, gateFixCycles = max_gate_fix_cycles → gate_failed"| report
     gate -->|sandbox infra error| report
 
     review -->|approved| report
-    review -->|changes requested, cycle < max| develop
-    review -->|changes requested, cycle = max| report
-    review -->|error / timeout / budget| report
+    review -->|"request_changes, reviewCycles < max_review_cycles (default 1)<br/>reviewCycles += 1, review_feedback"| develop
+    review -->|"request_changes, reviewCycles = max_review_cycles → review_rejected"| report
+    review -->|error / timeout / budget / provider unavailable| report
 
     report -->|status success| merge_approval
     report -->|any other status| END([END])
@@ -66,6 +66,15 @@ flowchart TD
     merge -->|conflict / gate failed on merge result / main moved| merge_approval
     close --> END
 ```
+
+**Cycle budgets are separate.** `gateFixCycles` counts developer re-runs after a failed gate
+(checks, scope, policies), `reviewCycles` re-runs after reviewer `request_changes`; each is
+checked against its own limit on its own edge (`decide()` in `src/workflow/decide.ts`), and
+`develop` increments the counter of the reason it was entered for. A rework after review goes
+through the gate again; if the gate fails there, the gate budget is spent, not the review
+budget. Both counters are graph state, so they are checkpointed and restored on resume. Spec
+rejections (`spec_approval → plan`, ≤ 2) are a third, unrelated limit. A run checkpointed with
+the legacy shared `max_fix_cycles` budget is never routed into another fix cycle (`error`).
 
 Every edge leaving an agent or gate node is guarded first by the global limits:
 `spentUsd ≥ budgetUsd → budget_exceeded`, `now ≥ deadline → timeout`. Eval runs end at

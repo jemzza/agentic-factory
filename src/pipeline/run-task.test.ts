@@ -10,9 +10,10 @@ import { FACTORY_ROOT, HIDDEN_DIR } from "../paths.js";
 import type { SandboxExec } from "../quality/gate.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
 import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
-import type { TaskSpec } from "../schemas/task.js";
+import type { TaskBudget, TaskSpec } from "../schemas/task.js";
 import { openDb } from "../store/db.js";
 import { importRunReports } from "../store/import-runs.js";
+import { ClaudeCodeRuntime } from "../runtimes/claude-code.js";
 import { Store } from "../store/store.js";
 import { FAKE_PLAN, OPENSPEC_SKELETON, resultOf } from "../testing/fakes.js";
 import { runTask } from "./run-task.js";
@@ -175,13 +176,19 @@ function config(): ResolvedConfig {
 
 async function run(
   script: Script,
-  opts: { task?: TaskSpec; exec?: SandboxExec; repo?: TargetRepo; store?: Store } = {},
+  opts: {
+    task?: TaskSpec;
+    exec?: SandboxExec;
+    repo?: TargetRepo;
+    store?: Store;
+    runtime?: AgentRuntime;
+  } = {},
 ) {
   const runtime = new FakeRuntime(script);
   const repo = opts.repo ?? (await makeRepo());
   const outcome = await runTask(opts.task ?? TASK, {
     config: config(),
-    runtime,
+    runtime: opts.runtime ?? runtime,
     runsDir: path.join(tmp, "runs"),
     ensureRepo: () => Promise.resolve(repo),
     makeSandboxExec: () => Promise.resolve(opts.exec ?? fakeExec),
@@ -277,7 +284,7 @@ describe("runTask", () => {
     expect(report.fixCycles).toBe(1);
     expect(runtime.rolesCalled()).toEqual(["planner", "developer", "developer", "reviewer"]);
     const fixPrompt = runtime.calls[2]?.prompt ?? "";
-    expect(fixPrompt).toContain("Fix cycle 1 of 2");
+    expect(fixPrompt).toContain("Rework: quality gate failed (gate fix cycle 1 of 2)");
     expect(fixPrompt).toContain("expected 1 got 2");
     expect(report.steps.filter((s) => s.kind === "snapshot")).toHaveLength(2);
   });
@@ -630,5 +637,126 @@ describe("runTask with the database", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("cycle budgets (gate fix and review are counted and capped separately)", () => {
+  let dbN = 0;
+  /** Runs with a fresh database; returns the report, the `runs` row and every agent call. */
+  async function runCounted(
+    script: Script,
+    budget: Partial<TaskBudget> = {},
+    wrap?: (scripted: FakeRuntime) => AgentRuntime,
+  ) {
+    const db = openDb(path.join(tmp, `cycles-${++dbN}.sqlite`));
+    const store = new Store(db);
+    try {
+      const scripted = new FakeRuntime(script);
+      const task = { ...TASK, budget: { ...TASK.budget, ...budget } };
+      const { report } = await run(script, {
+        task,
+        store,
+        runtime: wrap ? wrap(scripted) : scripted,
+      });
+      return { report, row: store.requireRun(report.runId), calls: scripted.calls };
+    } finally {
+      db.close();
+    }
+  }
+  const devPrompts = (calls: AgentRunInput[]) =>
+    calls.filter((c) => c.role === "developer").map((c) => c.prompt);
+  const roles = (calls: AgentRunInput[], role: string) => calls.filter((c) => c.role === role);
+
+  it.each([1, 2])(
+    "1. reviewer always requests changes → exactly max_review_cycles=%i reworks, then review_rejected; gate budget untouched",
+    async (maxReview) => {
+      const { report, row, calls } = await runCounted(
+        {
+          planner: planner(),
+          developer: writeFeature(["v1\n", "v2\n", "v3\n"]),
+          reviewer: reviewer(REJECT),
+        },
+        { max_review_cycles: maxReview },
+      );
+      expect(report.status).toBe("review_rejected");
+      expect(roles(calls, "developer")).toHaveLength(1 + maxReview);
+      expect(roles(calls, "reviewer")).toHaveLength(1 + maxReview);
+      expect(row).toMatchObject({
+        status: "review_rejected",
+        review_cycles: maxReview,
+        gate_fix_cycles: 0,
+        fix_cycles: maxReview,
+      });
+      expect(devPrompts(calls)[1]).toContain(
+        `Rework: reviewer requested changes (review cycle 1 of ${maxReview})`,
+      );
+    },
+  );
+
+  it("2. gate always fails → exactly max_gate_fix_cycles reworks, then gate_failed; no review", async () => {
+    const { report, row, calls } = await runCounted({
+      planner: planner(),
+      developer: writeFeature(["BROKEN 1\n", "BROKEN 2\n", "BROKEN 3\n", "BROKEN 4\n"]),
+    });
+    expect(report.status).toBe("gate_failed");
+    expect(roles(calls, "developer")).toHaveLength(1 + TASK.budget.max_gate_fix_cycles);
+    expect(roles(calls, "reviewer")).toHaveLength(0);
+    expect(row).toMatchObject({ gate_fix_cycles: 2, review_cycles: 0 });
+    expect(devPrompts(calls)[2]).toContain("Rework: quality gate failed (gate fix cycle 2 of 2)");
+    expect(devPrompts(calls)[2]).toContain("expected 1 got 2");
+  });
+
+  it("3. a gate failure after a review rework spends the gate budget, not the review budget", async () => {
+    const { report, row, calls } = await runCounted({
+      planner: planner(),
+      // v1 passes the gate; the review rework breaks it; the gate fix repairs it.
+      developer: writeFeature(["v1\n", "BROKEN\n", "v3\n"]),
+      reviewer: reviewer(REJECT, APPROVE),
+    });
+    expect(report.status).toBe("success");
+    expect(row).toMatchObject({ review_cycles: 1, gate_fix_cycles: 1, fix_cycles: 2 });
+    const prompts = devPrompts(calls);
+    expect(prompts[1]).toContain("Rework: reviewer requested changes (review cycle 1 of 1)");
+    expect(prompts[2]).toContain("Rework: quality gate failed (gate fix cycle 1 of 2)");
+    // With max_review_cycles = 1 a second review rework would be impossible: the review after
+    // the gate fix was the second review call, and it decided the run.
+    expect(roles(calls, "reviewer")).toHaveLength(2);
+  });
+
+  it("5. limits 0 and 0 → any failure is final at once", async () => {
+    const zero = { max_gate_fix_cycles: 0, max_review_cycles: 0 };
+    const gate = await runCounted(
+      { planner: planner(), developer: writeFeature(["BROKEN\n"]) },
+      zero,
+    );
+    expect(gate.report.status).toBe("gate_failed");
+    expect(roles(gate.calls, "developer")).toHaveLength(1);
+    expect(gate.row).toMatchObject({ gate_fix_cycles: 0, review_cycles: 0 });
+
+    const review = await runCounted(
+      { planner: planner(), developer: writeFeature(["v1\n"]), reviewer: reviewer(REJECT) },
+      zero,
+    );
+    expect(review.report.status).toBe("review_rejected");
+    expect(roles(review.calls, "developer")).toHaveLength(1);
+    expect(review.row).toMatchObject({ gate_fix_cycles: 0, review_cycles: 0 });
+  });
+
+  it("6. a subscription usage limit from the runtime ends the run as infra_error, not error", async () => {
+    // The developer step runs the real Claude Code adapter against a fake CLI that prints the
+    // result event recorded live when the session limit was hit (fake-claude.mjs usage-limit).
+    const fakeCli = path.join(FACTORY_ROOT, "src", "runtimes", "__fixtures__", "fake-claude.mjs");
+    const limited = new ClaudeCodeRuntime({
+      bin: process.execPath,
+      binArgs: [fakeCli, "usage-limit"],
+      logDir: path.join(tmp, "cli-logs"),
+    });
+    const { report, row } = await runCounted({ planner: planner() }, {}, (scripted) => ({
+      name: "fake",
+      run: (input) => (input.role === "developer" ? limited.run(input) : scripted.run(input)),
+    }));
+    expect(report.status).toBe("infra_error");
+    expect(report.message).toMatch(/provider unavailable in developer: .*usage_limit_reached/);
+    expect(row.status).toBe("infra_error");
   });
 });

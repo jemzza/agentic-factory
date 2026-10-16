@@ -159,5 +159,29 @@
     "uuid": "4a213dfe-c0c5-42bc-8344-f26a539ad395",
     "queued_turn_count": 0,
     "result_index": 0
+  },
+  "_note_rate_limit_event_allowed": "Real informational event from a successful 2.1.300 run (2026-10-16): not an error.",
+  "rate_limit_event_allowed": {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+      "status": "allowed",
+      "resetsAt": 1792149000,
+      "rateLimitType": "five_hour",
+      "overageStatus": "rejected",
+      "overageDisabledReason": "org_level_disabled",
+      "isUsingOverage": false,
+      "unifiedWindows": {
+        "five_hour": {
+          "utilization": 0.87,
+          "resetsAt": 1792149000
+        },
+        "seven_day": {
+          "utilization": 0.31,
+          "resetsAt": 1792512000
+        }
+      }
+    },
+    "uuid": "a02305c2-030f-4d91-b737-0c2911606495",
+    "session_id": "ba028d82-26f4-49a6-8ea1-b3cbf55046d7"
   }
 }

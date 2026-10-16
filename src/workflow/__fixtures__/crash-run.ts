@@ -8,6 +8,7 @@ import { Store } from "../../store/store.js";
 import {
   appendingDeveloper,
   FAKE_APPROVE,
+  FAKE_REJECT,
   FAKE_TASK,
   fakeConfig,
   fakeExec,
@@ -17,7 +18,8 @@ import {
 } from "../../testing/fakes.js";
 
 interface Args {
-  crashIn: "develop" | "gate";
+  /** `gate-after-review-fix`: the reviewer rejects once; killed in the gate after that rework. */
+  crashIn: "develop" | "gate" | "gate-after-review-fix";
   dbPath: string;
   workdir: string;
   runsDir: string;
@@ -33,10 +35,14 @@ const runtime = new FakeRuntime({
   planner: fakePlanner(),
   // Crash after the developer has already written part of its change.
   developer: appendingDeveloper(undefined, args.crashIn === "develop" ? die : undefined),
-  reviewer: fakeReviewer(FAKE_APPROVE),
+  reviewer: fakeReviewer(args.crashIn === "gate-after-review-fix" ? FAKE_REJECT : FAKE_APPROVE),
 });
+let gateCommands = 0;
 const exec: SandboxExec = async (wt, cmd, t) => {
+  gateCommands += 1;
   if (args.crashIn === "gate") die();
+  // Each gate runs two checks; the third command is the gate after the review rework.
+  if (args.crashIn === "gate-after-review-fix" && gateCommands > 2) die();
   return fakeExec(wt, cmd, t);
 };
 
