@@ -363,4 +363,19 @@ describe("merge gate", () => {
       waiting.db.close();
     }
   });
+
+  it("a plain resume repairs a waiting run whose status write was lost", async () => {
+    const c = await successfulRun();
+    try {
+      c.store.updateRun(c.runId, { status: "running", statusMessage: "" }); // as after a crash
+      const res = await resumeRun(c.runId, c.deps);
+      expect(res).toMatchObject({
+        kind: "awaiting_human",
+        run: { status: "awaiting_merge_approval" },
+      });
+      expect(await head(c.repo.dir)).toBe(c.repo.baseCommit);
+    } finally {
+      c.db.close();
+    }
+  });
 });

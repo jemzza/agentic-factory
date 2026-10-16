@@ -366,7 +366,8 @@ export async function resumeRun(
   const run = store.getRun(runId);
   if (!run) throw new Error(`run ${runId} not found`);
 
-  const probe = prepareGraph(deps, 0).graph;
+  const probeParts = prepareGraph(deps, 0);
+  const probe = probeParts.graph;
   const snapshot = await probe.getState(threadConfig(runId));
   const values = snapshot.values as Partial<{ lastNode: string; runId: string }>;
   if (!values.runId) throw new Error(`run ${runId} has no checkpoint to resume from`);
@@ -374,7 +375,14 @@ export async function resumeRun(
   const atGate =
     (snapshot.next.includes("spec_approval") || snapshot.next.includes("merge_approval")) &&
     snapshot.tasks.some((t) => t.interrupts.length > 0);
-  if (atGate && opts.answer === undefined) return { kind: "awaiting_human", run };
+  if (atGate && opts.answer === undefined) {
+    // Nothing to execute. Re-derive the waiting status and notice from the checkpoint, so a
+    // run whose status write was interrupted (e.g. a crash right after the pause) is repaired.
+    if (run.status !== "awaiting_spec_approval" && run.status !== "awaiting_merge_approval") {
+      await settle(deps, probe, probeParts.ctx, runId);
+    }
+    return { kind: "awaiting_human", run: store.requireRun(runId) };
+  }
   if (!atGate && opts.answer !== undefined) {
     throw new Error(`run ${runId} is not waiting for an approval (status ${run.status})`);
   }
