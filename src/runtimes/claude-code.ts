@@ -61,9 +61,12 @@ const ResultEventSchema = z.looseObject({
     .optional(),
   terminal_reason: z.string().optional(),
   errors: z.array(z.string()).optional(),
-  /** Set when the API refused the call (observed: 429 + "usage_limit_reached", 2.1.300). */
-  api_error_status: z.number().optional(),
-  api_error: z.string().optional(),
+  /**
+   * Set when the API refused the call (observed: 429 + "usage_limit_reached", 2.1.300).
+   * A successful result carries `"api_error_status": null` (observed), so both are nullish.
+   */
+  api_error_status: z.number().nullish(),
+  api_error: z.string().nullish(),
 });
 type ResultEvent = z.infer<typeof ResultEventSchema>;
 
@@ -81,8 +84,7 @@ export function isProviderUnavailable(event: ResultEvent): boolean {
   const status = event.api_error_status;
   return (
     status === 429 ||
-    status === 529 ||
-    (status !== undefined && status >= 500) ||
+    (typeof status === "number" && status >= 500) ||
     event.api_error === "usage_limit_reached" ||
     event.api_error === "rate_limit_error" ||
     event.api_error === "overloaded_error"

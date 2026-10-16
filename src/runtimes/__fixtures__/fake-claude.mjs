@@ -25,6 +25,8 @@ const result = (extra) => ({
   num_turns: 3,
   permission_denials: [],
   terminal_reason: "completed",
+  // Live success results carry an explicit null here (Claude Code 2.1.300).
+  api_error_status: null,
   ...extra,
 });
 

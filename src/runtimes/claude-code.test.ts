@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentEnv, buildClaudeArgs, ClaudeCodeRuntime, parseStreamJson } from "./claude-code.js";
+import {
+  agentEnv,
+  buildClaudeArgs,
+  ClaudeCodeRuntime,
+  isProviderUnavailable,
+  parseStreamJson,
+} from "./claude-code.js";
 import { DEVELOPER_DEFAULT_TOOLS, READ_ONLY_TOOLS } from "./tool-policy.js";
 import type { AgentRunInput } from "./types.js";
 
@@ -124,6 +130,22 @@ describe("parseStreamJson", () => {
   it("reports missing and malformed result events", () => {
     expect(parseStreamJson("not json\n")).toEqual({ kind: "missing" });
     expect(parseStreamJson(JSON.stringify({ type: "result" }))).toMatchObject({ kind: "invalid" });
+  });
+});
+
+describe("live result events (Claude Code 2.1.300)", () => {
+  it("parses real success and usage-limit results unchanged and classifies them", async () => {
+    const live = JSON.parse(
+      await readFile(path.join(path.dirname(FAKE), "live-result-events-2.1.300.json"), "utf8"),
+    ) as { success: unknown; usage_limit: unknown };
+    const ok = parseStreamJson(JSON.stringify(live.success));
+    const limited = parseStreamJson(JSON.stringify(live.usage_limit));
+    expect(ok.kind).toBe("result");
+    expect(limited.kind).toBe("result");
+    if (ok.kind !== "result" || limited.kind !== "result") return;
+    expect(ok.event.api_error_status).toBeNull();
+    expect(isProviderUnavailable(ok.event)).toBe(false);
+    expect(isProviderUnavailable(limited.event)).toBe(true);
   });
 });
 
