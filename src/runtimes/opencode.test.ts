@@ -61,6 +61,29 @@ describe("extractLastJsonObject", () => {
 });
 
 describe("parseOpenCodeOutput", () => {
+  it("reads the live step_finish shape (reasoning billed as output, cache as input)", () => {
+    const live = JSON.stringify({
+      type: "step_finish",
+      part: {
+        id: "p",
+        reason: "stop",
+        type: "step-finish",
+        cost: 0.0065885,
+        tokens: {
+          total: 2087,
+          input: 3,
+          output: 156,
+          reasoning: 27,
+          cache: { write: 1901, read: 0 },
+        },
+      },
+    });
+    expect(parseOpenCodeOutput(live)).toMatchObject({
+      costUsd: 0.0065885,
+      tokens: { input: 1904, output: 183 },
+    });
+  });
+
   it("joins text parts and sums cost and tokens from step_finish", () => {
     const out = [
       JSON.stringify({ type: "text", part: { text: "one" } }),

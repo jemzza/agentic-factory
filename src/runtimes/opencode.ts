@@ -22,8 +22,11 @@ import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types.js";
  * - No system-prompt flag and no schema-constrained output: the role instructions are put at
  *   the top of the message, and a structured answer is the last JSON object in the text,
  *   validated by the caller with Zod.
- * NOT yet verified live (no provider key at implementation time): where `step_finish` carries
- * cost and tokens. Read defensively below; without them the cost is reported as unknown.
+ * Verified live (openai/gpt-6.1-sol, 2026-10-16): `step_finish.part` has `cost` (USD) and
+ * `tokens: {total, input, output, reasoning, cache: {read, write}}`; reasoning tokens are
+ * billed as output. Write/bash tools are not offered and reads outside the worktree are
+ * denied ("The user has specified a rule which prevents you from using this specific tool
+ * call"). Fields are still read defensively; without them the cost is reported as unknown.
  */
 
 const READ_ONLY_PERMISSION = {
@@ -79,6 +82,7 @@ const StepFinishSchema = z.looseObject({
       .looseObject({
         input: z.number().optional(),
         output: z.number().optional(),
+        reasoning: z.number().optional(),
         cache: z
           .looseObject({ read: z.number().optional(), write: z.number().optional() })
           .optional(),
@@ -137,7 +141,9 @@ export function parseOpenCodeOutput(stdout: string): ParsedOpenCodeOutput {
           (p.tokens.cache?.read ?? 0) +
           (p.tokens.cache?.write ?? 0);
       }
-      if (p.tokens?.output !== undefined) output = (output ?? 0) + p.tokens.output;
+      if (p.tokens?.output !== undefined || p.tokens?.reasoning !== undefined) {
+        output = (output ?? 0) + (p.tokens.output ?? 0) + (p.tokens.reasoning ?? 0);
+      }
     }
     const err = ErrorEventSchema.safeParse(json);
     if (err.success) errors.push(errorMessage(err.data.error));
