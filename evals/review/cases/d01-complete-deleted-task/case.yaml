@@ -1,0 +1,11 @@
+id: d01-complete-deleted-task
+task: complete-task
+kind: defect
+# Built from evals/reference/complete-task.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: true
+defect:
+  category: missing_check
+  description: "complete() loads the task without the deleted-task check: completing a soft-deleted task returns 200 and changes it instead of 409 CONFLICT. The test for the deleted case was removed."
+  files:
+    - src/services/task-service.ts

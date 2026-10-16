@@ -1,0 +1,145 @@
+diff --git a/package.json b/package.json
+index 9a10bfb..83cad52 100644
+--- a/package.json
++++ b/package.json
+@@ -12,7 +12,8 @@
+     "start": "node dist/server.js",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+     "test": "vitest run",
+-    "check": "npm run typecheck && npm run test"
++    "check": "npm run typecheck && npm run test",
++    "sort:demo": "node -e \"console.log('sorting demo')\""
+   },
+   "dependencies": {
+     "fastify": "^5.12.7",
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..fdfc322 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -1,7 +1,7 @@
+ import type { FastifyInstance } from "fastify";
+ import { z } from "zod";
+ import { toTaskDto } from "../domain/task.js";
+-import type { TaskService } from "../services/task-service.js";
++import { SORT_FIELDS, SORT_ORDERS, type TaskService } from "../services/task-service.js";
+ import {
+   descriptionSchema,
+   parseInput,
+@@ -28,6 +28,8 @@ const updateTaskBodySchema = z
+ 
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
++  sort: z.enum(SORT_FIELDS).optional(),
++  order: z.enum(SORT_ORDERS).optional(),
+ });
+ 
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..341d9db 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -14,6 +14,32 @@ export interface UpdateTaskInput {
+   status?: TaskStatus;
+ }
+ 
++export const SORT_FIELDS = ["createdAt", "updatedAt", "title"] as const;
++export type SortField = (typeof SORT_FIELDS)[number];
++export const SORT_ORDERS = ["asc", "desc"] as const;
++export type SortOrder = (typeof SORT_ORDERS)[number];
++
++export interface ListTasksOptions {
++  status?: TaskStatus;
++  sort?: SortField;
++  order?: SortOrder;
++}
++
++function compareBy(field: SortField): (a: Task, b: Task) => number {
++  switch (field) {
++    case "createdAt":
++      return (a, b) => a.createdAt.getTime() - b.createdAt.getTime();
++    case "updatedAt":
++      return (a, b) => a.updatedAt.getTime() - b.updatedAt.getTime();
++    case "title":
++      return (a, b) => {
++        const x = a.title.toLowerCase();
++        const y = b.title.toLowerCase();
++        return x < y ? -1 : x > y ? 1 : 0;
++      };
++  }
++}
++
+ export interface TaskServiceDeps {
+   repository: TaskRepository;
+   clock: () => Date;
+@@ -52,8 +78,17 @@ export class TaskService {
+     return task;
+   }
+ 
+-  async list(filter: { status?: TaskStatus } = {}): Promise<Task[]> {
+-    return this.deps.repository.list(filter.status ? { status: filter.status } : {});
++  /**
++   * Lists active tasks. Ties on the sort key keep creation order (the repository
++   * returns creation order and Array#sort is stable), for both directions.
++   */
++  async list(options: ListTasksOptions = {}): Promise<Task[]> {
++    const tasks = await this.deps.repository.list(
++      options.status ? { status: options.status } : {},
++    );
++    const compare = compareBy(options.sort ?? "createdAt");
++    const direction = options.order === "desc" ? -1 : 1;
++    return tasks.sort((a, b) => direction * compare(a, b));
+   }
+ 
+   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+diff --git a/tests/sort-tasks.test.ts b/tests/sort-tasks.test.ts
+new file mode 100644
+index 0000000..1666b9b
+--- /dev/null
++++ b/tests/sort-tasks.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import type { TaskDto } from "../src/domain/task.js";
++import { createTask, setup } from "./helpers.js";
++
++async function titles(app: ReturnType<typeof setup>["app"], query: string) {
++  const res = await app.inject({ method: "GET", url: `/tasks${query}` });
++  expect(res.statusCode).toBe(200);
++  return res.json<{ items: TaskDto[] }>().items.map((t) => t.title);
++}
++
++describe("GET /tasks sorting", () => {
++  it("sorts by title case-insensitively in both directions", async () => {
++    const { app, clock } = setup();
++    await createTask(app, { title: "banana" });
++    clock.advance(1);
++    await createTask(app, { title: "Apple" });
++    expect(await titles(app, "?sort=title")).toEqual(["Apple", "banana"]);
++    expect(await titles(app, "?sort=title&order=desc")).toEqual(["banana", "Apple"]);
++  });
++
++  it("sorts by createdAt desc and keeps creation order on ties", async () => {
++    const { app, clock } = setup();
++    await createTask(app, { title: "a" });
++    await createTask(app, { title: "b" });
++    clock.advance(1);
++    await createTask(app, { title: "c" });
++    expect(await titles(app, "?order=desc")).toEqual(["c", "a", "b"]);
++  });
++
++  it("sorts by updatedAt", async () => {
++    const { app, clock } = setup();
++    const a = await createTask(app, { title: "a" });
++    clock.advance(1);
++    await createTask(app, { title: "b" });
++    clock.advance(1);
++    await app.inject({ method: "PATCH", url: `/tasks/${a.id}`, payload: { status: "done" } });
++    expect(await titles(app, "?sort=updatedAt")).toEqual(["b", "a"]);
++  });
++
++  it.each(["?sort=priority", "?order=up"])("rejects %s", async (query) => {
++    const { app } = setup();
++    const res = await app.inject({ method: "GET", url: `/tasks${query}` });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++  });
++});

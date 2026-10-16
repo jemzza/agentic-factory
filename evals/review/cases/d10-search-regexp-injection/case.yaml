@@ -1,0 +1,11 @@
+id: d10-search-regexp-injection
+task: search-tasks
+kind: defect
+# Built from evals/reference/search-tasks.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: true
+defect:
+  category: injection
+  description: "The search builds a RegExp from user input: metacharacters change matching (c++ fails) and crafted input can throw or backtrack. The test for metacharacters was removed."
+  files:
+    - src/repository/in-memory-task-repository.ts

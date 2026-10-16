@@ -1,0 +1,126 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..6e04e1e 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -26,6 +26,17 @@ const updateTaskBodySchema = z
+     message: "At least one field must be provided",
+   });
+ 
++export const BULK_MAX_IDS = 100;
++
++const bulkStatusBodySchema = z.strictObject({
++  ids: z
++    .array(z.string().min(1))
++    .min(1)
++    .max(BULK_MAX_IDS)
++    .refine((ids) => new Set(ids).size === ids.length, { message: "ids must be unique" }),
++  status: taskStatusSchema,
++});
++
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
+ });
+@@ -37,6 +48,12 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return reply.code(201).send(toTaskDto(task));
+   });
+ 
++  app.post("/tasks/bulk-status", async (request) => {
++    const body = parseInput(bulkStatusBodySchema, request.body);
++    const tasks = await service.bulkSetStatus(body.ids, body.status);
++    return { items: tasks.map(toTaskDto) };
++  });
++
+   app.get("/tasks", async (request) => {
+     const query = parseInput(listTasksQuerySchema, request.query);
+     const tasks = await service.list(query);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..0e5587c 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -70,6 +70,19 @@ export class TaskService {
+     return updated;
+   }
+ 
++  /**
++   * Sets the same status on several tasks atomically: every task is loaded and checked
++   * before any is saved, so a missing (404) or deleted (409) task changes nothing.
++   */
++  async bulkSetStatus(ids: readonly string[], status: TaskStatus): Promise<Task[]> {
++    const tasks: Task[] = [];
++    for (const id of ids) tasks.push(await this.getMutable(id));
++    const now = this.deps.clock();
++    const updated = tasks.map((task): Task => ({ ...task, status, updatedAt: now }));
++    for (const task of updated) await this.deps.repository.save(task);
++    return updated;
++  }
++
+   async softDelete(id: string): Promise<void> {
+     const task = await this.getMutable(id);
+     const now = this.deps.clock();
+diff --git a/tests/bulk-status.test.ts b/tests/bulk-status.test.ts
+new file mode 100644
+index 0000000..3c0e712
+--- /dev/null
++++ b/tests/bulk-status.test.ts
+@@ -0,0 +1,61 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("POST /tasks/bulk-status", () => {
++  it("updates every task and returns them in ids order", async () => {
++    const { app, clock } = setup();
++    const a = await createTask(app, { title: "A" });
++    const b = await createTask(app, { title: "B" });
++    clock.advance(1000);
++    const res = await app.inject({
++      method: "POST",
++      url: "/tasks/bulk-status",
++      payload: { ids: [b.id, a.id], status: "done" },
++    });
++    expect(res.statusCode).toBe(200);
++    const items = res.json<{ items: { id: string; status: string; updatedAt: string }[] }>().items;
++    expect(items.map((t) => t.id)).toEqual([b.id, a.id]);
++    expect(items.every((t) => t.status === "done")).toBe(true);
++    expect(items.every((t) => t.updatedAt === "2026-01-01T00:00:01.000Z")).toBe(true);
++  });
++
++  it.each([
++    ["empty ids", { ids: [], status: "done" }],
++    ["duplicate ids", { ids: ["task-1", "task-1"], status: "done" }],
++    ["unknown status", { ids: ["task-1"], status: "nope" }],
++  ])("rejects %s with 400 VALIDATION_ERROR", async (_name, payload) => {
++    const { app } = setup();
++    await createTask(app);
++    const res = await app.inject({ method: "POST", url: "/tasks/bulk-status", payload });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++  });
++
++  it("is atomic: an unknown id → 404 and nothing changes", async () => {
++    const { app } = setup();
++    const a = await createTask(app, { title: "A" });
++    const res = await app.inject({
++      method: "POST",
++      url: "/tasks/bulk-status",
++      payload: { ids: [a.id, "nope"], status: "done" },
++    });
++    expect(res.statusCode).toBe(404);
++    const after = await app.inject({ method: "GET", url: `/tasks/${a.id}` });
++    expect(after.json()).toEqual(a);
++  });
++
++  it("is atomic: a deleted task → 409 and nothing changes", async () => {
++    const { app } = setup();
++    const a = await createTask(app, { title: "A" });
++    const d = await createTask(app, { title: "D" });
++    await deleteTask(app, d.id);
++    const res = await app.inject({
++      method: "POST",
++      url: "/tasks/bulk-status",
++      payload: { ids: [a.id, d.id], status: "done" },
++    });
++    expect(res.statusCode).toBe(409);
++    const after = await app.inject({ method: "GET", url: `/tasks/${a.id}` });
++    expect(after.json()).toEqual(a);
++  });
++});

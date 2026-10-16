@@ -1,0 +1,11 @@
+id: d05-due-date-error-leak
+task: due-date
+kind: defect
+# Built from evals/reference/due-date.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: false
+defect:
+  category: error_leak
+  description: "The 500 handler now returns the internal error message and stack trace to API clients."
+  files:
+    - src/app.ts

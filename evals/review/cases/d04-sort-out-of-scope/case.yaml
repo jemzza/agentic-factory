@@ -1,0 +1,11 @@
+id: d04-sort-out-of-scope
+task: sort-tasks
+kind: defect
+# Built from evals/reference/sort-tasks.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: false
+defect:
+  category: scope_violation
+  description: "package.json is modified (new script) although only src/** and tests/** may change."
+  files:
+    - package.json

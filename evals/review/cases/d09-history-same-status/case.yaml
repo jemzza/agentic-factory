@@ -1,0 +1,11 @@
+id: d09-history-same-status
+task: status-history
+kind: defect
+# Built from evals/reference/status-history.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: true
+defect:
+  category: spec_violation
+  description: "A PATCH that sends the same status (or any status) adds a history entry; the criteria require no entry when the status does not change. The test step for it was removed."
+  files:
+    - src/services/task-service.ts

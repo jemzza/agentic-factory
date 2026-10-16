@@ -1,0 +1,6 @@
+id: c05-status-history
+task: status-history
+kind: clean
+# Built from evals/reference/status-history.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: false

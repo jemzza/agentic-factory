@@ -1,0 +1,107 @@
+diff --git a/src/repository/in-memory-task-repository.ts b/src/repository/in-memory-task-repository.ts
+index 26871f8..c590166 100644
+--- a/src/repository/in-memory-task-repository.ts
++++ b/src/repository/in-memory-task-repository.ts
+@@ -28,9 +28,11 @@ export class InMemoryTaskRepository implements TaskRepository {
+ 
+   async list(filter: TaskListFilter = {}): Promise<Task[]> {
+     const result: Task[] = [];
++    const needle = filter.titleContains?.toLowerCase();
+     for (const task of this.tasks.values()) {
+       if (!filter.includeDeleted && task.deletedAt !== null) continue;
+       if (filter.status !== undefined && task.status !== filter.status) continue;
++      if (needle !== undefined && !new RegExp(needle, "i").test(task.title)) continue;
+       result.push(clone(task));
+     }
+     return result;
+diff --git a/src/repository/task-repository.ts b/src/repository/task-repository.ts
+index be47de9..f417a25 100644
+--- a/src/repository/task-repository.ts
++++ b/src/repository/task-repository.ts
+@@ -2,6 +2,8 @@ import type { Task, TaskStatus } from "../domain/task.js";
+ 
+ export interface TaskListFilter {
+   status?: TaskStatus;
++  /** Case-insensitive substring of the title (matched literally, not as a pattern). */
++  titleContains?: string;
+   /** Include soft-deleted tasks. Defaults to `false`. */
+   includeDeleted?: boolean;
+ }
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..e1227ed 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -26,8 +26,11 @@ const updateTaskBodySchema = z
+     message: "At least one field must be provided",
+   });
+ 
++export const SEARCH_QUERY_MAX_LENGTH = 100;
++
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
++  q: z.string().trim().min(1).max(SEARCH_QUERY_MAX_LENGTH).optional(),
+ });
+ 
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..ce40ad1 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -52,8 +52,11 @@ export class TaskService {
+     return task;
+   }
+ 
+-  async list(filter: { status?: TaskStatus } = {}): Promise<Task[]> {
+-    return this.deps.repository.list(filter.status ? { status: filter.status } : {});
++  async list(filter: { status?: TaskStatus; q?: string } = {}): Promise<Task[]> {
++    return this.deps.repository.list({
++      ...(filter.status !== undefined && { status: filter.status }),
++      ...(filter.q !== undefined && { titleContains: filter.q }),
++    });
+   }
+ 
+   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+diff --git a/tests/search-tasks.test.ts b/tests/search-tasks.test.ts
+new file mode 100644
+index 0000000..44f908e
+--- /dev/null
++++ b/tests/search-tasks.test.ts
+@@ -0,0 +1,38 @@
++import { describe, expect, it } from "vitest";
++import type { TaskDto } from "../src/domain/task.js";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++async function search(app: ReturnType<typeof setup>["app"], query: string) {
++  const res = await app.inject({ method: "GET", url: `/tasks?${query}` });
++  return { status: res.statusCode, body: res.json<{ items: TaskDto[] }>() };
++}
++
++describe("GET /tasks?q=", () => {
++  it("matches a case-insensitive title substring", async () => {
++    const { app } = setup();
++    await createTask(app, { title: "Write Docs" });
++    await createTask(app, { title: "Deploy" });
++    const res = await search(app, "q=docs");
++    expect(res.body.items.map((t) => t.title)).toEqual(["Write Docs"]);
++  });
++
++  it("combines with status and excludes deleted tasks", async () => {
++    const { app } = setup();
++    const a = await createTask(app, { title: "docs a", status: "done" });
++    await createTask(app, { title: "docs b", status: "done" });
++    await createTask(app, { title: "docs c", status: "todo" });
++    await deleteTask(app, a.id);
++    const res = await search(app, "q=docs&status=done");
++    expect(res.body.items.map((t) => t.title)).toEqual(["docs b"]);
++  });
++
++  it.each(["q=", "q=%20%20", `q=${"x".repeat(101)}`])(
++    "rejects %s with 400 VALIDATION_ERROR",
++    async (query) => {
++      const { app } = setup();
++      const res = await search(app, query);
++      expect(res.status).toBe(400);
++      expect(res.body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++    },
++  );
++});

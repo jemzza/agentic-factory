@@ -1,0 +1,210 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..fe87f4b 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -1,7 +1,7 @@
+ import type { FastifyInstance } from "fastify";
+ import { z } from "zod";
+ import { toTaskDto } from "../domain/task.js";
+-import type { TaskService } from "../services/task-service.js";
++import { MAX_PAGE_SIZE, type TaskService } from "../services/task-service.js";
+ import {
+   descriptionSchema,
+   parseInput,
+@@ -28,6 +28,13 @@ const updateTaskBodySchema = z
+ 
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
++  limit: z
++    .string()
++    .regex(/^\d+$/, "limit must be an integer")
++    .transform(Number)
++    .pipe(z.number().int().min(1).max(MAX_PAGE_SIZE))
++    .optional(),
++  cursor: z.string().min(1).optional(),
+ });
+ 
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+@@ -39,8 +46,12 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+ 
+   app.get("/tasks", async (request) => {
+     const query = parseInput(listTasksQuerySchema, request.query);
+-    const tasks = await service.list(query);
+-    return { items: tasks.map(toTaskDto) };
++    const page = await service.listPage({
++      ...(query.status !== undefined && { status: query.status }),
++      ...(query.limit !== undefined && { limit: query.limit }),
++      ...(query.cursor !== undefined && { cursor: query.cursor }),
++    });
++    return { items: page.items.map(toTaskDto), nextCursor: page.nextCursor };
+   });
+ 
+   app.get("/tasks/:id", async (request) => {
+diff --git a/src/services/cursor.ts b/src/services/cursor.ts
+new file mode 100644
+index 0000000..9077a5f
+--- /dev/null
++++ b/src/services/cursor.ts
+@@ -0,0 +1,26 @@
++import { z } from "zod";
++
++/**
++ * Opaque pagination cursor: base64url-encoded JSON `{ v: 1, after: <task id> }`.
++ * It points at the last task returned, so deleting or creating tasks between page
++ * requests never shifts the position (unlike an offset).
++ */
++const cursorPayloadSchema = z.strictObject({
++  v: z.literal(1),
++  after: z.string().min(1),
++});
++
++export function encodeCursor(afterId: string): string {
++  return Buffer.from(JSON.stringify({ v: 1, after: afterId }), "utf8").toString("base64url");
++}
++
++/** Returns the task id the cursor points after, or `null` if the cursor is malformed. */
++export function decodeCursor(cursor: string): string | null {
++  try {
++    const json: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
++    const parsed = cursorPayloadSchema.safeParse(json);
++    return parsed.success ? parsed.data.after : null;
++  } catch {
++    return null;
++  }
++}
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..ab13c2b 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -1,6 +1,22 @@
+ import { isDeleted, type Task, type TaskStatus } from "../domain/task.js";
+-import { conflict, notFound } from "../errors.js";
++import { conflict, notFound, validationError } from "../errors.js";
+ import type { TaskRepository } from "../repository/task-repository.js";
++import { decodeCursor, encodeCursor } from "./cursor.js";
++
++export const DEFAULT_PAGE_SIZE = 20;
++export const MAX_PAGE_SIZE = 100;
++
++export interface ListPageInput {
++  status?: TaskStatus;
++  limit?: number;
++  cursor?: string;
++}
++
++export interface TaskPage {
++  items: Task[];
++  /** Cursor for the next page, or `null` when there are no more tasks. */
++  nextCursor: string | null;
++}
+ 
+ export interface CreateTaskInput {
+   title: string;
+@@ -52,8 +68,40 @@ export class TaskService {
+     return task;
+   }
+ 
+-  async list(filter: { status?: TaskStatus } = {}): Promise<Task[]> {
+-    return this.deps.repository.list(filter.status ? { status: filter.status } : {});
++  /**
++   * Returns one page of active tasks in creation order.
++   *
++   * The cursor references the last returned task. Positions are resolved against
++   * all tasks including soft-deleted ones, so the cursor stays valid even if that
++   * task is deleted before the next page is requested.
++   */
++  async listPage(input: ListPageInput = {}): Promise<TaskPage> {
++    const limit = input.limit ?? DEFAULT_PAGE_SIZE;
++    const all = await this.deps.repository.list();
++
++    let start = 0;
++    if (input.cursor !== undefined) {
++      const afterId = decodeCursor(input.cursor);
++      const index = afterId === null ? -1 : all.findIndex((t) => t.id === afterId);
++      if (index === -1) throw validationError("Invalid cursor");
++      start = index + 1;
++    }
++
++    const items: Task[] = [];
++    let hasMore = false;
++    for (let i = start; i < all.length; i++) {
++      const task = all[i]!;
++      if (isDeleted(task)) continue;
++      if (input.status !== undefined && task.status !== input.status) continue;
++      if (items.length === limit) {
++        hasMore = true;
++        break;
++      }
++      items.push(task);
++    }
++
++    const last = items.at(-1);
++    return { items, nextCursor: hasMore && last ? encodeCursor(last.id) : null };
+   }
+ 
+   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+diff --git a/tests/pagination.test.ts b/tests/pagination.test.ts
+new file mode 100644
+index 0000000..6d5e277
+--- /dev/null
++++ b/tests/pagination.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import type { TaskDto } from "../src/domain/task.js";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++type Page = { items: TaskDto[]; nextCursor: string | null };
++
++async function getPage(app: ReturnType<typeof setup>["app"], query: string) {
++  const res = await app.inject({ method: "GET", url: `/tasks${query}` });
++  return { status: res.statusCode, body: res.json<Page>() };
++}
++
++async function seed(app: ReturnType<typeof setup>["app"], n: number) {
++  const ids: string[] = [];
++  for (let i = 0; i < n; i++) ids.push((await createTask(app, { title: `t${i}` })).id);
++  return ids;
++}
++
++describe("GET /tasks pagination", () => {
++  it("pages through all tasks with the default limit of 20", async () => {
++    const { app } = setup();
++    const ids = await seed(app, 25);
++    const first = await getPage(app, "");
++    expect(first.body.items).toHaveLength(20);
++    const second = await getPage(app, `?cursor=${first.body.nextCursor}`);
++    expect([...first.body.items, ...second.body.items].map((t) => t.id)).toEqual(ids);
++    expect(second.body.nextCursor).toBeNull();
++  });
++
++  it("returns nextCursor null when the last page is exactly full", async () => {
++    const { app } = setup();
++    await seed(app, 4);
++    const first = await getPage(app, "?limit=2");
++    const second = await getPage(app, `?limit=2&cursor=${first.body.nextCursor}`);
++    expect(second.body.items).toHaveLength(2);
++    expect(second.body.nextCursor).toBeNull();
++  });
++
++  it.each(["?limit=0", "?limit=101", "?limit=2.5", "?limit=x", "?cursor=bogus"])(
++    "rejects %s with 400 VALIDATION_ERROR",
++    async (query) => {
++      const { app } = setup();
++      const res = await getPage(app, query);
++      expect(res.status).toBe(400);
++    },
++  );
++});
+diff --git a/tests/read-tasks.test.ts b/tests/read-tasks.test.ts
+index aefcbd4..147aee7 100644
+--- a/tests/read-tasks.test.ts
++++ b/tests/read-tasks.test.ts
+@@ -44,7 +44,7 @@ describe("GET /tasks", () => {
+     const { app } = setup();
+     const res = await app.inject({ method: "GET", url: "/tasks" });
+     expect(res.statusCode).toBe(200);
+-    expect(res.json()).toEqual({ items: [] });
++    expect(res.json()).toEqual({ items: [], nextCursor: null });
+   });
+ 
+   it("lists tasks in creation order", async () => {

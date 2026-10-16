@@ -1,0 +1,278 @@
+diff --git a/src/app.ts b/src/app.ts
+index 03ee8a3..327e29a 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -39,9 +39,13 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
+         .send(toErrorBody(new AppError("VALIDATION_ERROR", message)));
+     }
+     request.log.error({ err: error }, "Unhandled error");
+-    return reply
+-      .code(500)
+-      .send(toErrorBody(new AppError("INTERNAL_ERROR", "Internal server error")));
++    // Include the underlying error to make debugging easier for API clients.
++    const internal = error instanceof Error ? error : new Error(String(error));
++    return reply.code(500).send(
++      toErrorBody(
++        new AppError("INTERNAL_ERROR", internal.message, { stack: internal.stack }),
++      ),
++    );
+   });
+ 
+   app.setNotFoundHandler((request, reply) =>
+diff --git a/src/domain/task.ts b/src/domain/task.ts
+index b6e8026..4c3006a 100644
+--- a/src/domain/task.ts
++++ b/src/domain/task.ts
+@@ -7,6 +7,8 @@ export interface Task {
+   title: string;
+   description: string;
+   status: TaskStatus;
++  /** Calendar due date `YYYY-MM-DD` (no time zone), or `null` if none. */
++  dueDate: string | null;
+   createdAt: Date;
+   updatedAt: Date;
+   /** Set when the task is soft-deleted; `null` while the task is active. */
+@@ -19,6 +21,7 @@ export interface TaskDto {
+   title: string;
+   description: string;
+   status: TaskStatus;
++  dueDate: string | null;
+   createdAt: string;
+   updatedAt: string;
+   deletedAt: string | null;
+@@ -30,6 +33,7 @@ export function toTaskDto(task: Task): TaskDto {
+     title: task.title,
+     description: task.description,
+     status: task.status,
++    dueDate: task.dueDate,
+     createdAt: task.createdAt.toISOString(),
+     updatedAt: task.updatedAt.toISOString(),
+     deletedAt: task.deletedAt ? task.deletedAt.toISOString() : null,
+@@ -39,3 +43,13 @@ export function toTaskDto(task: Task): TaskDto {
+ export function isDeleted(task: Task): boolean {
+   return task.deletedAt !== null;
+ }
++
++/** UTC calendar date of an instant, as `YYYY-MM-DD`. */
++export function utcDateOf(instant: Date): string {
++  return instant.toISOString().slice(0, 10);
++}
++
++/** Overdue: has a due date strictly before `today` and is not done. */
++export function isOverdue(task: Task, today: string): boolean {
++  return task.dueDate !== null && task.dueDate < today && task.status !== "done";
++}
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..76bcd53 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -3,6 +3,7 @@ import { z } from "zod";
+ import { toTaskDto } from "../domain/task.js";
+ import type { TaskService } from "../services/task-service.js";
+ import {
++  dueDateSchema,
+   descriptionSchema,
+   parseInput,
+   taskIdParamsSchema,
+@@ -14,6 +15,7 @@ const createTaskBodySchema = z.strictObject({
+   title: titleSchema,
+   description: descriptionSchema.optional(),
+   status: taskStatusSchema.optional(),
++  dueDate: dueDateSchema.nullable().optional(),
+ });
+ 
+ const updateTaskBodySchema = z
+@@ -21,6 +23,7 @@ const updateTaskBodySchema = z
+     title: titleSchema.optional(),
+     description: descriptionSchema.optional(),
+     status: taskStatusSchema.optional(),
++    dueDate: dueDateSchema.nullable().optional(),
+   })
+   .refine((body) => Object.keys(body).length > 0, {
+     message: "At least one field must be provided",
+@@ -28,6 +31,7 @@ const updateTaskBodySchema = z
+ 
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
++  overdue: z.literal("true").optional(),
+ });
+ 
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+@@ -39,7 +43,10 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+ 
+   app.get("/tasks", async (request) => {
+     const query = parseInput(listTasksQuerySchema, request.query);
+-    const tasks = await service.list(query);
++    const tasks = await service.list({
++      ...(query.status !== undefined && { status: query.status }),
++      overdue: query.overdue === "true",
++    });
+     return { items: tasks.map(toTaskDto) };
+   });
+ 
+diff --git a/src/routes/validation.ts b/src/routes/validation.ts
+index b1d7739..3885282 100644
+--- a/src/routes/validation.ts
++++ b/src/routes/validation.ts
+@@ -9,6 +9,15 @@ export const taskStatusSchema = z.enum(TASK_STATUSES);
+ export const titleSchema = z.string().trim().min(1).max(TITLE_MAX_LENGTH);
+ export const descriptionSchema = z.string().max(DESCRIPTION_MAX_LENGTH);
+ 
++/** `YYYY-MM-DD` that is a real calendar date (rejects e.g. 2026-02-30). */
++export const dueDateSchema = z
++  .string()
++  .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a date in YYYY-MM-DD format")
++  .refine((value) => {
++    const date = new Date(`${value}T00:00:00.000Z`);
++    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
++  }, "Not a valid calendar date");
++
+ export const taskIdParamsSchema = z.object({ id: z.string().min(1) });
+ 
+ /**
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..ce589b1 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -1,4 +1,4 @@
+-import { isDeleted, type Task, type TaskStatus } from "../domain/task.js";
++import { isDeleted, isOverdue, utcDateOf, type Task, type TaskStatus } from "../domain/task.js";
+ import { conflict, notFound } from "../errors.js";
+ import type { TaskRepository } from "../repository/task-repository.js";
+ 
+@@ -6,12 +6,15 @@ export interface CreateTaskInput {
+   title: string;
+   description?: string;
+   status?: TaskStatus;
++  dueDate?: string | null;
+ }
+ 
+ export interface UpdateTaskInput {
+   title?: string;
+   description?: string;
+   status?: TaskStatus;
++  /** `null` clears the due date; `undefined` leaves it unchanged. */
++  dueDate?: string | null;
+ }
+ 
+ export interface TaskServiceDeps {
+@@ -38,6 +41,7 @@ export class TaskService {
+       title: input.title,
+       description: input.description ?? "",
+       status: input.status ?? "todo",
++      dueDate: input.dueDate ?? null,
+       createdAt: now,
+       updatedAt: now,
+       deletedAt: null,
+@@ -52,8 +56,11 @@ export class TaskService {
+     return task;
+   }
+ 
+-  async list(filter: { status?: TaskStatus } = {}): Promise<Task[]> {
+-    return this.deps.repository.list(filter.status ? { status: filter.status } : {});
++  async list(filter: { status?: TaskStatus; overdue?: boolean } = {}): Promise<Task[]> {
++    const tasks = await this.deps.repository.list(filter.status ? { status: filter.status } : {});
++    if (!filter.overdue) return tasks;
++    const today = utcDateOf(this.deps.clock());
++    return tasks.filter((task) => isOverdue(task, today));
+   }
+ 
+   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+@@ -64,6 +71,7 @@ export class TaskService {
+       ...(input.title !== undefined && { title: input.title }),
+       ...(input.description !== undefined && { description: input.description }),
+       ...(input.status !== undefined && { status: input.status }),
++      ...(input.dueDate !== undefined && { dueDate: input.dueDate }),
+       updatedAt: this.deps.clock(),
+     };
+     await this.deps.repository.save(updated);
+diff --git a/tests/create-task.test.ts b/tests/create-task.test.ts
+index d09ac4d..8e57894 100644
+--- a/tests/create-task.test.ts
++++ b/tests/create-task.test.ts
+@@ -16,6 +16,7 @@ describe("POST /tasks", () => {
+       title: "Write docs",
+       description: "",
+       status: "todo",
++      dueDate: null,
+       createdAt: "2026-01-01T00:00:00.000Z",
+       updatedAt: "2026-01-01T00:00:00.000Z",
+       deletedAt: null,
+diff --git a/tests/due-date.test.ts b/tests/due-date.test.ts
+new file mode 100644
+index 0000000..fd62c5d
+--- /dev/null
++++ b/tests/due-date.test.ts
+@@ -0,0 +1,60 @@
++import { describe, expect, it } from "vitest";
++import type { TaskDto } from "../src/domain/task.js";
++import { createTask, setup } from "./helpers.js";
++
++// FakeClock starts at 2026-01-01T00:00:00Z.
++
++async function overdueTitles(app: ReturnType<typeof setup>["app"], extra = "") {
++  const res = await app.inject({ method: "GET", url: `/tasks?overdue=true${extra}` });
++  expect(res.statusCode).toBe(200);
++  return res.json<{ items: TaskDto[] }>().items.map((t) => t.title);
++}
++
++describe("dueDate", () => {
++  it("defaults to null and can be set, changed and cleared", async () => {
++    const { app } = setup();
++    const created = await createTask(app, { title: "A", dueDate: "2026-02-01" });
++    expect(created.dueDate).toBe("2026-02-01");
++    const changed = await app.inject({
++      method: "PATCH",
++      url: `/tasks/${created.id}`,
++      payload: { dueDate: null },
++    });
++    expect(changed.json()).toMatchObject({ dueDate: null });
++    expect((await createTask(app, { title: "B" })).dueDate).toBeNull();
++  });
++
++  it.each(["2026-02-30", "2026-1-01", "tomorrow"])("rejects dueDate %s", async (dueDate) => {
++    const { app } = setup();
++    const res = await app.inject({ method: "POST", url: "/tasks", payload: { title: "A", dueDate } });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++  });
++});
++
++describe("GET /tasks?overdue=true", () => {
++  it("returns tasks due before today that are not done, using the app clock", async () => {
++    const { app, clock } = setup();
++    await createTask(app, { title: "past", dueDate: "2025-12-31" });
++    await createTask(app, { title: "today", dueDate: "2026-01-01" });
++    await createTask(app, { title: "past done", dueDate: "2025-12-01", status: "done" });
++    await createTask(app, { title: "none" });
++    expect(await overdueTitles(app)).toEqual(["past"]);
++    clock.advance(24 * 60 * 60 * 1000);
++    expect(await overdueTitles(app)).toEqual(["past", "today"]);
++  });
++
++  it("combines with status", async () => {
++    const { app } = setup();
++    await createTask(app, { title: "a", dueDate: "2025-12-31", status: "todo" });
++    await createTask(app, { title: "b", dueDate: "2025-12-31", status: "in_progress" });
++    expect(await overdueTitles(app, "&status=todo")).toEqual(["a"]);
++  });
++
++  it("rejects values other than true", async () => {
++    const { app } = setup();
++    const res = await app.inject({ method: "GET", url: "/tasks?overdue=false" });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++  });
++});
+diff --git a/tests/in-memory-task-repository.test.ts b/tests/in-memory-task-repository.test.ts
+index 3a5c131..3d49479 100644
+--- a/tests/in-memory-task-repository.test.ts
++++ b/tests/in-memory-task-repository.test.ts
+@@ -9,6 +9,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
+     title: "A",
+     description: "",
+     status: "todo",
++    dueDate: null,
+     createdAt: now,
+     updatedAt: now,
+     deletedAt: null,

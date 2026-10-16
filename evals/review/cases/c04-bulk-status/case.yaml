@@ -1,0 +1,6 @@
+id: c04-bulk-status
+task: bulk-status
+kind: clean
+# Built from evals/reference/bulk-status.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: false

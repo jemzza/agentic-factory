@@ -1,0 +1,65 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..9ccdd6a 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -54,6 +54,11 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return toTaskDto(await service.update(id, body));
+   });
+ 
++  app.post("/tasks/:id/complete", async (request) => {
++    const { id } = parseInput(taskIdParamsSchema, request.params);
++    return toTaskDto(await service.complete(id));
++  });
++
+   app.delete("/tasks/:id", async (request, reply) => {
+     const { id } = parseInput(taskIdParamsSchema, request.params);
+     await service.softDelete(id);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..af5cf2e 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -70,6 +70,14 @@ export class TaskService {
+     return updated;
+   }
+ 
++  async complete(id: string): Promise<Task> {
++    const task = await this.deps.repository.findById(id);
++    if (!task) throw notFound(`Task ${id} not found`);
++    const completed: Task = { ...task, status: "done", updatedAt: this.deps.clock() };
++    await this.deps.repository.save(completed);
++    return completed;
++  }
++
+   async softDelete(id: string): Promise<void> {
+     const task = await this.getMutable(id);
+     const now = this.deps.clock();
+diff --git a/tests/complete-task.test.ts b/tests/complete-task.test.ts
+new file mode 100644
+index 0000000..a7cf590
+--- /dev/null
++++ b/tests/complete-task.test.ts
+@@ -0,0 +1,24 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("POST /tasks/:id/complete", () => {
++  it("marks the task done and bumps updatedAt", async () => {
++    const { app, clock } = setup();
++    const created = await createTask(app);
++    clock.advance(1000);
++    const res = await app.inject({ method: "POST", url: `/tasks/${created.id}/complete` });
++    expect(res.statusCode).toBe(200);
++    expect(res.json()).toEqual({
++      ...created,
++      status: "done",
++      updatedAt: "2026-01-01T00:00:01.000Z",
++    });
++  });
++
++  it("returns 404 NOT_FOUND for an unknown task", async () => {
++    const { app } = setup();
++    const res = await app.inject({ method: "POST", url: "/tasks/nope/complete" });
++    expect(res.statusCode).toBe(404);
++    expect(res.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
++  });
++});

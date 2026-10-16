@@ -1,0 +1,11 @@
+id: d07-restore-title-clash
+task: restore-task
+kind: defect
+# Built from evals/reference/restore-task.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: true
+defect:
+  category: missing_check
+  description: "restore() does not check title uniqueness among active tasks, so restoring can create two active tasks with the same title. The test for the clash was removed."
+  files:
+    - src/services/task-service.ts

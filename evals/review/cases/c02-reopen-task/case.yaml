@@ -1,0 +1,6 @@
+id: c02-reopen-task
+task: reopen-task
+kind: clean
+# Built from evals/reference/reopen-task.patch; npm run check passes on this diff (it would get past the gate).
+gate_passes: true
+hidden_tests_fail: false
