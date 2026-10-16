@@ -5,7 +5,7 @@ import {
   type PlannerOutput,
 } from "../schemas/agents.js";
 import { SpecChangeSchema, type OpenSpecIssue } from "../schemas/spec.js";
-import type { TaskSpec } from "../schemas/task.js";
+import type { TaskContent } from "../schemas/task.js";
 import type { AgentRunResult } from "../runtimes/types.js";
 import { describeIssues } from "../spec/openspec.js";
 import { renderSpecForPrompt, renderTask } from "./prompts.js";
@@ -14,7 +14,7 @@ import { parseStructured, type StructuredOutcome } from "./structured.js";
 export const PLANNER_OUTPUT_SCHEMA = plannerJsonSchema;
 export const SPEC_OUTPUT_SCHEMA = toAgentJsonSchema(SpecChangeSchema);
 
-export function plannerPrompt(task: TaskSpec, rejections: readonly string[] = []): string {
+export function plannerPrompt(task: TaskContent, rejections: readonly string[] = []): string {
   const parts = [renderTask(task)];
   if (rejections.length > 0) {
     parts.push(
@@ -31,7 +31,7 @@ export function plannerPrompt(task: TaskSpec, rejections: readonly string[] = []
 
 /** Second (and last) attempt at the spec after `openspec validate` rejected the first one. */
 export function specFixPrompt(
-  task: TaskSpec,
+  task: TaskContent,
   previous: unknown,
   issues: readonly OpenSpecIssue[],
 ): string {

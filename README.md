@@ -72,7 +72,8 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
 `needs_clarification` · `gate_failed` · `review_rejected` · `timeout` · `budget_exceeded` ·
 `error` · `infra_error` (terminal; the model provider was unavailable — excluded from eval metrics) · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
 `closed`. Every step has a timeout capped by the task deadline; each agent call gets only the
-remaining budget; at most `max_fix_cycles` (≤ 2) develop→gate/review cycles; at most 2 spec
+remaining budget; at most `max_gate_fix_cycles` (default 2) gate→develop and, separately,
+`max_review_cycles` (default 1) review→develop cycles (each ≤ 2); at most 2 spec
 rejections and one spec repair attempt. A run reaches `awaiting_merge_approval` only if the
 sandboxed checks exit 0 and the reviewer's structured verdict approves with every criterion
 met. In eval, that success claim is checked by hidden tests: `verified` or `false_success`.

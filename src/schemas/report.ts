@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { PlannerOutputSchema, ReviewVerdictSchema } from "./agents.js";
 import { PersistedSpecChangeSchema } from "./spec.js";
-import { TaskSpecSchema } from "./task.js";
+import { StoredTaskSpecSchema } from "./task.js";
 
 export const RUN_STATUSES = [
   "success",
@@ -106,7 +106,7 @@ export const RunReportSchema = z.strictObject({
   activeDurationMs: z.number().int().nonnegative().optional(),
   /** Full wall-clock time from start to finish. */
   wallDurationMs: z.number().int().nonnegative().optional(),
-  task: TaskSpecSchema,
+  task: StoredTaskSpecSchema,
   runtime: z.string(),
   models: z.record(z.string(), z.string()),
   target: z

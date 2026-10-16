@@ -36,7 +36,12 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
       request: "r",
       acceptance_criteria: ["c"],
       scope: { allowed_paths: ["src/**"] },
-      budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+      budget: {
+        max_gate_fix_cycles: 2,
+        max_review_cycles: 1,
+        max_cost_usd: 1,
+        timeout_minutes: 15,
+      },
     },
     startedAtMs: NOW - 10_000,
     deadlineMs: NOW + 60_000,
@@ -48,6 +53,8 @@ function state(over: Partial<RunStateValue> = {}): RunStateValue {
     conventions: "",
     planResult: { plan: "p", files_to_change: [], risks: [], questions: [] },
     cycle: 0,
+    gateFixCycles: 0,
+    reviewCycles: 0,
     gateResult: null,
     reviewVerdict: null,
     lastNode: "",
@@ -83,7 +90,7 @@ describe("decide: transitions", () => {
     ["gate passed", { lastNode: "gate", gateResult: gate(true) }, "review"],
     [
       "gate failed, cycles left",
-      { lastNode: "gate", gateResult: gate(false), cycle: 1 },
+      { lastNode: "gate", gateResult: gate(false), cycle: 1, gateFixCycles: 1 },
       "develop",
     ],
     [
@@ -105,8 +112,28 @@ describe("decide: transitions", () => {
       "needs_clarification",
     ],
     ["approved", { lastNode: "review", reviewVerdict: approve, cycle: 1 }, "success"],
-    ["gate failed at max", { lastNode: "gate", gateResult: gate(false), cycle: 2 }, "gate_failed"],
-    ["rejected at max", { lastNode: "review", reviewVerdict: reject, cycle: 2 }, "review_rejected"],
+    [
+      "gate failed at max",
+      { lastNode: "gate", gateResult: gate(false), cycle: 2, gateFixCycles: 2 },
+      "gate_failed",
+    ],
+    [
+      "rejected at max",
+      { lastNode: "review", reviewVerdict: reject, cycle: 1, reviewCycles: 1 },
+      "review_rejected",
+    ],
+    [
+      "gate failed, legacy budget",
+      {
+        lastNode: "gate",
+        gateResult: gate(false),
+        task: {
+          ...state().task,
+          budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+        },
+      },
+      "error",
+    ],
   ])("%s → stop %s", (_name, over, status) => {
     expect(decide(state(over), NOW)).toMatchObject({ kind: "stop", status });
   });
@@ -149,9 +176,12 @@ describe("decide: limits are enforced on edges", () => {
   });
 
   it("routeAfter sends every stop to report", () => {
-    expect(routeAfter(state({ lastNode: "gate", gateResult: gate(false), cycle: 2 }), NOW)).toBe(
-      "report",
-    );
+    expect(
+      routeAfter(
+        state({ lastNode: "gate", gateResult: gate(false), cycle: 2, gateFixCycles: 2 }),
+        NOW,
+      ),
+    ).toBe("report");
     expect(routeAfter(state({ lastNode: "gate", gateResult: gate(true) }), NOW)).toBe("review");
   });
 });

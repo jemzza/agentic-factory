@@ -1,5 +1,5 @@
 import type { PlannerOutput, ReviewIssue } from "../schemas/agents.js";
-import type { TaskSpec } from "../schemas/task.js";
+import type { TaskContent } from "../schemas/task.js";
 import { renderSpecForPrompt, renderTask } from "./prompts.js";
 
 export interface FixFeedback {
@@ -26,7 +26,7 @@ function renderPlan(plan: PlannerOutput): string {
 }
 
 export function developerPrompt(
-  task: TaskSpec,
+  task: TaskContent,
   plan: PlannerOutput,
   feedback?: FixFeedback,
   specFiles: Readonly<Record<string, string>> = {},

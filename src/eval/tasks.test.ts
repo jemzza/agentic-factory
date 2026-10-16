@@ -1,8 +1,11 @@
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { TASKS_DIR } from "../paths.js";
+import { DEFAULT_MAX_GATE_FIX_CYCLES, DEFAULT_MAX_REVIEW_CYCLES } from "../schemas/task.js";
 import {
+  DEFAULT_EVAL_DIRS,
   listHiddenTestFiles,
   listTaskIds,
   loadEvalMeta,
@@ -70,5 +73,60 @@ describe("eval task set", () => {
 
   it("rejects ids that could escape the tasks directory", async () => {
     await expect(loadTaskSpec("../hidden/x")).rejects.toThrow(/Invalid task id/);
+  });
+
+  it("states both cycle budgets explicitly in every task file", async () => {
+    for (const id of await listTaskIds()) {
+      const raw = await readFile(path.join(TASKS_DIR, id, "task.yaml"), "utf8");
+      expect(raw, id).toMatch(/^ {2}max_gate_fix_cycles: \d+$/m);
+      expect(raw, id).toMatch(/^ {2}max_review_cycles: \d+$/m);
+      expect(raw, id).not.toMatch(/max_fix_cycles/);
+    }
+  });
+});
+
+describe("task budget", () => {
+  const writeTask = async (budget: string) => {
+    const tasksDir = await mkdtemp(path.join(os.tmpdir(), "factory-task-"));
+    await mkdir(path.join(tasksDir, "t"));
+    await writeFile(
+      path.join(tasksDir, "t", "task.yaml"),
+      [
+        "id: t",
+        "title: T",
+        "request: r",
+        "acceptance_criteria: [c]",
+        "scope:",
+        '  allowed_paths: ["src/**"]',
+        "budget:",
+        budget,
+      ].join("\n"),
+    );
+    return { ...DEFAULT_EVAL_DIRS, tasksDir };
+  };
+
+  it("rejects the legacy shared max_fix_cycles with an error naming the new fields", async () => {
+    const dirs = await writeTask("  max_fix_cycles: 2\n  max_cost_usd: 1\n  timeout_minutes: 15");
+    try {
+      await expect(loadTaskSpec("t", dirs)).rejects.toThrow(
+        /budget\.max_fix_cycles: .*max_gate_fix_cycles.*max_review_cycles/,
+      );
+    } finally {
+      await rm(dirs.tasksDir, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults omitted cycle budgets from the single definition", async () => {
+    const dirs = await writeTask("  max_cost_usd: 1\n  timeout_minutes: 15");
+    try {
+      const spec = await loadTaskSpec("t", dirs);
+      expect(spec.budget).toMatchObject({
+        max_gate_fix_cycles: DEFAULT_MAX_GATE_FIX_CYCLES,
+        max_review_cycles: DEFAULT_MAX_REVIEW_CYCLES,
+      });
+      expect([DEFAULT_MAX_GATE_FIX_CYCLES, DEFAULT_MAX_REVIEW_CYCLES]).toEqual([2, 1]);
+    } finally {
+      await rm(dirs.tasksDir, { recursive: true, force: true });
+    }
   });
 });

@@ -238,7 +238,13 @@ describe("spec drafting and approval", () => {
     const { deps, runtime, db } = await setup(script, "auto");
     try {
       const out = resultOf(
-        await runTask({ ...FAKE_TASK, budget: { ...FAKE_TASK.budget, max_fix_cycles: 0 } }, deps),
+        await runTask(
+          {
+            ...FAKE_TASK,
+            budget: { ...FAKE_TASK.budget, max_gate_fix_cycles: 0, max_review_cycles: 0 },
+          },
+          deps,
+        ),
       );
       expect(out.report.status).toBe("gate_failed");
       expect(out.report.gate?.policyViolations.join("\n")).toMatch(

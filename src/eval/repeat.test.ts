@@ -22,7 +22,7 @@ const TASK = (id: string): TaskSpec => ({
   request: "r",
   acceptance_criteria: ["c"],
   scope: { allowed_paths: ["src/**"] },
-  budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+  budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1, timeout_minutes: 15 },
 });
 
 describe("stat", () => {

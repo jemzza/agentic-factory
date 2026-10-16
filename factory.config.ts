@@ -18,16 +18,15 @@ const config: FactoryConfigInput = {
   roles: {
     planner: { runtime: "claude-code", model: "opus" },
     developer: { runtime: "claude-code", model: "opus" },
-    // Independent reviewer from another vendor (OpenCode, read-only). Exact model id from the
-    // OpenCode catalog: GPT-6.1 Sol, released 2026-09-29 (no dated snapshot id exists).
-    reviewer: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
+    // Same vendor and model as the developer: the OpenCode reviewer (OpenAI) is disabled by the
+    // project owner's decision. Review independence is therefore lower than the architecture
+    // intends. The OpenCode runtime (src/runtimes/opencode.ts) stays available; to re-enable it:
+    //   reviewer: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
+    reviewer: { runtime: "claude-code", model: "opus" },
   },
   // `npm run eval:review` compares these reviewers on evals/review/.
   reviewEval: {
-    reviewers: [
-      { runtime: "claude-code", model: "opus" },
-      { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
-    ],
+    reviewers: [{ runtime: "claude-code", model: "opus" }],
   },
   secretEnv: ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
   stepTimeoutsMinutes: { planner: 5, developer: 15, reviewer: 5, check: 5 },

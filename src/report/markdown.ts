@@ -1,4 +1,12 @@
 import type { RunReport, StepResult } from "../schemas/report.js";
+import { cycleLimits } from "../schemas/task.js";
+
+function fixCycleLimits(r: RunReport): string {
+  const limits = cycleLimits(r.task.budget);
+  return limits
+    ? `(limits: ${limits.gateFix} gate fix, ${limits.review} review)`
+    : `of ${"max_fix_cycles" in r.task.budget ? r.task.budget.max_fix_cycles : "?"} (legacy shared limit)`;
+}
 
 const STATUS_ICON: Record<RunReport["status"], string> = {
   success: "✅",
@@ -50,7 +58,7 @@ export function renderReportMarkdown(r: RunReport): string {
             : "")
         : `- **Time:** ${secs(r.durationMs)} (limit ${r.task.budget.timeout_minutes} min)`,
       `- **Cost:** ${usd(r.cost.totalUsd)} of ${usd(r.cost.budgetUsd)}${r.cost.unknownCostSteps ? ` (+${r.cost.unknownCostSteps} step(s) with unknown cost)` : ""}`,
-      `- **Fix cycles:** ${r.fixCycles} of ${r.task.budget.max_fix_cycles}`,
+      `- **Fix cycles:** ${r.fixCycles} ${fixCycleLimits(r)}`,
       `- **Runtime / models:** ${r.runtime} — ${Object.entries(r.models)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")}`,

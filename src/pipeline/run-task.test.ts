@@ -31,7 +31,7 @@ const TASK: TaskSpec = {
   request: "Add a feature.",
   acceptance_criteria: ["feature exists", "feature is tested"],
   scope: { allowed_paths: ["src/**", "tests/**"] },
-  budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+  budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1, timeout_minutes: 15 },
 };
 
 const PLAN: PlannerOutput = FAKE_PLAN;
@@ -299,7 +299,8 @@ describe("runTask", () => {
       reviewer: reviewer(REJECT),
     });
     expect(report.status).toBe("review_rejected");
-    expect(report.fixCycles).toBe(2);
+    // max_review_cycles: 1 — one rework after request_changes, then the run stops.
+    expect(report.fixCycles).toBe(1);
     const fixPrompt = runtime.calls.filter((c) => c.role === "developer")[1]?.prompt ?? "";
     expect(fixPrompt).toContain("no edge case");
     expect(fixPrompt).toContain("missing test");
@@ -313,7 +314,9 @@ describe("runTask", () => {
         developer: writeFeature(["a\n"]),
         reviewer: reviewer(inconsistent),
       },
-      { task: { ...TASK, budget: { ...TASK.budget, max_fix_cycles: 0 } } },
+      {
+        task: { ...TASK, budget: { ...TASK.budget, max_gate_fix_cycles: 0, max_review_cycles: 0 } },
+      },
     );
     expect(report.status).toBe("review_rejected");
   });
@@ -327,7 +330,9 @@ describe("runTask", () => {
           return {};
         },
       },
-      { task: { ...TASK, budget: { ...TASK.budget, max_fix_cycles: 0 } } },
+      {
+        task: { ...TASK, budget: { ...TASK.budget, max_gate_fix_cycles: 0, max_review_cycles: 0 } },
+      },
     );
     expect(report.status).toBe("gate_failed");
     expect(report.gate?.scope.violations).toEqual(["package.json"]);
@@ -337,7 +342,9 @@ describe("runTask", () => {
   it("fails the gate when the developer changes nothing", async () => {
     const { report } = await run(
       { planner: planner(), developer: () => Promise.resolve({}) },
-      { task: { ...TASK, budget: { ...TASK.budget, max_fix_cycles: 0 } } },
+      {
+        task: { ...TASK, budget: { ...TASK.budget, max_gate_fix_cycles: 0, max_review_cycles: 0 } },
+      },
     );
     expect(report.status).toBe("gate_failed");
     expect(report.gate?.scope.empty).toBe(true);

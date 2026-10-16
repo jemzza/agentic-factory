@@ -8,7 +8,7 @@ import {
   type StepResult,
 } from "../schemas/report.js";
 import { OpenSpecIssueSchema, PersistedSpecChangeSchema } from "../schemas/spec.js";
-import { TaskSpecSchema } from "../schemas/task.js";
+import { StoredTaskSpecSchema } from "../schemas/task.js";
 
 /** Spec rejections a human may send back to planning before the run asks for clarification. */
 export const MAX_SPEC_REJECTIONS = 2;
@@ -95,7 +95,8 @@ export const WorktreeSchema = z.strictObject({
  */
 export const RunState = new StateSchema({
   runId: z.string(),
-  task: TaskSpecSchema,
+  /** Stored shape: checkpoints written before the cycle-budget split carry the legacy budget. */
+  task: StoredTaskSpecSchema,
   /** Directory for this run's logs and reports (state, so a resumed process can find it). */
   runDir: z.string(),
   mode: z.enum(["interactive", "eval"]).default("interactive"),
@@ -131,8 +132,15 @@ export const RunState = new StateSchema({
   /** Human rejection comments, oldest first (fed back to the Planner). */
   specRejections: z.array(z.string()).default([]),
 
-  /** Index of the latest developer run: -1 before the first, 0 = first implementation. */
+  /**
+   * Index of the latest developer run: -1 before the first, 0 = first implementation.
+   * Always equals gateFixCycles + reviewCycles once the developer ran; names logs and steps.
+   */
   cycle: z.number().int().default(-1),
+  /** Developer re-runs caused by a failed quality gate (limit: budget.max_gate_fix_cycles). */
+  gateFixCycles: z.number().int().default(0),
+  /** Developer re-runs caused by reviewer request_changes (limit: budget.max_review_cycles). */
+  reviewCycles: z.number().int().default(0),
   gateResult: GateResultSchema.nullable().default(null),
   reviewVerdict: ReviewVerdictSchema.nullable().default(null),
 

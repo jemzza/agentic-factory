@@ -58,6 +58,16 @@ export const RunRowSchema = z.object({
   /** NULL for runs recorded before migration 002. */
   active_duration_ms: z.number().int().nullable(),
   wall_duration_ms: z.number().int().nullable(),
+  /** NULL for runs recorded before migration 004 whose counters could not be reconstructed. */
+  gate_fix_cycles: z.number().int().nullable(),
+  review_cycles: z.number().int().nullable(),
+  /** Set by an eval: verified with no fix cycles. NULL until decided (and for interactive runs). */
+  first_pass: z
+    .union([z.literal(0), z.literal(1)])
+    .nullable()
+    .transform((v) => (v === null ? null : v === 1)),
+  /** Human spec rejections; NULL for runs without a spec approval stage (Week 1). */
+  spec_revisions: z.number().int().nullable(),
 });
 export type RunRow = z.output<typeof RunRowSchema>;
 
@@ -166,6 +176,10 @@ export type RunPatch = Partial<{
   specApproval: "manual" | "auto";
   activeDurationMs: number;
   wallDurationMs: number;
+  gateFixCycles: number;
+  reviewCycles: number;
+  firstPass: boolean | null;
+  specRevisions: number;
 }>;
 
 const RUN_PATCH_COLUMNS: Record<keyof RunPatch, string> = {
@@ -183,6 +197,10 @@ const RUN_PATCH_COLUMNS: Record<keyof RunPatch, string> = {
   specApproval: "spec_approval",
   activeDurationMs: "active_duration_ms",
   wallDurationMs: "wall_duration_ms",
+  gateFixCycles: "gate_fix_cycles",
+  reviewCycles: "review_cycles",
+  firstPass: "first_pass",
+  specRevisions: "spec_revisions",
 };
 
 export class RunLockedError extends Error {
@@ -240,9 +258,10 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO runs (id, task_id, mode, eval_id, eval_repeat, status, spec_approval, started_at,
-           updated_at, budget_usd, roles_json, baseline_commit)
+           updated_at, budget_usd, roles_json, baseline_commit, gate_fix_cycles, review_cycles,
+           spec_revisions)
          VALUES (@id, @taskId, @mode, @evalId, @evalRepeat, @status, @specApproval, @now, @now, @budgetUsd,
-           @roles, @baselineCommit)`,
+           @roles, @baselineCommit, 0, 0, @specRevisions)`,
       )
       .run({
         id: run.id,
@@ -256,6 +275,8 @@ export class Store {
         budgetUsd: run.budgetUsd,
         roles: JSON.stringify(RolesSchema.parse(run.roles)),
         baselineCommit: run.baselineCommit ?? null,
+        // A run with a spec approval stage starts with no rejections; Week 1 imports have none.
+        specRevisions: run.specApproval ? 0 : null,
       });
     return this.requireRun(run.id);
   }
@@ -300,7 +321,10 @@ export class Store {
     const entries = Object.entries(patch) as [keyof RunPatch, unknown][];
     const sets = entries.map(([k]) => `${RUN_PATCH_COLUMNS[k]} = @${k}`);
     const params: Record<string, unknown> = { id, updatedAt: this.ts() };
-    for (const [k, v] of entries) params[k] = k === "statusMessage" ? this.redact(String(v)) : v;
+    for (const [k, v] of entries) {
+      params[k] =
+        k === "statusMessage" ? this.redact(String(v)) : typeof v === "boolean" ? Number(v) : v;
+    }
     const res = this.db
       .prepare(`UPDATE runs SET ${[...sets, "updated_at = @updatedAt"].join(", ")} WHERE id = @id`)
       .run(params);

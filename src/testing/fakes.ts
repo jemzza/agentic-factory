@@ -17,7 +17,7 @@ export const FAKE_TASK: TaskSpec = {
   request: "Add a feature.",
   acceptance_criteria: ["feature exists", "feature is tested"],
   scope: { allowed_paths: ["src/**", "tests/**"] },
-  budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+  budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1, timeout_minutes: 15 },
 };
 
 export const FAKE_SPEC: SpecChange = {
