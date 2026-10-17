@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { developerPrompt, type FixFeedback } from "../agents/developer.js";
+import { developerPrompt, type FixFeedback, type FixReason } from "../agents/developer.js";
 import {
   parsePlannerResult,
   PLANNER_OUTPUT_SCHEMA,
@@ -52,6 +52,7 @@ import { DEVELOPER_DEFAULT_TOOLS, READ_ONLY_TOOLS } from "../runtimes/tool-polic
 import type { AgentRole, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
 import type { TargetConfig } from "../schemas/config.js";
 import { RunReportSchema, type RunReport, type StepResult } from "../schemas/report.js";
+import { cycleLimits } from "../schemas/task.js";
 import type { Store } from "../store/store.js";
 import { decide } from "./decide.js";
 import {
@@ -189,13 +190,36 @@ async function agentStep(
   return { res, update };
 }
 
+/**
+ * Why the developer is about to run again: a failed gate, or reviewer change requests after a
+ * passed gate. Null for the first implementation.
+ */
+export function fixReason(s: RunStateValue): FixReason | null {
+  if (s.cycle < 0 || !s.gateResult) return null;
+  if (!s.gateResult.passed) return "gate_failure";
+  return s.reviewVerdict ? "review_feedback" : null;
+}
+
 function fixFeedback(s: RunStateValue, cycle: number): FixFeedback | undefined {
-  if (cycle === 0 || !s.gateResult) return undefined;
-  const review = s.gateResult.passed ? s.reviewVerdict : null;
+  const reason = fixReason(s);
+  if (cycle === 0 || !reason || !s.gateResult) return undefined;
+  const limits = cycleLimits(s.task.budget);
+  if (reason === "gate_failure") {
+    return {
+      reason,
+      cycle: s.gateFixCycles + 1,
+      maxCycles: limits?.gateFix ?? 0,
+      gateFailures: describeGateFailures(s.gateResult),
+      reviewIssues: [],
+      unmetCriteria: [],
+    };
+  }
+  const review = s.reviewVerdict;
   return {
-    cycle,
-    maxCycles: s.task.budget.max_fix_cycles,
-    gateFailures: s.gateResult.passed ? "" : describeGateFailures(s.gateResult),
+    reason,
+    cycle: s.reviewCycles + 1,
+    maxCycles: limits?.review ?? 0,
+    gateFailures: "",
     reviewIssues: review ? review.issues : [],
     unmetCriteria: review
       ? review.criteria_check
@@ -407,13 +431,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         { responseSchema: SpecApprovalAnswerSchema },
       );
       const parsed = SpecApprovalAnswerSchema.parse(answer);
-      return Promise.resolve({
-        specDecision: parsed.decision,
-        specRejections:
-          parsed.decision === "reject"
-            ? [...s.specRejections, parsed.comment ?? ""]
-            : s.specRejections,
-      });
+      const specRejections =
+        parsed.decision === "reject"
+          ? [...s.specRejections, parsed.comment ?? ""]
+          : s.specRejections;
+      ctx.store?.updateRun(s.runId, { specRevisions: specRejections.length });
+      return Promise.resolve({ specDecision: parsed.decision, specRejections });
     }),
 
     develop: node("develop", async (s) => {
@@ -424,6 +447,24 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       // previous attempt of this node may have left behind.
       await resetWorktree(wt, s.headCommit, worktreesRoot);
       const cycle = s.cycle + 1;
+      // Which budget this run spends was decided on the edge into develop; count it here.
+      const reason = fixReason(s);
+      const gateFixCycles = s.gateFixCycles + (reason === "gate_failure" ? 1 : 0);
+      const reviewCycles = s.reviewCycles + (reason === "review_feedback" ? 1 : 0);
+      const counters = {
+        gateFixCycles,
+        reviewCycles,
+        reworks: reason
+          ? [
+              ...s.reworks,
+              {
+                cycle,
+                reason,
+                ofKind: reason === "gate_failure" ? gateFixCycles : reviewCycles,
+              },
+            ]
+          : s.reworks,
+      };
       const { update } = await agentStep(
         ctx,
         s,
@@ -431,15 +472,20 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         cycle,
         developerPrompt(s.task, s.planResult, fixFeedback(s, cycle), await approvedSpec(s)),
       );
-      if (update.lastError) return { ...update, cycle, reviewVerdict: null };
+      if (update.lastError) return { ...update, ...counters, cycle, reviewVerdict: null };
       const commit = await snapshot(wt, `factory: ${s.task.id} developer cycle ${cycle}`);
       await assertNoHiddenArtifacts(wt.path);
       const steps: StepResult[] = [
         ...(update.steps as StepResult[]),
         { kind: "snapshot", cycle, commit, message: `developer cycle ${cycle}` },
       ];
-      ctx.store?.updateRun(s.runId, { headCommit: commit, fixCycles: cycle });
-      return { ...update, steps, cycle, headCommit: commit, reviewVerdict: null };
+      ctx.store?.updateRun(s.runId, {
+        headCommit: commit,
+        fixCycles: cycle,
+        gateFixCycles,
+        reviewCycles,
+      });
+      return { ...update, ...counters, steps, cycle, headCommit: commit, reviewVerdict: null };
     }),
 
     gate: node("gate", async (s) => {
@@ -603,6 +649,11 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
               }
             : null,
         fixCycles: Math.max(0, s.cycle),
+        gateFixCycles: s.gateFixCycles,
+        reviewCycles: s.reviewCycles,
+        reworks: s.reworks,
+        specRevisions: s.specRejections.length,
+        firstPass: null,
         steps: s.steps,
         review: s.reviewVerdict,
         gate: s.gateResult,
@@ -629,6 +680,8 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           costUsd: report.cost.totalUsd,
           unknownCostSteps,
           fixCycles: report.fixCycles,
+          gateFixCycles: s.gateFixCycles,
+          reviewCycles: s.reviewCycles,
           ...(s.worktree ? { headCommit: head } : {}),
           reportPath: reportMdPath,
           wallDurationMs: report.wallDurationMs ?? report.durationMs,

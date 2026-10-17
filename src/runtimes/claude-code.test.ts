@@ -241,6 +241,12 @@ describe("ClaudeCodeRuntime (fake process)", () => {
     expect(res.error?.message).toMatch(/usage_limit_reached.*session limit/);
   });
 
+  it("reports an unreachable API (no result event, network errno) as infra", async () => {
+    const res = await runtime("network-down").run(input());
+    expect(res).toMatchObject({ ok: false, error: { kind: "infra" } });
+    expect(res.error?.message).toMatch(/ECONNREFUSED/);
+  });
+
   it("keeps a bad request built by the factory a process error, not infra", async () => {
     const res = await runtime("bad-request").run(input());
     expect(res).toMatchObject({ ok: false, error: { kind: "process" } });

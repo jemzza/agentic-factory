@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FACTORY_ROOT } from "../paths.js";
 import { loadMigrations, migrate, openDb, type Db } from "./db.js";
 import { createRedactor, MASK, secretsFromEnv } from "./redact.js";
 import { RunLockedError, Store } from "./store.js";
@@ -59,6 +60,7 @@ describe("migrations", () => {
       { version: 1, name: "init" },
       { version: 2, name: "run_durations" },
       { version: 3, name: "eval_interrupted" },
+      { version: 4, name: "cycle_budgets" },
     ]);
   });
 
@@ -76,7 +78,7 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1, 2, 3]);
+    expect(migrate(fresh)).toEqual([1, 2, 3, 4]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
@@ -96,6 +98,7 @@ describe("migrations", () => {
       )
       .run();
     expect(migrate(old, [m1, m2])).toEqual([2]);
+    migrate(old); // the Store reads a fully migrated database
     const row = new Store(old).requireRun("old-run");
     expect(row).toMatchObject({
       status: "success",
@@ -125,6 +128,7 @@ describe("migrations", () => {
       .run();
     expect(migrate(old, [m1, m2, m3])).toEqual([3]);
     expect(old.pragma("foreign_key_check")).toEqual([]);
+    migrate(old); // the Store reads a fully migrated database
     const s = new Store(old);
     expect(s.getEval("eval-old")).toMatchObject({ status: "completed", cost_usd: 6.03 });
     expect(s.requireRun("r1")).toMatchObject({ eval_id: "eval-old" });
@@ -148,6 +152,130 @@ describe("migrations", () => {
     ).toThrow(/FOREIGN KEY/);
     old.close();
   });
+
+  it("migration 004 backfills cycle counters only where the history is unambiguous", () => {
+    const old = new Database(":memory:");
+    old.pragma("foreign_keys = ON");
+    const all = loadMigrations();
+    migrate(
+      old,
+      all.filter((m) => m.version <= 3),
+    );
+    const insertRun = old.prepare(
+      `INSERT INTO runs (id, task_id, mode, status, spec_approval, started_at, updated_at, budget_usd,
+         roles_json, fix_cycles)
+       VALUES (@id, 't', 'eval', 'success', @spec, 'x', 'x', 1, '{}', @fix)`,
+    );
+    const transition = old.prepare(
+      "INSERT INTO events (run_id, ts, kind, node, next) VALUES (?, 'x', 'transition', ?, ?)",
+    );
+    const step = old.prepare(
+      "INSERT INTO steps (run_id, node, cycle, attempt, status, started_at) VALUES (?, ?, ?, 1, 'ok', 'x')",
+    );
+    // Logged history: one gate fix and one review fix, consistent with fix_cycles.
+    insertRun.run({ id: "logged", spec: "auto", fix: 2 });
+    transition.run("logged", "gate", "develop");
+    transition.run("logged", "review", "develop");
+    transition.run("logged", "gate", "review");
+    // Logged history that disagrees with fix_cycles: left NULL, not guessed.
+    insertRun.run({ id: "inconsistent", spec: "auto", fix: 1 });
+    transition.run("inconsistent", "review", "develop");
+    transition.run("inconsistent", "review", "develop");
+    // Week 1 import (no transitions): no fix cycle at all → 0/0.
+    insertRun.run({ id: "w1-clean", spec: null, fix: 0 });
+    step.run("w1-clean", "developer", 0);
+    // Week 1 import with a fix cycle: the cause is unknown → NULL.
+    insertRun.run({ id: "w1-fixed", spec: null, fix: 1 });
+    step.run("w1-fixed", "developer", 0);
+    step.run("w1-fixed", "developer", 1);
+    old
+      .prepare(
+        `INSERT INTO approvals (run_id, gate, decision, actor, decided_at)
+         VALUES ('logged', 'spec', 'reject', 'alice', 'x'), ('logged', 'spec', 'approve', 'alice', 'x')`,
+      )
+      .run();
+
+    expect(migrate(old)).toEqual([4]);
+    const s = new Store(old);
+    const pick = (id: string) => {
+      const r = s.requireRun(id);
+      return [r.gate_fix_cycles, r.review_cycles, r.spec_revisions, r.first_pass, r.fix_cycles];
+    };
+    expect(pick("logged")).toEqual([1, 1, 1, null, 2]);
+    expect(pick("inconsistent")).toEqual([null, null, 0, null, 1]);
+    expect(pick("w1-clean")).toEqual([0, 0, null, null, 0]);
+    expect(pick("w1-fixed")).toEqual([null, null, null, null, 1]);
+
+    // New runs start with explicit counters; first_pass stays NULL until an eval decides it.
+    const fresh = s.createRun({
+      id: "new",
+      taskId: "t",
+      mode: "eval",
+      budgetUsd: 1,
+      roles: ROLES,
+      specApproval: "auto",
+    });
+    expect([
+      fresh.gate_fix_cycles,
+      fresh.review_cycles,
+      fresh.spec_revisions,
+      fresh.first_pass,
+    ]).toEqual([0, 0, 0, null]);
+    expect(s.updateRun("new", { firstPass: true, reviewCycles: 1 })).toMatchObject({
+      first_pass: true,
+      review_cycles: 1,
+    });
+    expect(s.updateRun("new", { firstPass: false }).first_pass).toBe(false);
+    old.close();
+  });
+
+  const REAL_DB = path.join(FACTORY_ROOT, "data", "factory.db");
+  it.skipIf(!existsSync(REAL_DB))(
+    "migration 004 on a copy of the real database keeps every run readable",
+    async () => {
+      const source = new Database(REAL_DB, { readonly: true, fileMustExist: true });
+      const copyPath = path.join(dir, "real-copy.db");
+      await source.backup(copyPath);
+      source.close();
+      const copy = new Database(copyPath);
+      const count = (sql: string) => (copy.prepare(sql).get() as { n: number }).n;
+      const before = {
+        runs: count("SELECT count(*) AS n FROM runs"),
+        steps: count("SELECT count(*) AS n FROM steps"),
+        events: count("SELECT count(*) AS n FROM events"),
+        approvals: count("SELECT count(*) AS n FROM approvals"),
+        evals: count("SELECT count(*) AS n FROM evals"),
+      };
+      const fixBefore = copy.prepare("SELECT id, status, fix_cycles FROM runs ORDER BY id").all();
+      migrate(copy);
+      expect({
+        runs: count("SELECT count(*) AS n FROM runs"),
+        steps: count("SELECT count(*) AS n FROM steps"),
+        events: count("SELECT count(*) AS n FROM events"),
+        approvals: count("SELECT count(*) AS n FROM approvals"),
+        evals: count("SELECT count(*) AS n FROM evals"),
+      }).toEqual(before);
+      expect(copy.prepare("SELECT id, status, fix_cycles FROM runs ORDER BY id").all()).toEqual(
+        fixBefore,
+      );
+      const s = new Store(copy);
+      const rows = s.listRuns({ limit: 100_000 });
+      expect(rows).toHaveLength(before.runs);
+      // The real database may already be migrated (openDb applies migrations); runs recorded
+      // before 004 must never get an invented first_pass.
+      const applied = copy
+        .prepare("SELECT applied_at FROM schema_migrations WHERE version = 4")
+        .pluck()
+        .get() as string;
+      for (const r of rows) {
+        if (r.started_at < applied) expect(r.first_pass).toBeNull();
+        if (r.gate_fix_cycles !== null && r.review_cycles !== null) {
+          expect(r.gate_fix_cycles + r.review_cycles).toBe(r.fix_cycles);
+        }
+      }
+      copy.close();
+    },
+  );
 
   it("a foreign-keys-off migration that leaves dangling references is rolled back", () => {
     const fresh = new Database(":memory:");

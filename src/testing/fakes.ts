@@ -17,7 +17,7 @@ export const FAKE_TASK: TaskSpec = {
   request: "Add a feature.",
   acceptance_criteria: ["feature exists", "feature is tested"],
   scope: { allowed_paths: ["src/**", "tests/**"] },
-  budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+  budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1, timeout_minutes: 15 },
 };
 
 export const FAKE_SPEC: SpecChange = {
@@ -66,6 +66,16 @@ export const FAKE_APPROVE: ReviewVerdict = {
     criterion,
     met: true,
     evidence: "src/feature.ts",
+  })),
+};
+
+export const FAKE_REJECT: ReviewVerdict = {
+  verdict: "request_changes",
+  issues: [{ severity: "major", file: "src/feature.ts", description: "no edge case" }],
+  criteria_check: FAKE_TASK.acceptance_criteria.map((criterion, i) => ({
+    criterion,
+    met: i === 0,
+    evidence: i === 0 ? "ok" : "missing test",
   })),
 };
 

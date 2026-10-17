@@ -37,6 +37,8 @@ export function stat(values: readonly (number | null)[]): Stat {
   };
 }
 
+const NO_STAT: Stat = { n: 0, mean: null, stdev: null, min: null, max: null };
+
 export const RepeatedSummarySchema = z.strictObject({
   schemaVersion: z.literal(1),
   evalId: z.string(),
@@ -50,9 +52,14 @@ export const RepeatedSummarySchema = z.strictObject({
   /** A pass stopped because the provider was unavailable; `--resume` continues it. */
   interrupted: z.boolean().default(false),
   metrics: z.strictObject({
+    /** Added with the cycle-budget split; absent in summaries written before it. */
+    firstPassRate: StatSchema.default(NO_STAT),
     verifiedRate: StatSchema,
     falseSuccessRate: StatSchema,
     avgFixCycles: StatSchema,
+    avgGateFixCycles: StatSchema.default(NO_STAT),
+    avgReviewCycles: StatSchema.default(NO_STAT),
+    reviewLimitStopRate: StatSchema.default(NO_STAT),
     avgDurationSec: StatSchema,
     totalCostUsd: StatSchema,
   }),
@@ -93,9 +100,13 @@ export function aggregate(
     costCapReached: info.costCapReached,
     interrupted: info.interrupted ?? false,
     metrics: {
+      firstPassRate: m((s) => s.metrics.firstPassRate),
       verifiedRate: m((s) => s.metrics.verifiedRate),
       falseSuccessRate: m((s) => s.metrics.falseSuccessRate),
       avgFixCycles: m((s) => s.metrics.avgFixCycles),
+      avgGateFixCycles: m((s) => s.metrics.avgGateFixCycles),
+      avgReviewCycles: m((s) => s.metrics.avgReviewCycles),
+      reviewLimitStopRate: m((s) => s.metrics.reviewLimitStopRate),
       avgDurationSec: m((s) => s.metrics.avgDurationSec),
       totalCostUsd: m((s) => s.metrics.totalCostUsd + s.replacedCostUsd),
     },
@@ -137,9 +148,14 @@ export function renderRepeatedMarkdown(r: RepeatedSummary): string {
       [
         "| Metric | Value |",
         "|---|---|",
+        `| First-pass rate (verified, no rework / implementable tasks) | ${fmt(r.metrics.firstPassRate, pct)} |`,
         `| Verified rate | ${fmt(r.metrics.verifiedRate, pct)} |`,
         `| False success rate | ${fmt(r.metrics.falseSuccessRate, pct)} |`,
-        `| Average fix cycles | ${fmt(r.metrics.avgFixCycles, num)} |`,
+        `| Average gate fix cycles | ${fmt(r.metrics.avgGateFixCycles, num)} |`,
+        `| Average review cycles | ${fmt(r.metrics.avgReviewCycles, num)} |`,
+        `| Average fix cycles, total | ${fmt(r.metrics.avgFixCycles, num)} |`,
+        `| Stopped by the review limit (review_rejected / reviewed) | ${fmt(r.metrics.reviewLimitStopRate, pct)} |`,
+        `| Excluded: provider unavailable (infra_error), all repeats | ${r.repeats.reduce((n, p) => n + p.metrics.excludedInfra + p.replacedInfraTasks.length, 0)} task attempt(s) |`,
         `| Average time per task | ${fmt(r.metrics.avgDurationSec, sec)} |`,
         `| Cost per repeat | ${fmt(r.metrics.totalCostUsd, usd)} |`,
       ].join("\n"),

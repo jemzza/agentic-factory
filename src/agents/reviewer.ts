@@ -1,5 +1,5 @@
 import { reviewerJsonSchema, ReviewVerdictSchema, type ReviewVerdict } from "../schemas/agents.js";
-import type { TaskSpec } from "../schemas/task.js";
+import type { TaskContent } from "../schemas/task.js";
 import type { AgentRunResult } from "../runtimes/types.js";
 import { renderSpecForPrompt, renderTask } from "./prompts.js";
 import { parseStructured, type StructuredOutcome } from "./structured.js";
@@ -10,7 +10,7 @@ export const REVIEWER_OUTPUT_SCHEMA = reviewerJsonSchema;
  * Reviewer input: task, criteria and the diff only — never the developer's messages.
  */
 export function reviewerPrompt(
-  task: TaskSpec,
+  task: TaskContent,
   diff: string,
   maxDiffChars: number,
   specFiles: Readonly<Record<string, string>> = {},
@@ -37,7 +37,7 @@ export function reviewerPrompt(
 
 export function parseReviewerResult(
   result: AgentRunResult,
-  task: TaskSpec,
+  task: TaskContent,
 ): StructuredOutcome<ReviewVerdict> {
   const parsed = parseStructured(result, ReviewVerdictSchema);
   if (!parsed.ok) return parsed;
@@ -76,7 +76,7 @@ export function isApproved(review: ReviewVerdict): boolean {
 export async function reviewWithRetry(
   call: (prompt: string) => Promise<AgentRunResult>,
   prompt: string,
-  task: TaskSpec,
+  task: TaskContent,
   log: (message: string) => void = () => undefined,
 ): Promise<{ outcome: StructuredOutcome<ReviewVerdict>; attempts: number }> {
   const judge = (res: AgentRunResult): StructuredOutcome<ReviewVerdict> =>

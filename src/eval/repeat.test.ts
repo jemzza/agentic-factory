@@ -6,7 +6,7 @@ import type { RunTaskResult } from "../pipeline/run-task.js";
 import type { RunReport } from "../schemas/report.js";
 import type { TaskSpec } from "../schemas/task.js";
 import type { RunStatus } from "../schemas/report.js";
-import { resumeMismatch, runEvalRepeated, stat } from "./repeat.js";
+import { RepeatedSummarySchema, resumeMismatch, runEvalRepeated, stat } from "./repeat.js";
 
 let tmp: string;
 beforeAll(async () => {
@@ -22,7 +22,7 @@ const TASK = (id: string): TaskSpec => ({
   request: "r",
   acceptance_criteria: ["c"],
   scope: { allowed_paths: ["src/**"] },
-  budget: { max_fix_cycles: 2, max_cost_usd: 1, timeout_minutes: 15 },
+  budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1, timeout_minutes: 15 },
 });
 
 describe("stat", () => {
@@ -30,6 +30,34 @@ describe("stat", () => {
     expect(stat([1, 1, 0.5])).toEqual({ n: 3, mean: 0.8333, stdev: 0.2887, min: 0.5, max: 1 });
     expect(stat([0.9])).toEqual({ n: 1, mean: 0.9, stdev: null, min: 0.9, max: 0.9 });
     expect(stat([null, null])).toMatchObject({ n: 0, mean: null });
+  });
+});
+
+describe("RepeatedSummarySchema", () => {
+  it("reads summaries written before first-pass and split cycles existed", () => {
+    const empty = { n: 0, mean: null, stdev: null, min: null, max: null };
+    const old = RepeatedSummarySchema.parse({
+      schemaVersion: 1,
+      evalId: "eval-old",
+      repeatsPlanned: 1,
+      repeatsDone: 0,
+      roles: {},
+      baselineCommit: null,
+      specApproval: "auto",
+      costCapUsd: null,
+      costCapReached: false,
+      metrics: {
+        verifiedRate: empty,
+        falseSuccessRate: empty,
+        avgFixCycles: empty,
+        avgDurationSec: empty,
+        totalCostUsd: empty,
+      },
+      tasks: {},
+      repeats: [],
+    });
+    expect(old.metrics.firstPassRate).toEqual(empty);
+    expect(old.metrics.avgReviewCycles).toEqual(empty);
   });
 });
 
@@ -94,7 +122,12 @@ describe("runEvalRepeated", () => {
     });
     expect(summary.metrics.verifiedRate).toMatchObject({ n: 2, mean: 0.5, min: 0, max: 1 });
     expect(summary.tasks["a"]).toEqual(["verified", "review_rejected✗"]);
+    // r1 verified with no rework, r2 rejected: first pass 1 of 1, then 0 of 1.
+    expect(summary.metrics.firstPassRate).toMatchObject({ n: 2, mean: 0.5, min: 0, max: 1 });
     const md = await readFile(summaryMdPath, "utf8");
+    expect(md).toContain(
+      "| First-pass rate (verified, no rework / implementable tasks) | **50.0%** ±",
+    );
     expect(md).toContain("2/3 repeat(s)");
     expect(md).toContain("reached, results are partial");
     expect(md).toContain("reviewer = opencode:openai/x");

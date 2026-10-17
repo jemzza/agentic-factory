@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FACTORY_ROOT } from "../paths.js";
 import type { AgentRole } from "../runtimes/types.js";
-import type { TaskSpec } from "../schemas/task.js";
+import type { TaskContent } from "../schemas/task.js";
 
 export const PROMPTS_DIR = path.join(FACTORY_ROOT, "prompts");
 
@@ -23,7 +23,7 @@ export async function buildSystemPrompt(role: AgentRole, conventions: string): P
   ].join("\n\n");
 }
 
-export function renderTask(task: TaskSpec): string {
+export function renderTask(task: TaskContent): string {
   return [
     `## Task: ${task.title} (\`${task.id}\`)`,
     "### Request",

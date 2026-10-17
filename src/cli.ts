@@ -5,6 +5,7 @@ import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
+import { writeFirstPass } from "./report/first-pass.js";
 import { BASELINE_TAG, ensureTargetRepo, moveBaselineTag } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
 import {
@@ -410,6 +411,11 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
       if (outcome.result) return outcome.result;
       throw new Error(`eval run paused at ${outcome.gate} approval`);
     },
+    recordFirstPass: async (run, firstPass) => {
+      // The database is the source of truth; the report files are refreshed to match.
+      if (firstPass !== null) store.updateRun(run.report.runId, { firstPass });
+      await writeFirstPass(run, firstPass);
+    },
     runHidden: (worktreePath, taskId) =>
       runHiddenTests({
         worktreePath,
@@ -437,8 +443,9 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   const m = summary.metrics;
   const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
   console.log(
-    `\n${summary.repeatsDone}/${summary.repeatsPlanned} repeat(s): verified ${pct(m.verifiedRate.mean)} ± ${pct(m.verifiedRate.stdev)}, ` +
-      `false success ${pct(m.falseSuccessRate.mean)}, fix cycles ${m.avgFixCycles.mean ?? "n/a"}, ` +
+    `\n${summary.repeatsDone}/${summary.repeatsPlanned} repeat(s): first pass ${pct(m.firstPassRate.mean)} ± ${pct(m.firstPassRate.stdev)}, ` +
+      `verified ${pct(m.verifiedRate.mean)} ± ${pct(m.verifiedRate.stdev)}, ` +
+      `false success ${pct(m.falseSuccessRate.mean)}, cycles gate ${m.avgGateFixCycles.mean ?? "n/a"} / review ${m.avgReviewCycles.mean ?? "n/a"}, ` +
       `time ${m.avgDurationSec.mean ?? "n/a"}s, cost/repeat $${(m.totalCostUsd.mean ?? 0).toFixed(2)}\n` +
       `summary: ${path.relative(process.cwd(), summaryMdPath)}`,
   );

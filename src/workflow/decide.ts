@@ -1,5 +1,6 @@
 import { isApproved } from "../agents/reviewer.js";
 import type { RunStatus } from "../schemas/report.js";
+import { cycleLimits } from "../schemas/task.js";
 import { describeIssues } from "../spec/openspec.js";
 import {
   MAX_SPEC_ATTEMPTS,
@@ -69,6 +70,18 @@ function guarded(s: RunStateValue, node: NodeName, nowMs: number): Decision {
 }
 
 /**
+ * A checkpoint written before the cycle-budget split has one shared `max_fix_cycles`. It is
+ * not reinterpreted as the new limits: such a run cannot route into another fix cycle.
+ */
+function legacyBudgetStop(): Decision {
+  return stop(
+    "error",
+    "run was recorded with the legacy budget (max_fix_cycles) and cannot start another fix " +
+      "cycle; re-run the task with max_gate_fix_cycles / max_review_cycles",
+  );
+}
+
+/**
  * The single routing rule of the workflow. Conditional edges call it to pick the next node;
  * the `report` node calls it again to record the final status, so no rule is duplicated.
  * Definitive outcomes (errors, success, exhausted fix cycles) are decided before limits.
@@ -82,7 +95,7 @@ export function decide(s: RunStateValue, nowMs: number): Decision {
       `spent $${s.spentUsd.toFixed(4)} > budget $${budget} after ${AGENT_NODES[s.lastNode as NodeName] ?? s.lastNode}`,
     );
   }
-  const maxCycles = s.task.budget.max_fix_cycles;
+  const limits = cycleLimits(s.task.budget);
 
   switch (s.lastNode as NodeName | "") {
     case "":
@@ -126,17 +139,28 @@ export function decide(s: RunStateValue, nowMs: number): Decision {
     case "gate":
       if (!s.gateResult) return stop("error", "quality gate produced no result");
       if (s.gateResult.passed) return guarded(s, "review", nowMs);
-      if (s.cycle >= maxCycles) {
-        return stop("gate_failed", `quality gate still failing after ${s.cycle} fix cycle(s)`);
+      if (!limits) return legacyBudgetStop();
+      if (s.gateFixCycles >= limits.gateFix) {
+        return stop(
+          "gate_failed",
+          `quality gate still failing after ${s.gateFixCycles} of ${limits.gateFix} gate fix cycle(s)`,
+        );
       }
       return guarded(s, "develop", nowMs);
     case "review":
       if (!s.reviewVerdict) return stop("error", "reviewer produced no verdict");
       if (isApproved(s.reviewVerdict)) {
-        return stop("success", `gate passed and reviewer approved after ${s.cycle} fix cycle(s)`);
+        return stop(
+          "success",
+          `gate passed and reviewer approved after ${s.gateFixCycles} gate fix and ${s.reviewCycles} review cycle(s)`,
+        );
       }
-      if (s.cycle >= maxCycles) {
-        return stop("review_rejected", `reviewer did not approve after ${s.cycle} fix cycle(s)`);
+      if (!limits) return legacyBudgetStop();
+      if (s.reviewCycles >= limits.review) {
+        return stop(
+          "review_rejected",
+          `reviewer did not approve after ${s.reviewCycles} of ${limits.review} review cycle(s)`,
+        );
       }
       return guarded(s, "develop", nowMs);
     // After the report the run outcome is fixed; merge routing uses routeAfterReport & co.

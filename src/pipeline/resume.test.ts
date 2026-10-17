@@ -10,6 +10,7 @@ import { Store } from "../store/store.js";
 import {
   appendingDeveloper,
   FAKE_APPROVE,
+  FAKE_REJECT,
   fakeConfig,
   fakeExec,
   fakePlanner,
@@ -39,7 +40,7 @@ afterAll(async () => {
 
 let n = 0;
 /** Starts a run in a child process that SIGKILLs itself inside `crashIn`. */
-async function crashRun(crashIn: "develop" | "gate") {
+async function crashRun(crashIn: "develop" | "gate" | "gate-after-review-fix") {
   const base = path.join(tmp, `case-${++n}`);
   const repo = await makeFakeRepo(path.join(base, "repo"));
   const args = {
@@ -164,6 +165,40 @@ describe("resume after a crash", () => {
         [2, "ok"],
       ]);
       expect(result.report.diff.split("+export const feature = 1;").length - 1).toBe(1);
+    } finally {
+      db.close();
+    }
+  }, 120_000);
+
+  it("killed after the first review rework → resume → reviewCycles = 1 restored, no extra rework", async () => {
+    const a = await crashRun("gate-after-review-fix");
+    expect(a.child.exitCode).toBeNull();
+    const db = openDb(a.dbPath);
+    const store = new Store(db);
+    try {
+      // Before the crash: one review rework, then killed inside the following gate.
+      expect(store.requireRun(a.runId)).toMatchObject({ review_cycles: 1, gate_fix_cycles: 0 });
+      expect(store.listSteps(a.runId).at(-1)).toMatchObject({ node: "gate", status: "running" });
+
+      // The reviewer still requests changes. With max_review_cycles = 1 already spent, the
+      // restored counter must end the run; a counter reset to 0 would call the developer again.
+      const runtime = new FakeRuntime({
+        planner: fakePlanner(),
+        developer: appendingDeveloper(LINE),
+        reviewer: fakeReviewer(FAKE_REJECT),
+      });
+      const res = await resumeRun(a.runId, resumeDeps(a, store, runtime));
+      if (res.kind !== "resumed") throw new Error("expected a resumed run");
+      const report = resultOf(res.outcome).report;
+      expect(report.status).toBe("review_rejected");
+      expect(report.message).toContain("after 1 of 1 review cycle(s)");
+      expect(runtime.rolesCalled()).toEqual(["reviewer"]);
+      expect(store.requireRun(a.runId)).toMatchObject({
+        status: "review_rejected",
+        review_cycles: 1,
+        gate_fix_cycles: 0,
+        fix_cycles: 1,
+      });
     } finally {
       db.close();
     }

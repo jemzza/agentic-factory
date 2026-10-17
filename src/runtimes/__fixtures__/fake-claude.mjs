@@ -61,6 +61,11 @@ switch (mode) {
   case "malformed-result":
     out({ type: "result", subtype: "success" }); // is_error missing
     break;
+  case "network-down":
+    // Synthetic (no live sample recorded): the API is unreachable, so no result event is written.
+    process.stderr.write("Error: connect ECONNREFUSED 160.79.104.10:443\n");
+    process.exit(1);
+    break;
   case "crash":
     process.stderr.write("Error: something exploded\n");
     process.exit(3);
