@@ -3,7 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseStreamJson } from "./claude-code.js";
-import { exitIsProviderUnavailable, resultIsProviderUnavailable } from "./provider-errors.js";
+import {
+  exitIsProviderUnavailable,
+  resultIsProviderUnavailable,
+  timeoutIsProviderUnavailable,
+} from "./provider-errors.js";
 
 const LIVE = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -38,6 +42,37 @@ describe("provider unavailable: recorded Claude Code 2.1.300 output", () => {
     expect(resultIsProviderUnavailable({ is_error: false, result: "hit your session limit" })).toBe(
       false,
     );
+  });
+});
+
+const LIVE_RETRY = path.join(path.dirname(LIVE), "live-api-retry-timeout-2.1.300.json");
+
+describe("timeout with only api_retry events (recorded Claude Code 2.1.300)", () => {
+  async function recordedLines(): Promise<string[]> {
+    const live = JSON.parse(await readFile(LIVE_RETRY, "utf8")) as { events: unknown[] };
+    return live.events.map((e) => JSON.stringify(e));
+  }
+
+  it("classifies the recorded init + api_retry log as provider unavailable", async () => {
+    const lines = await recordedLines();
+    expect(lines).toHaveLength(10);
+    expect(timeoutIsProviderUnavailable(lines.join("\n") + "\n")).toBe(true);
+    // A last line cut off by the kill does not change the verdict.
+    expect(timeoutIsProviderUnavailable([...lines, '{"type":"system","subt'].join("\n"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps a timeout with any model output, or without retries, a plain timeout", async () => {
+    const lines = await recordedLines();
+    const assistant = JSON.stringify({ type: "assistant", message: { content: [] } });
+    const result = JSON.stringify({ type: "result", subtype: "success", is_error: false });
+    const other = JSON.stringify({ type: "system", subtype: "task_started" });
+    expect(timeoutIsProviderUnavailable([...lines, assistant].join("\n"))).toBe(false);
+    expect(timeoutIsProviderUnavailable([...lines, result].join("\n"))).toBe(false);
+    expect(timeoutIsProviderUnavailable([...lines, other].join("\n"))).toBe(false);
+    expect(timeoutIsProviderUnavailable(lines[0] ?? "")).toBe(false); // init only
+    expect(timeoutIsProviderUnavailable("")).toBe(false);
   });
 });
 

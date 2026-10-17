@@ -1,0 +1,113 @@
+{
+  "_note": "Recorded stream-json log of a reviewer step (Claude Code 2.1.300, eval-20261017-095351 r2, due-date, 2026-10-17): the API never answered, only api_retry events were written, then the factory's 300 s step timeout killed the process (no result event). The init event is trimmed to a few fields; the api_retry events are unchanged.",
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "tools": ["Glob", "Grep", "Read", "StructuredOutput"],
+      "model": "claude-opus-5-5",
+      "permissionMode": "dontAsk",
+      "claude_code_version": "2.1.300"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 1,
+      "max_retries": 10,
+      "retry_delay_ms": 621,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "091ab8f8-c40e-4469-b665-26fe5b732c1e"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 2,
+      "max_retries": 10,
+      "retry_delay_ms": 1081,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "268f26b0-f4f7-472a-aba1-05050280e5f0"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 3,
+      "max_retries": 10,
+      "retry_delay_ms": 2096,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "b0d8945d-7c4f-466a-816b-0276fa48ea6d"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 4,
+      "max_retries": 10,
+      "retry_delay_ms": 4096,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "08039f10-5f55-4da3-90d1-62deb9023ebf"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 5,
+      "max_retries": 10,
+      "retry_delay_ms": 8612,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "6db8a40a-fd3b-4e91-a136-5c140e1aa684"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 6,
+      "max_retries": 10,
+      "retry_delay_ms": 19381,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "6e5c5cff-6243-466c-999c-d32bd673e82b"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 7,
+      "max_retries": 10,
+      "retry_delay_ms": 32116,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "dee7c3b5-c5ec-4730-9eff-854ba9a40f82"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 8,
+      "max_retries": 10,
+      "retry_delay_ms": 36853,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "755bb83e-bd25-4cb2-8694-9cb1ae791cec"
+    },
+    {
+      "type": "system",
+      "subtype": "api_retry",
+      "attempt": 9,
+      "max_retries": 10,
+      "retry_delay_ms": 32513,
+      "error_status": null,
+      "error": "unknown",
+      "session_id": "6aece025-b414-4e29-8dec-3035d4de5c21",
+      "uuid": "0511ebe6-c89f-42f8-859d-74174ff78575"
+    }
+  ]
+}

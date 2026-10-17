@@ -2,7 +2,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { runCommand, type CommandResult } from "../process/run-command.js";
-import { exitIsProviderUnavailable, resultIsProviderUnavailable } from "./provider-errors.js";
+import {
+  exitIsProviderUnavailable,
+  resultIsProviderUnavailable,
+  timeoutIsProviderUnavailable,
+} from "./provider-errors.js";
 import { assertToolsAllowed, parseToolEntry, SECRET_PATH_PATTERNS } from "./tool-policy.js";
 import type {
   AgentRole,
@@ -19,7 +23,8 @@ import type {
  *   claude -p --output-format stream-json --verbose ...      prompt on stdin
  *
  * stdout is JSON Lines. Events include {type:"system",subtype:"init"}, assistant/user
- * messages, {type:"system",subtype:"permission_denied"}, and exactly one
+ * messages, {type:"system",subtype:"permission_denied"}, {type:"system",subtype:"api_retry"}
+ * (the API did not answer yet; format in provider-errors.ts), and exactly one
  * {type:"result", ...} which is NOT necessarily the last line (a trailing
  * {type:"system",subtype:"task_summary"} may follow). The result event carries:
  *   subtype: "success" | "error_max_budget_usd" | "error_max_turns" | "error_during_execution" | ...
@@ -237,7 +242,16 @@ export function interpretRun(
     error: { kind, message },
   });
 
-  if (proc.timedOut) return fail("timeout", `agent did not finish within ${input.timeoutMs} ms`);
+  if (proc.timedOut) {
+    // Only init + api_retry events before the kill: the API never answered (see provider-errors.ts).
+    if (timeoutIsProviderUnavailable(proc.stdout)) {
+      return fail(
+        "infra",
+        `provider unavailable: API never answered (only api_retry events) within ${input.timeoutMs} ms`,
+      );
+    }
+    return fail("timeout", `agent did not finish within ${input.timeoutMs} ms`);
+  }
   if (proc.spawnError !== undefined)
     return fail("process", `failed to start agent: ${proc.spawnError}`);
   if (parse.kind === "invalid") return fail("parse", parse.message);
