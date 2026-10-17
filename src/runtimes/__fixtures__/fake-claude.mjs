@@ -122,6 +122,32 @@ switch (mode) {
     out(result({}));
     process.exit(2);
     break;
+  case "api-retry-hang": {
+    // Shape recorded live (Claude Code 2.1.300): the API never answers, the CLI only writes
+    // retry notices until the factory's step timeout kills it. No assistant output, no result.
+    const retry = (attempt) =>
+      out({
+        type: "system",
+        subtype: "api_retry",
+        attempt,
+        max_retries: 10,
+        retry_delay_ms: 100 * 2 ** attempt,
+        error_status: null,
+        error: "unknown",
+      });
+    retry(1);
+    retry(2);
+    let attempt = 2;
+    setInterval(() => retry(++attempt), 200);
+    break;
+  }
+  case "work-then-hang":
+    // A retry that then succeeded, real model output and a tool call, then the agent hangs.
+    out({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, error: "unknown" });
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Reading files" }] } });
+    out({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } });
+    setInterval(() => {}, 1000);
+    break;
   case "hang": {
     // Spawns a grandchild (like an agent running `npm test`) and hangs forever.
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {

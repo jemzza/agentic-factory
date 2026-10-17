@@ -278,6 +278,17 @@ describe("ClaudeCodeRuntime (fake process)", () => {
     expect(() => process.kill(pid, 0)).toThrow();
   });
 
+  it("reports a timeout with only api_retry events (API never answered) as infra", async () => {
+    const res = await runtime("api-retry-hang").run(input({ timeoutMs: 1_000 }));
+    expect(res).toMatchObject({ ok: false, error: { kind: "infra" } });
+    expect(res.error?.message).toMatch(/api_retry/);
+  });
+
+  it("keeps a timeout after real model output a timeout, even after a retry", async () => {
+    const res = await runtime("work-then-hang").run(input({ timeoutMs: 1_000 }));
+    expect(res).toMatchObject({ ok: false, error: { kind: "timeout" } });
+  });
+
   it("reports a missing binary as a process error", async () => {
     const rt = new ClaudeCodeRuntime({ bin: "/nonexistent/claude", logDir: tmp });
     const res = await rt.run(input());

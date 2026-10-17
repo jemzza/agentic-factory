@@ -66,3 +66,37 @@ export function resultIsProviderUnavailable(event: ResultErrorFields): boolean {
 export function exitIsProviderUnavailable(exitCode: number | null, stderr: string): boolean {
   return exitCode !== 0 && UNAVAILABLE_STDERR.some((re) => re.test(stderr));
 }
+
+/*
+ * A step timeout during which the API never answered. Recorded evidence (Claude Code 2.1.300,
+ * 2026-10-17, src/runtimes/__fixtures__/live-api-retry-timeout-2.1.300.json): the stream-json
+ * log holds one {"type":"system","subtype":"init",...} line followed only by retry notices
+ *   {"type":"system","subtype":"api_retry","attempt":N,"max_retries":10,"retry_delay_ms":...,
+ *    "error_status":null,"error":"unknown","session_id":...,"uuid":...}
+ * and no assistant/user/result events; the factory's step timeout then killed the process.
+ * Any other event (assistant text, tool use, any other subtype) means the model did work, so
+ * the step stays a plain `timeout`. Lines that are not JSON objects (a line cut off by the
+ * kill) are skipped, like in parseStreamJson.
+ */
+const PRE_ANSWER_SUBTYPES: readonly string[] = ["init", "api_retry"];
+
+/** stdout of a timed-out run: only init + at least one api_retry event, nothing else. */
+export function timeoutIsProviderUnavailable(stdout: string): boolean {
+  let retries = 0;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof event !== "object" || event === null) return false;
+    const { type, subtype } = event as { type?: unknown; subtype?: unknown };
+    if (type !== "system" || typeof subtype !== "string") return false;
+    if (!PRE_ANSWER_SUBTYPES.includes(subtype)) return false;
+    if (subtype === "api_retry") retries++;
+  }
+  return retries > 0;
+}
