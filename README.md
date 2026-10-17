@@ -20,6 +20,7 @@ Takes a development task against a target repository and drives it to a **verifi
 > gate, separate gate and review fix budgets, and a first-pass metric. Results:
 > [docs/week2-results.md](docs/week2-results.md),
 > [docs/cycles-budget-results.md](docs/cycles-budget-results.md).
+> **Reviewing this repository? Start with [docs/showcase/README.md](docs/showcase/README.md).**
 
 ## Architecture
 
