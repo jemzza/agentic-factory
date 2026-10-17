@@ -180,6 +180,8 @@ export const EvalSummarySchema = z.strictObject({
     .default(null),
   /** Spent on attempts that ended in infra_error and were replaced by a resume. */
   replacedCostUsd: z.number().nonnegative().default(0),
+  /** Tasks whose attempt ended in infra_error and was replaced by a resume (one per attempt). */
+  replacedInfraTasks: z.array(z.string()).default([]),
   /** Factory git commit that ran this pass (`-dirty` with uncommitted changes); null before it was recorded. */
   factoryCommit: z.string().nullable().default(null),
 });
@@ -314,12 +316,17 @@ export async function runEval(
     (prev?.tasks ?? [])
       .filter((t) => t.outcome === "infra_error")
       .reduce((s, t) => s + t.costUsd, 0);
+  const replacedInfraTasks = [
+    ...(prev?.replacedInfraTasks ?? []),
+    ...(prev?.tasks ?? []).filter((t) => t.outcome === "infra_error").map((t) => t.taskId),
+  ];
   const cap = { capUsd: deps.costCapUsd, reached: false, skippedTasks: [] as string[] };
   let interrupted: EvalSummary["interrupted"] = null;
   const summarize = () =>
     buildSummary(evalId, started, now(), deps, results, cap, {
       interrupted,
       replacedCostUsd,
+      replacedInfraTasks,
       factoryCommit,
     });
   for (const [i, { task, meta }] of tasks.entries()) {
@@ -461,7 +468,10 @@ function buildSummary(
   deps: RunEvalDeps,
   results: EvalTaskResult[],
   cap: { capUsd: number | undefined; reached: boolean; skippedTasks: string[] },
-  extra: Pick<EvalSummary, "interrupted" | "replacedCostUsd" | "factoryCommit">,
+  extra: Pick<
+    EvalSummary,
+    "interrupted" | "replacedCostUsd" | "replacedInfraTasks" | "factoryCommit"
+  >,
 ): EvalSummary {
   return EvalSummarySchema.parse({
     schemaVersion: 1,

@@ -155,7 +155,7 @@ export function renderRepeatedMarkdown(r: RepeatedSummary): string {
         `| Average review cycles | ${fmt(r.metrics.avgReviewCycles, num)} |`,
         `| Average fix cycles, total | ${fmt(r.metrics.avgFixCycles, num)} |`,
         `| Stopped by the review limit (review_rejected / reviewed) | ${fmt(r.metrics.reviewLimitStopRate, pct)} |`,
-        `| Excluded: provider unavailable (infra_error), all repeats | ${r.repeats.reduce((n, p) => n + p.metrics.excludedInfra, 0)} task attempt(s) |`,
+        `| Excluded: provider unavailable (infra_error), all repeats | ${r.repeats.reduce((n, p) => n + p.metrics.excludedInfra + p.replacedInfraTasks.length, 0)} task attempt(s) |`,
         `| Average time per task | ${fmt(r.metrics.avgDurationSec, sec)} |`,
         `| Cost per repeat | ${fmt(r.metrics.totalCostUsd, usd)} |`,
       ].join("\n"),

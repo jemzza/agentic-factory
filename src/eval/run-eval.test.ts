@@ -494,8 +494,12 @@ describe("runEval", () => {
       startedAt: first.summary.startedAt,
       factoryCommit: "abc123",
       replacedCostUsd: 0.25, // the attempt of b that hit the limit
+      replacedInfraTasks: ["b"], // the infra_error stays visible after the resume replaced it
     });
     expect(resumed.summary.metrics).toMatchObject({ total: 4, excludedInfra: 0 });
+    expect(await readFile(path.join(evalDir, "summary.md"), "utf8")).toContain(
+      "| Excluded: provider unavailable (infra_error) | 0 task(s) still pending; 1 attempt(s) replaced by a resume (`b`)",
+    );
   });
 
   it("stops at the eval cost cap and keeps partial results", async () => {

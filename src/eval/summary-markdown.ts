@@ -61,7 +61,7 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       `| Average time per task | ${m.avgDurationSec.toFixed(1)}s |`,
       `| Total cost | $${m.totalCostUsd.toFixed(3)}${m.unknownCostSteps ? ` (+${m.unknownCostSteps} step(s) with unknown cost)` : ""} |`,
       `| Hidden-test files found in agent worktrees | ${m.hiddenLeaks} |`,
-      `| Excluded: provider unavailable (infra_error) | ${m.excludedInfra} task(s)${s.replacedCostUsd ? `; $${s.replacedCostUsd.toFixed(3)} spent on attempts replaced by a resume` : ""} |`,
+      `| Excluded: provider unavailable (infra_error) | ${m.excludedInfra} task(s) still pending${s.replacedInfraTasks.length ? `; ${s.replacedInfraTasks.length} attempt(s) replaced by a resume (${s.replacedInfraTasks.map((t) => `\`${t}\``).join(", ")})` : ""}${s.replacedCostUsd ? `; $${s.replacedCostUsd.toFixed(3)} spent on replaced attempts` : ""} |`,
       `| Outcomes | ${Object.entries(m.byOutcome)
         .map(([k, v]) => `${k}: ${v}`)
         .join(", ")} |`,

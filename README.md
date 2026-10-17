@@ -8,14 +8,18 @@ Takes a development task against a target repository and drives it to a **verifi
 3. **Developer** — implements the approved spec in an isolated git worktree.
 4. **Quality Gate** — typecheck and tests run by the factory (not the agent) in a Docker
    sandbox with `--network none`, plus scope and spec-immutability checks of the diff.
-5. **Reviewer** — independent read-only review, by a model from **another vendor**
-   (OpenCode), of the diff against the spec and the acceptance criteria.
+5. **Reviewer** — read-only review of the diff against the spec and the acceptance criteria.
+   The architecture intends a model from **another vendor** (OpenCode). **Currently every role,
+   the reviewer included, is Claude Code Opus 5.5**: the OpenCode reviewer is disabled by the
+   project owner's decision, so the review is less independent than designed.
 6. **Report**, then **merge approval** — a human merges or closes; the gate re-runs on the
    merge result before `main` moves. Nothing is ever merged automatically.
 
-> Status: Week 2 — the loop is a LangGraph.js state graph with SQLite checkpoints (resume
-> after a crash), OpenSpec specs with an approval gate, a merge gate, and OpenCode as the
-> independent reviewer. Week 2 results: [docs/week2-results.md](docs/week2-results.md).
+> Status: Week 2 + the cycle-budget correction. The loop is a LangGraph.js state graph with
+> SQLite checkpoints (resume after a crash), OpenSpec specs with an approval gate, a merge
+> gate, separate gate and review fix budgets, and a first-pass metric. Results:
+> [docs/week2-results.md](docs/week2-results.md),
+> [docs/cycles-budget-results.md](docs/cycles-budget-results.md).
 
 ## Architecture
 
@@ -70,7 +74,7 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
 ### Statuses and limits
 
 `needs_clarification` · `gate_failed` · `review_rejected` · `timeout` · `budget_exceeded` ·
-`error` · `infra_error` (terminal; the model provider was unavailable — excluded from eval metrics) · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
+`error` · `infra_error` · `awaiting_spec_approval` · `awaiting_merge_approval` → `merged` |
 `closed`. Every step has a timeout capped by the task deadline; each agent call gets only the
 remaining budget; at most `max_gate_fix_cycles` (default 2) gate→develop and, separately,
 `max_review_cycles` (default 1) review→develop cycles (each ≤ 2); at most 2 spec
@@ -78,11 +82,44 @@ rejections and one spec repair attempt. A run reaches `awaiting_merge_approval` 
 sandboxed checks exit 0 and the reviewer's structured verdict approves with every criterion
 met. In eval, that success claim is checked by hidden tests: `verified` or `false_success`.
 
+**Cycle budgets** (`budget` in `task.yaml`; defaults and the cap are defined once in
+`src/schemas/task.ts`):
+
+```yaml
+budget:
+  max_gate_fix_cycles: 2 # reworks after a failed gate (typecheck, tests, scope, policies)
+  max_review_cycles: 1 # reworks after reviewer request_changes
+  max_cost_usd: 1.0
+  timeout_minutes: 15
+```
+
+The two counters (`gateFixCycles`, `reviewCycles`) are independent graph state: they are
+checkpointed and restored on resume, and each is checked on its own edge in `decide()`. A
+rework after review goes through the gate again, and a gate failure there spends the gate
+budget. The developer is told which case it is in (`gate_failure` with the failing command
+output, or `review_feedback` with the reviewer's findings). Cost and active-time limits apply
+on top: whichever is reached first stops the run. Spec rejections have their own limit. The
+legacy shared `max_fix_cycles` is rejected with an error that names the new fields.
+
+**`infra_error`**: the model provider refused or did not answer the call (subscription usage
+limit, API rate limit, overload, unreachable API). It is detected in
+`src/runtimes/provider-errors.ts`, the one place for these patterns, which is tested on
+recorded CLI output. It is not a factory result: it is excluded from every quality metric and
+shown on its own line, and the eval stops and keeps its partial results. Continue with
+`npm run eval -- --resume <evalId>` after the limit resets; tasks already decided are not
+re-run.
+
+**First-pass rate**: the share of tasks that are `verified` by the hidden tests with 0 gate fix
+cycles and 0 review cycles. The denominator is the tasks whose correct outcome is an
+implementation. Contradictory tasks (correct outcome `needs_clarification`) are shown on their
+own line, and `infra_error` is excluded. Human spec rejections do not count; they are recorded
+as `specRevisions`.
+
 ## How to run
 
 ```bash
 npm ci
-cp .env.example .env          # OPENAI_API_KEY for the OpenCode reviewer; optional paths
+cp .env.example .env          # optional paths; OPENAI_API_KEY only if the OpenCode reviewer is re-enabled
 claude auth status            # the Claude Code CLI must be logged in
 ```
 
@@ -109,9 +146,10 @@ claude auth status            # the Claude Code CLI must be logged in
 roles: {
   planner:   { runtime: "claude-code", model: "opus" },
   developer: { runtime: "claude-code", model: "opus" },
-  reviewer:  { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
+  reviewer:  { runtime: "claude-code", model: "opus" },   // OpenCode reviewer disabled
+  // to re-enable: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] }
 },
-reviewEval: { reviewers: [/* reviewers compared by eval:review */] },
+reviewEval: { reviewers: [{ runtime: "claude-code", model: "opus" }] },
 secretEnv: ["OPENAI_API_KEY", /* … */],   // never passed to Claude Code or the sandbox
 evalCostCapUsd: 10,                       // shared by all repeats of one eval
 ```
@@ -122,26 +160,24 @@ every `keyEnv` must also be listed in `secretEnv`.
 
 ## Latest metrics
 
-Week 2 pipeline (spec → develop → gate → review, stopping at the merge gate) on TaskFlow,
-10 tasks, planner and developer Claude Code Opus, 2026-10-16. **Each configuration ran once**
-(Sol has a partial second repeat, 4/10 tasks, with identical outcomes); 9/10 vs 10/10 is one
-task and is not evidence that one reviewer is better.
+Cycle-budget correction, `eval-20261017-095351`: TaskFlow, 10 tasks × 3 repeats, every role
+Claude Code Opus 5.5, 2026-10-17. Mean ± sample stdev. Details:
+[docs/cycles-budget-results.md](docs/cycles-budget-results.md).
 
-| Metric                    | **Sol reviewer** (default; OpenCode `openai/gpt-6.1-sol`) | Opus reviewer (Claude Code) | Week 1 baseline |
-| ------------------------- | --------------------------------------------------------- | --------------------------- | --------------- |
-| Verified rate             | 90% (9/10)                                                | 100% (10/10)                | 100% (10/10)    |
-| False success rate        | 0% (0/8)                                                  | 0% (0/9)                    | 0% (0/9)        |
-| Avg fix cycles            | 0.44                                                      | 0                           | 0               |
-| Avg time per task         | 158.3s                                                    | 119.1s                      | 147.1s          |
-| Total cost                | $6.03                                                     | $5.82                       | $5.29           |
-| Hidden files in worktrees | 0                                                         | 0                           | 0               |
+| Metric                       | After the correction (3 repeats)        | Week 2, Opus reviewer (1 run) |
+| ---------------------------- | --------------------------------------- | ----------------------------- |
+| First-pass rate              | 96.3% ± 6.4% (denominator 9 per repeat) | 100% (9/9)                    |
+| Verified rate                | 96.7% ± 5.8%                            | 100% (10/10)                  |
+| False success rate           | 0% ± 0%                                 | 0% (0/9)                      |
+| Avg gate fix / review cycles | 0.00 / 0.00                             | 0 (total only)                |
+| Stopped by the review limit  | 0 of 27                                 | —                             |
+| infra_error                  | 1 attempt, replaced by `--resume`       | — (recorded as `error`)       |
+| Cost per repeat              | $5.98 ± $0.38                           | $5.82                         |
 
-The reviewer is chosen by `npm run eval:review` (planted defects): both reviewers have 100%
-recall; Sol is from another vendor and ~3× cheaper per review, and caught a TaskFlow convention
-violation Opus approved. Sol loses `bulk-status` systematically (in both repeats) by demanding
-atomicity under repository failures — the target of the next correction (reviewer
-calibration). Details, caveats (the baseline commit changed in Phase 4) and spend:
-[docs/week2-results.md](docs/week2-results.md).
+The only incorrect outcome (r2 `due-date`, `timeout`) was a provider outage: the reviewer's log
+has only `api_retry` events and no model output. The current patterns do not classify that
+case as `infra_error`. The review limit never engaged, so `max_review_cycles` stays 1. The
+Sol-vs-Opus reviewer comparison from Week 2 is in [docs/week2-results.md](docs/week2-results.md).
 
 ## Security model
 
@@ -164,7 +200,7 @@ Docker container with:
 
 The image build itself needs network (base image pull, `npm ci`). Checks never do.
 
-### OpenCode reviewer (`src/runtimes/opencode.ts`)
+### OpenCode reviewer (`src/runtimes/opencode.ts`) — implemented, currently disabled
 
 - Read-only roles only: the runtime refuses the developer role, and `OPENCODE_PERMISSION`
   denies every tool except `read`, `grep`, `glob`, `list` (and `external_directory`). Without
@@ -222,7 +258,8 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - Git ≥ 2.40
 - Docker (daemon running)
 - Claude Code CLI (`claude`), authenticated
-- `OPENAI_API_KEY` in `.env` for the OpenCode reviewer (OpenCode itself is an npm dependency)
+- `OPENAI_API_KEY` in `.env` only if the OpenCode reviewer is re-enabled (OpenCode itself is an
+  npm dependency)
 
 ## Development
 

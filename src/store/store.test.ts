@@ -261,8 +261,14 @@ describe("migrations", () => {
       const s = new Store(copy);
       const rows = s.listRuns({ limit: 100_000 });
       expect(rows).toHaveLength(before.runs);
+      // The real database may already be migrated (openDb applies migrations); runs recorded
+      // before 004 must never get an invented first_pass.
+      const applied = copy
+        .prepare("SELECT applied_at FROM schema_migrations WHERE version = 4")
+        .pluck()
+        .get() as string;
       for (const r of rows) {
-        expect(r.first_pass).toBeNull();
+        if (r.started_at < applied) expect(r.first_pass).toBeNull();
         if (r.gate_fix_cycles !== null && r.review_cycles !== null) {
           expect(r.gate_fix_cycles + r.review_cycles).toBe(r.fix_cycles);
         }
