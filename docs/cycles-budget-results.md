@@ -53,12 +53,15 @@ In r2, `due-date` ended `timeout`: the reviewer step reached its 300 s step time
 and no model output at all. The API never answered, so this is a provider failure, not a
 factory failure. The planner and developer of that run had succeeded, and the gate had passed.
 
-The current patterns do not recognise this case: the step ended on the factory's timeout, not
-on an API error result. It therefore counts as a quality outcome. It is the only reason r2 has
+The code that ran this measurement (`bb50b61`) did not recognise this case: the step ended on
+the factory's timeout, not on an API error result. It therefore counts as a quality outcome. It is the only reason r2 has
 9/10 verified and 8/9 first-pass. With it removed, all three repeats would be 100%. These
 metrics are reported **as the system computed them**; nothing here is adjusted by hand.
-Classifying a timeout whose log has only `api_retry` events and no model output as
-`infra_error` is a proposed follow-up. It needs a decision and is not part of this change.
+**Fixed after the measurement in `421b588`** (merged into `main` on 2026-10-18): a timeout
+whose log has only `api_retry` events and no model output is now `infra_error`, and this log is
+the recorded test fixture. The metrics in this document come from `bb50b61` and were **not**
+recomputed or re-run; with the new code, this attempt would be excluded and re-run by
+`--resume`.
 
 ### Other observations
 

@@ -175,8 +175,9 @@ Claude Code Opus 5.5, 2026-10-17. Mean ± sample stdev. Details:
 | Cost per repeat              | $5.98 ± $0.38                           | $5.82                         |
 
 The only incorrect outcome (r2 `due-date`, `timeout`) was a provider outage: the reviewer's log
-has only `api_retry` events and no model output. The current patterns do not classify that
-case as `infra_error`. The review limit never engaged, so `max_review_cycles` stays 1. The
+has only `api_retry` events and no model output. The measured code (`bb50b61`) counted it as
+`timeout`; since `421b588` such a timeout is classified as `infra_error`. The metrics above
+were not recomputed. The review limit never engaged, so `max_review_cycles` stays 1. The
 Sol-vs-Opus reviewer comparison from Week 2 is in [docs/week2-results.md](docs/week2-results.md).
 
 ## Security model
