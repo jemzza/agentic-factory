@@ -445,6 +445,27 @@ describe("runEval", () => {
     });
   });
 
+  it("judges a run that finished without the merge gate even if it carries RunOutcome's kind", async () => {
+    // Regression (final block, eval-20261018-105434): a needs_clarification run came back as
+    // { kind: "finished", report, ... } and was read as an EvalRunOutcome → "pipeline crashed".
+    const wt = path.join(tmp, "clarify-wt");
+    await mkdir(wt, { recursive: true });
+    const { summary } = await runEval(
+      [{ task: TASK("clarify"), meta: META("needs_clarification") }],
+      {
+        runsDir: tmp,
+        runtimeName: "fake",
+        models: {},
+        runTask: async (task, runsDir) => ({
+          kind: "finished",
+          ...(await fakeRun(task, runsDir, "needs_clarification", wt)),
+        }),
+        runHidden: () => Promise.reject(new Error("not called")),
+      },
+    );
+    expect(summary.tasks[0]).toMatchObject({ outcome: "needs_clarification", correct: true });
+  });
+
   it("detects hidden test files left in an agent worktree", async () => {
     const wt = path.join(tmp, "leaky");
     await mkdir(path.join(wt, "tests", "__hidden__"), { recursive: true });

@@ -304,6 +304,11 @@ export type EvalRunOutcome =
   | { kind: "done"; result: RunTaskResult }
   | { kind: "paused"; runId: string; reason: string; spentUsd: number };
 
+function isEvalRunOutcome(x: RunTaskResult | EvalRunOutcome): x is EvalRunOutcome {
+  const kind = (x as { kind?: unknown }).kind;
+  return kind === "paused" || kind === "done";
+}
+
 export interface PoolStatus {
   running: number;
   done: number;
@@ -542,7 +547,10 @@ export async function runEval(
         before && deps.resumeTask
           ? await deps.resumeTask(before.runId, evalDir, ctl)
           : await deps.runTask(task, evalDir, ctl);
-      const out: EvalRunOutcome = "kind" in raw ? raw : { kind: "done", result: raw };
+      // Only "paused" and "done" are EvalRunOutcomes. Anything else is a finished run, even if
+      // it carries another `kind` (RunOutcome's "finished"): reading it as an outcome crashed
+      // every run that ended without the merge gate (needs_clarification, gate_failed, ...).
+      const out: EvalRunOutcome = isEvalRunOutcome(raw) ? raw : { kind: "done", result: raw };
       if (out.kind === "paused") {
         pool.charge(out.spentUsd - pool.spentBy(ctl.runId) - (before?.spentUsd ?? 0), ctl.runId);
         paused.push({

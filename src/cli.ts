@@ -539,7 +539,14 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   // Eval approves specs automatically and never merges: a successful run stops at the merge
   // gate with its report written.
   const evalOutcome = (outcome: RunOutcome): RunTaskResult | EvalRunOutcome => {
-    if (outcome.kind === "finished") return outcome;
+    if (outcome.kind === "finished") {
+      // A RunTaskResult, not an EvalRunOutcome (whose kinds are "done" and "paused").
+      return {
+        report: outcome.report,
+        reportJsonPath: outcome.reportJsonPath,
+        reportMdPath: outcome.reportMdPath,
+      };
+    }
     if (outcome.kind === "paused") {
       return {
         kind: "paused",
