@@ -137,6 +137,7 @@ claude auth status            # the Claude Code CLI must be logged in
 | `npm run eval -- --resume <evalId> [--repeat N]`              | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
 | `npm run eval:review [-- --only <runtime>]`                   | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
 | `npm run verify-hidden [-- <taskId>]`                         | Hidden tests fail on baseline and pass on reference patches                            |
+| `npm run eval:rescore -- <evalId>`                            | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)   |
 | `npm run baseline:update -- --reason "…"`                     | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
 | `npm run reopen-merge -- <runId>`                             | One-time: put a pre-merge-gate success run at the merge gate                           |
 | `npm run db:import`                                           | Import Week 1 run reports from `runs/` into the database                               |
