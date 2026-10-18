@@ -46,7 +46,7 @@ import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { loadReviewCases, verifyManifest } from "./eval/review-cases.js";
 import { renderReviewEvalMarkdown, runReviewEval } from "./eval/review-eval.js";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { git } from "./git/git.js";
 import { createRedactor, secretsFromEnv } from "./store/redact.js";
@@ -54,6 +54,8 @@ import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import {
   loadPairs,
   MEMORY_EVAL_DIRS,
+  MemoryAbProgressSchema,
+  type MemoryAbProgress,
   runMemoryAb,
   verifyMemoryManifest,
   writeMemoryAb,
@@ -784,15 +786,33 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
   const exec = await defaultSandboxExec(repo.dir, sandboxProfile(baselineProject));
   const { runtime, runtimes } = runtimeDeps(config);
   const store = openStore(config);
-  const evalId = makeEvalId(new Date()).replace(/^eval-/, "memeval-");
+  const evalId = cmd.resume ?? makeEvalId(new Date()).replace(/^eval-/, "memeval-");
   const outDir = path.join(RUNS_DIR, evalId);
-  store.createEval({
-    id: evalId,
-    repeatCount: cmd.repeat,
-    baselineCommit: repo.baseCommit,
-    costCapUsd,
-    projectId: stand.project.id,
-  });
+  const progressFile = path.join(outDir, "progress.json");
+  let progress: MemoryAbProgress | undefined;
+  if (cmd.resume) {
+    try {
+      progress = MemoryAbProgressSchema.parse(
+        JSON.parse(await readFile(progressFile, "utf8")) as unknown,
+      );
+    } catch (err) {
+      console.error(
+        `Cannot resume ${evalId}: ${progressFile} (${err instanceof Error ? err.message : String(err)})`,
+      );
+      store.db.close();
+      return 2;
+    }
+    store.resumeEval(evalId);
+  } else {
+    store.createEval({
+      id: evalId,
+      repeatCount: cmd.repeat,
+      baselineCommit: repo.baseCommit,
+      costCapUsd,
+      projectId: stand.project.id,
+    });
+  }
+  await mkdir(outDir, { recursive: true });
   console.log(
     `Memory A/B ${evalId}: ${pairs.length} pair(s), A once + B ×${cmd.repeat} per condition; cost cap $${costCapUsd}; embedder ${embedModelId(config.memory.embedder)}`,
   );
@@ -837,6 +857,8 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
       repeats: cmd.repeat,
       namespace: evalId,
       costCapUsd,
+      ...(progress ? { progress } : {}),
+      saveProgress: (p) => writeFile(progressFile, JSON.stringify(p, null, 2)),
       loadTask: (id: string): Promise<TaskSpec> => loadTaskSpec(id, MEMORY_EVAL_DIRS),
       memory: async () => {
         const access = await openMemory(config, store, { force: true, required: true });
@@ -880,6 +902,11 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
     console.log(
       `\n${summary.status}${summary.reason ? `: ${summary.reason}` : ""}\nsummary: ${path.relative(process.cwd(), md)}`,
     );
+    if (summary.status !== "completed") {
+      console.log(
+        `Whole pairs are kept; an interrupted pair is redone. Continue with:\n  npm run eval:memory -- --resume ${evalId}`,
+      );
+    }
     return summary.status === "completed" ? 0 : summary.status === "infra_error" ? 4 : 3;
   } finally {
     store.db.close();

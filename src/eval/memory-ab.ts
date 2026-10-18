@@ -163,14 +163,45 @@ export interface MemoryAbDeps {
   runHidden: (worktreePath: string, taskId: string) => Promise<HiddenTestResult>;
   /** No new run starts once A and B runs together have spent this much. */
   costCapUsd: number;
+  /** Progress of an earlier, stopped A/B with the same namespace (resume). */
+  progress?: MemoryAbProgress;
+  /** Called after every finished pair and before every pair attempt. */
+  saveProgress?: (p: MemoryAbProgress) => Promise<void>;
   log?: (m: string) => void;
 }
+
+/**
+ * What a stopped A/B keeps (runs/<id>/progress.json), so `--resume` does not pay twice. Only
+ * whole pairs count: a pair interrupted midway (e.g. by the subscription limit) is redone from
+ * its A in a fresh memory namespace (`-a<attempt>`), so a half-finished pair never mixes into
+ * the result. `spentUsd` includes the abandoned attempts.
+ */
+export const MemoryAbProgressSchema = z.strictObject({
+  version: z.literal(1),
+  completedPairs: z.array(z.string()),
+  attempts: z.record(z.string(), z.number().int().positive()),
+  results: z.array(BResultSchema),
+  lessonsStored: z.record(z.string(), z.number().int()),
+  spentUsd: z.number().nonnegative(),
+});
+export type MemoryAbProgress = z.infer<typeof MemoryAbProgressSchema>;
+
+export const emptyProgress = (): MemoryAbProgress => ({
+  version: 1,
+  completedPairs: [],
+  attempts: {},
+  results: [],
+  lessonsStored: {},
+  spentUsd: 0,
+});
 
 export interface MemoryAbSummary {
   status: "completed" | "infra_error" | "cost_cap_reached";
   reason: string | null;
-  /** A and B runs together. */
+  /** A and B runs together, abandoned pair attempts included. */
   totalCostUsd: number;
+  /** Attempts per pair (more than 1: the pair was restarted after an interruption). */
+  attempts: Record<string, number>;
   lessonsStored: Record<string, number>;
   results: BResult[];
   metrics: Record<Condition, ConditionMetrics>;
@@ -214,13 +245,19 @@ export const LESSON_PREFIX = "[lesson]";
 
 export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> {
   const log = deps.log ?? (() => undefined);
-  const results: BResult[] = [];
-  const lessonsStored: Record<string, number> = {};
-  let spent = 0;
+  const progress = structuredClone(deps.progress ?? emptyProgress());
+  const results = progress.results;
+  const lessonsStored = progress.lessonsStored;
+  let spent = progress.spentUsd;
+  const save = async () => {
+    progress.spentUsd = Math.round(spent * 1e4) / 1e4;
+    await deps.saveProgress?.(progress);
+  };
   const done = (status: MemoryAbSummary["status"], reason: string | null): MemoryAbSummary => ({
     status,
     reason,
     totalCostUsd: Math.round(spent * 1e4) / 1e4,
+    attempts: progress.attempts,
     lessonsStored,
     results,
     metrics: {
@@ -230,9 +267,8 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
   });
 
   const overCap = () => spent >= deps.costCapUsd;
-  const capped = () =>
-    done("cost_cap_reached", `cost cap $${deps.costCapUsd} reached after $${spent.toFixed(2)}`);
 
+  let pairResults: BResult[] = [];
   const judge = async (
     pair: Pair,
     condition: Condition,
@@ -250,7 +286,7 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
       gateFixCycles: r.gateFixCycles ?? null,
       reviewCycles: r.reviewCycles ?? null,
     };
-    results.push(
+    pairResults.push(
       BResultSchema.parse({
         pair: pair.id,
         condition,
@@ -272,38 +308,56 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
   };
 
   for (const pair of deps.pairs) {
+    if (progress.completedPairs.includes(pair.id)) {
+      log(`\n=== ${pair.id}: already done (resume) ===`);
+      continue;
+    }
     const a = await deps.loadTask(pair.a);
     const b = await deps.loadTask(pair.b);
+    const attempt = (progress.attempts[pair.id] ?? 0) + 1;
+    progress.attempts[pair.id] = attempt;
+    await save();
+    pairResults = [];
 
-    // memory_on: one A, then B with the lesson.
+    // memory_on: one A, then B with the lesson. A fresh namespace per attempt.
     const access = await deps.memory();
     if (!access.memory)
       return done("infra_error", `memory unavailable: ${access.unavailable ?? ""}`);
-    const ns = new NamespacedMemory(access.memory, `${deps.namespace}-${pair.id}`);
-    log(`\n=== ${pair.id}: A ${pair.a} (recorded rejection) ===`);
-    if (overCap()) return capped();
+    const ns = new NamespacedMemory(
+      access.memory,
+      `${deps.namespace}-${pair.id}-a${String(attempt)}`,
+    );
+    log(`\n=== ${pair.id} (attempt ${String(attempt)}): A ${pair.a} (recorded rejection) ===`);
+    const stop = async (status: MemoryAbSummary["status"], reason: string) => {
+      await save();
+      return done(status, reason);
+    };
+    if (overCap()) return stop("cost_cap_reached", `cost cap $${String(deps.costCapUsd)} reached`);
     const ra = await deps.runA(a, pair.reject_comment, { ...access, memory: ns, required: true });
     spent += ra.report.cost.totalUsd;
-    if (ra.report.status === "infra_error") return done("infra_error", ra.report.message);
-    lessonsStored[pair.id] = (await ns.list(ra.report.projectId ?? "")).filter(
+    if (ra.report.status === "infra_error") return stop("infra_error", ra.report.message);
+    const lessons = (await ns.list(ra.report.projectId ?? "")).filter(
       (m) => m.source === "spec_rejection_comment",
     ).length;
     const forB: MemoryAccess = { ...access, memory: ns.readOnlyView(), required: true };
-    for (let i = 1; i <= deps.repeats; i++) {
-      if (overCap()) return capped();
-      const rb = await deps.runB(b, forB);
-      spent += rb.report.cost.totalUsd;
-      if (rb.report.status === "infra_error") return done("infra_error", rb.report.message);
-      await judge(pair, "memory_on", i, rb, rb.report.memory?.used.length ?? 0);
+    for (const [condition, memory] of [
+      ["memory_on", forB],
+      ["memory_off", undefined],
+    ] as const) {
+      for (let i = 1; i <= deps.repeats; i++) {
+        if (overCap())
+          return stop("cost_cap_reached", `cost cap $${String(deps.costCapUsd)} reached`);
+        const rb = await deps.runB(b, memory);
+        spent += rb.report.cost.totalUsd;
+        if (rb.report.status === "infra_error") return stop("infra_error", rb.report.message);
+        await judge(pair, condition, i, rb, rb.report.memory?.used.length ?? 0);
+      }
     }
-    // memory_off: B alone.
-    for (let i = 1; i <= deps.repeats; i++) {
-      if (overCap()) return capped();
-      const rb = await deps.runB(b, undefined);
-      spent += rb.report.cost.totalUsd;
-      if (rb.report.status === "infra_error") return done("infra_error", rb.report.message);
-      await judge(pair, "memory_off", i, rb, 0);
-    }
+    // The pair is whole: only now does it enter the result.
+    results.push(...pairResults);
+    lessonsStored[pair.id] = lessons;
+    progress.completedPairs.push(pair.id);
+    await save();
   }
   return done("completed", null);
 }
@@ -324,6 +378,9 @@ export function renderMemoryAbMarkdown(id: string, s: MemoryAbSummary): string {
       "|---|---|---|---|---|---|---|",
       row("memory_on"),
       row("memory_off"),
+      `Pair attempts: ${Object.entries(s.attempts)
+        .map(([p, n]) => `${p} ×${String(n)}`)
+        .join(", ")} (more than 1: restarted after an interruption; only whole pairs count)`,
       "## Lessons stored by A",
       Object.entries(s.lessonsStored)
         .map(([p, n]) => `- ${p}: ${n}`)

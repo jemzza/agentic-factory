@@ -191,6 +191,11 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["eval-memory", "verify"])).toMatchObject({ action: "verify" });
     expect(parseCliArgs(["eval-memory", "freeze"])).toMatchObject({ action: "freeze" });
     expect(parseCliArgs(["eval-memory", "--repeat", "9"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval-memory", "--resume", "memeval-20261018-190000"])).toMatchObject({
+      action: "run",
+      resume: "memeval-20261018-190000",
+    });
+    expect(parseCliArgs(["eval-memory", "--resume", "../x"])).toMatchObject({ kind: "invalid" });
   });
 
   it("parses dashboard with an optional --port", () => {

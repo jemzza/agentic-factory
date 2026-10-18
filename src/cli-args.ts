@@ -28,6 +28,8 @@ export type CliCommand =
       action: "run" | "verify" | "freeze";
       repeat: number;
       costCapUsd: number | null;
+      /** Continue a stopped A/B (whole pairs kept, interrupted pairs redone). */
+      resume?: string;
     }
   | {
       kind: "eval";
@@ -72,6 +74,7 @@ export const USAGE = `Usage:
   npm run eval:review [-- --only <claude-code|opencode|pi>]
                                  Compare reviewers on evals/review/ (recall, false positive rate)
   npm run eval:memory [-- --repeat N] [-- --cost-cap USD]
+  npm run eval:memory -- --resume <memeval-id>   (after a subscription limit: whole pairs kept)
   npm run eval:memory -- verify | freeze
                                  Memory A/B on the frozen evals/memory/ pairs (A once with the
                                  recorded rejection, B N times with and without memory; needs
@@ -337,6 +340,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       }
       let repeat = 2;
       let costCapUsd: number | null = null;
+      let resume: string | undefined;
       for (let k = 0; k < rest.length; k++) {
         const a = rest[k];
         if (a === "--repeat" && /^[1-5]$/.test(rest[k + 1] ?? "")) repeat = Number(rest[++k]);
@@ -346,14 +350,23 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
             return { kind: "invalid", message: "eval-memory: --cost-cap expects USD in (0, 100]" };
           }
           costCapUsd = v;
+        } else if (a === "--resume" && /^memeval-\d{8}-\d{6}$/.test(rest[k + 1] ?? "")) {
+          resume = rest[++k];
         } else {
           return {
             kind: "invalid",
-            message: "eval-memory: expected verify, freeze, --repeat 1..5 or --cost-cap USD",
+            message:
+              "eval-memory: expected verify, freeze, --repeat 1..5, --cost-cap USD or --resume memeval-<ts>",
           };
         }
       }
-      return { kind: "eval-memory", action: "run", repeat, costCapUsd };
+      return {
+        kind: "eval-memory",
+        action: "run",
+        repeat,
+        costCapUsd,
+        ...(resume ? { resume } : {}),
+      };
     }
     case "eval-review": {
       if (rest.length === 0) return { kind: "eval-review", only: null };

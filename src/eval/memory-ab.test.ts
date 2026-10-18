@@ -15,6 +15,7 @@ import {
   runMemoryAb,
   verifyMemoryManifest,
   type MemoryAbDeps,
+  type MemoryAbProgress,
   type Pair,
 } from "./memory-ab.js";
 import { listHiddenTestFiles, loadEvalMeta, loadTaskSpec } from "./tasks.js";
@@ -163,7 +164,54 @@ describe("runMemoryAb", () => {
     const capped = deps(new InMemoryMemory(), { costCapUsd: 2 });
     const s = await runMemoryAb(capped.d);
     expect(s.status).toBe("cost_cap_reached");
-    expect(s.results).toHaveLength(1); // A ($1) + one B ($1), then the cap
+    expect(s.results).toEqual([]); // A ($1) + one B ($1), then the cap: the pair is not whole
+    expect(s.totalCostUsd).toBe(2);
+  });
+
+  it("resumes after an interruption: whole pairs kept, the interrupted pair redone in a fresh namespace", async () => {
+    const mem = new InMemoryMemory();
+    const P2: Pair = { ...PAIR, id: "p2", a: "task-c", b: "task-d" };
+    let limit = true;
+    let bRuns = 0;
+    const saved: MemoryAbProgress[] = [];
+    const first = deps(mem, {
+      pairs: [PAIR, P2],
+      saveProgress: (p) => {
+        saved.push(structuredClone(p));
+        return Promise.resolve();
+      },
+    });
+    const inner = first.d.runB;
+    first.d.runB = (task, m) => {
+      // The limit hits on the second pair's second B run.
+      if (task.id === "task-d" && ++bRuns === 2 && limit)
+        return Promise.resolve(result("infra_error"));
+      return inner(task, m);
+    };
+    const stopped = await runMemoryAb(first.d);
+    expect(stopped.status).toBe("infra_error");
+    expect(stopped.results.map((r) => r.pair)).toEqual(["p1", "p1", "p1", "p1"]);
+    const progress = saved.at(-1);
+    expect(progress).toMatchObject({ completedPairs: ["p1"], attempts: { p1: 1, p2: 1 } });
+
+    limit = false;
+    const namespaces: string[] = [];
+    const second = deps(mem, { pairs: [PAIR, P2], ...(progress ? { progress } : {}) });
+    const runA = second.d.runA;
+    second.d.runA = async (task, comment, m) => {
+      const r = await runA(task, comment, m);
+      namespaces.push(...(await mem.list("t~memeval-1-p2-a2")).map((x) => x.text));
+      return r;
+    };
+    const resumed = await runMemoryAb(second.d);
+    expect(resumed.status).toBe("completed");
+    expect(second.calls.filter((c) => c.startsWith("A "))).toEqual([
+      `A task-c required=true comment=${PAIR.reject_comment}`,
+    ]); // p1 not redone; p2 from its A
+    expect(resumed.attempts).toEqual({ p1: 1, p2: 2 });
+    expect(namespaces).toEqual([PAIR.lesson]); // the redo wrote into p2's second namespace
+    expect(resumed.results.filter((r) => r.pair === "p2")).toHaveLength(4);
+    expect(resumed.totalCostUsd).toBeGreaterThan(stopped.totalCostUsd);
   });
 
   it("namespaces never share records", async () => {
