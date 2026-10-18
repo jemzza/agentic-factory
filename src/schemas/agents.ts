@@ -8,6 +8,9 @@ const plannerFields = {
   questions: z.array(z.string().trim().min(1)),
 };
 
+/** Up to 3 short, general project rules implied by human feedback on a spec. */
+const LessonsSchema = z.array(z.string().trim().min(1).max(300)).max(3);
+
 /**
  * Planner answer. Non-empty `questions` stops the run with `needs_clarification`; otherwise
  * `spec` (the OpenSpec change proposal, rendered by the factory) is required. The spec's
@@ -23,7 +26,7 @@ export const PlannerOutputSchema = z
      * After human feedback on a spec: up to 3 short, general project rules it implies (stored
      * in project memory once the revised spec is approved). Empty without feedback.
      */
-    lessons: z.array(z.string().trim().min(1).max(300)).max(3).default([]),
+    lessons: LessonsSchema.default([]),
   })
   .superRefine((p, ctx) => {
     if (p.questions.length === 0 && (p.spec === undefined || p.spec === null)) {
@@ -74,7 +77,10 @@ export function toAgentJsonSchema(schema: z.ZodType): Record<string, unknown> {
 }
 
 /** Shape shown to the agent (full spec structure), stricter than what we parse up front. */
+// Every field the factory reads must be in the agent's schema too: Claude Code's structured
+// output contains only the schema's properties (lessons was missing here until the final
+// block's A-path check showed planners could never return one).
 export const plannerJsonSchema = toAgentJsonSchema(
-  z.strictObject({ ...plannerFields, spec: SpecChangeSchema.nullable() }),
+  z.strictObject({ ...plannerFields, spec: SpecChangeSchema.nullable(), lessons: LessonsSchema }),
 );
 export const reviewerJsonSchema = toAgentJsonSchema(ReviewVerdictSchema);
