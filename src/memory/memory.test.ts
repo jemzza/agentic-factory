@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_MEMORY_CONFIG } from "../schemas/config.js";
+import { DEFAULT_MEMORY_CONFIG, MemoryConfigSchema } from "../schemas/config.js";
 import { openDb } from "../store/db.js";
 import { Store } from "../store/store.js";
 import { assertWritable } from "./guard.js";
@@ -219,6 +219,19 @@ describe("Mem0Index.check (Ollama on 127.0.0.1, pinned digest)", () => {
     await expect(new Mem0Index(DEFAULT_MEMORY_CONFIG).check()).rejects.toThrow(
       MemoryUnavailableError,
     );
+  });
+
+  it("the config pins the embedder by its ID tag, never latest", () => {
+    expect(DEFAULT_MEMORY_CONFIG.embedder).toMatchObject({
+      model: "nomic-embed-text:0a109f422b47",
+      digest: "0a109f422b47",
+    });
+    const parsed = MemoryConfigSchema.safeParse({
+      ...DEFAULT_MEMORY_CONFIG,
+      embedder: { ...DEFAULT_MEMORY_CONFIG.embedder, model: "nomic-embed-text:latest" },
+    });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain("not latest");
   });
 
   it("the OpenAI variant needs its key", async () => {

@@ -169,11 +169,15 @@ PI_CODING_AGENT_DIR=~/agentic-factory-work/pi-agent HOME=~/agentic-factory-work/
 A local model (option D) goes into `~/agentic-factory-work/pi-agent/models.json`, as the
 `ollama` example in Pi's `docs/models.md` shows. Use the URL `http://127.0.0.1:11434/v1`.
 
-## Measurements (final block)
+## Measured (2026-10-18)
 
-Once the owner has chosen:
+`eval:review` (`review-eval-20261018-102240`), comparing Opus with Pi on
+`qwen2.5-coder:7b-instruct-q4_K_M`:
 
-- `npm run eval:review` (when Pi is a reviewer);
-- one `npm run eval` with Pi in the chosen role, against the Week 3 baseline.
+| Reviewer | Recall (strict) | False positive rate | Avg time | Cost  |
+| -------- | --------------- | ------------------- | -------- | ----- |
+| Opus     | 100%            | 60%                 | 19.4 s   | $1.71 |
+| Pi       | 20%             | 0%                  | 28.5 s   | $0    |
 
-The role configuration for Phase 8 is the owner's decision, made by those numbers.
+The Pi gate failed (20% of Opus's recall; the threshold is 70%), so no eval with the Pi
+reviewer was run. Opus stays the reviewer. Details: `docs/week3-results.md`, Phase 7.

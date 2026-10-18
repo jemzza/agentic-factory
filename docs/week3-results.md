@@ -475,12 +475,41 @@ Tested with the real Pi binary against a fake Ollama.
 Independence is worth something only if recall holds, which is why the owner's 70% rule
 decides whether a full eval runs at all.
 
-| Measurement (final block)                     | Opus | Pi + qwen2.5-coder 7B |
-| --------------------------------------------- | ---- | --------------------- |
-| `eval:review` recall (strict)                 | —    | —                     |
-| `eval:review` false positive rate             | —    | —                     |
-| Average time per review                       | —    | —                     |
-| Pi gate (recall ≥ 70% of Opus) → eval with Pi | —    | —                     |
+#### Measured: `eval:review` Opus vs Pi + Ollama (`review-eval-20261018-102240`, 15 frozen cases)
+
+The owner asked for this run after the model was pulled. Setup:
+
+- `qwen2.5-coder:7b-instruct-q4_K_M`, ID `dae161e27b0e` (matches the pin);
+- derived model `factory-reviewer-qwen2.5-coder-7b`, ID `32f12713d269`, `num_ctx 32768`.
+
+The smoke test (`npm run smoke:pi`) passed first: a valid verdict on the first attempt that
+found a blocker in the right file, in 21.5 s.
+
+| Reviewer                                    | Recall (strict)  | Recall (lenient) | False positive rate | Invalid answers | Cost   | Avg time per review |
+| ------------------------------------------- | ---------------- | ---------------- | ------------------- | --------------- | ------ | ------------------- |
+| claude-code:opus                            | **100%** (10/10) | 100% (10/10)     | 60% (3/5)           | 0               | $1.712 | 19.4 s              |
+| pi:ollama/factory-reviewer-qwen2.5-coder-7b | **20%** (2/10)   | 30% (3/10)       | 0% (0/5)            | 0               | $0     | 28.5 s              |
+
+**Pi gate: 20% / 100% = 20% of Opus's recall (threshold 70%) → FAIL. No `npm run eval` with
+the Pi reviewer was run (owner's rule); the result is recorded here.**
+
+- **Opus** reproduces Week 2 exactly (100% recall, 3 of 5 clean cases flagged). The flags are
+  mostly convention-backed remarks about test quality.
+- **The local 7B model approves almost everything.** It found only the two most obvious
+  defects: `d01` (completing a deleted task) and `d10` (regexp injection). It flagged `d04`
+  on the wrong file. Its 0% false positive rate is a consequence of approving, not of
+  precision.
+- **Its criteria checks contradict its own evidence.** In `d02` it marked "not done → 409
+  CONFLICT" as met while quoting a test that returns 400.
+- **Structured output worked:** 0 invalid answers and no retries across 15 cases, with the
+  answer constrained to the schema.
+- **Time:** 28.5 s per review on the M1 Pro, against Opus's 19.4 s, at $0 and with nothing
+  leaving the machine.
+
+Conclusion: vendor independence without recall does not make the review more independent in
+any useful sense. A reviewer that approves 8 of 10 defective changes would mostly
+rubber-stamp Claude's work. Opus stays the reviewer for Phase 8. `PI_OLLAMA_REVIEWER` stays in
+`factory.config.ts` as the one-line demo switch.
 
 ### Next option, not implemented: Gemini API free tier
 
@@ -502,4 +531,4 @@ Trade-offs to check before using it:
 
 Nothing was built or run for it.
 
-`npm run check` (Phase 7 commit): exit 0, 437 tests. With the Pi + Ollama reviewer: exit 0, 445 tests.
+`npm run check` (Phase 7 commit): exit 0, 437 tests. With the Pi + Ollama reviewer: exit 0, 445 tests. After the eval:review run: exit 0, 446 tests.
