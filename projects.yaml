@@ -6,13 +6,15 @@ version: 1
 projects:
   - id: taskflow
     source: { kind: fixture, path: fixtures/taskflow }
-  # Second stack (Python 3.12): checks the sandbox profiles. A local repository until it is
-  # pushed to GitHub (Week 3 Phase 3).
+  # On GitHub (owner jemzza, private). taskflow-demo is the stand at factory-baseline (8e6e21f);
+  # ledgerlite is the second stack (Python 3.12), pushed from the local repository (8500e89).
+  # Only allowed_users can give tasks and commands. The token (FACTORY_GITHUB_TOKEN) is a
+  # fine-grained PAT for these two repositories only.
+  - id: taskflow-demo
+    source: { kind: git, url: https://github.com/jemzza/taskflow-demo.git, ref: main }
+    github: { repo: jemzza/taskflow-demo }
+    allowed_users: [jemzza]
   - id: ledgerlite
-    source: { kind: git, url: ~/Documents/2026/ledgerlite, ref: main }
-
-# On GitHub (Week 3 Phase 3; filled in before the live check — the owner confirms the login):
-#  - id: taskflow-demo
-#    source: { kind: git, url: https://github.com/<owner>/taskflow-demo.git, ref: main }
-#    github: { repo: <owner>/taskflow-demo }
-#    allowed_users: [<owner>]
+    source: { kind: git, url: https://github.com/jemzza/ledgerlite.git, ref: main }
+    github: { repo: jemzza/ledgerlite }
+    allowed_users: [jemzza]

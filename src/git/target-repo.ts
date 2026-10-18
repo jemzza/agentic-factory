@@ -111,6 +111,17 @@ async function materialize(
   from: RepoRef,
   remote: RemoteGit | undefined,
 ): Promise<TargetRepo> {
+  // A GitHub URL is reached only through the factory's own authenticated remote: a plain git
+  // clone would fall back to the owner's credential helpers (e.g. the macOS keychain).
+  if (
+    project.source.kind === "git" &&
+    /^https?:\/\/github\.com\//i.test(project.source.url) &&
+    !remote
+  ) {
+    throw new Error(
+      `${project.id} is on GitHub: it is cloned only with the factory's token (FACTORY_GITHUB_TOKEN), not with your own git credentials`,
+    );
+  }
   const reposDir = path.join(workdir, "repos");
   await mkdir(reposDir, { recursive: true });
 

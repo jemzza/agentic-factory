@@ -221,10 +221,10 @@ async function runOne(
 ): Promise<number> {
   const config = await loadConfig();
   const task = await loadRunnableTask(taskRef);
-  const project = await projectSourceFor(
-    projectId ?? (await loadEvalStand()).project.id,
-    "interactive",
-  );
+  const id = projectId ?? (await loadEvalStand()).project.id;
+  const project = await projectSourceFor(id, "interactive");
+  // A GitHub project is cloned and pushed only through the factory's token.
+  const remote = await remoteFor(config, id, "interactive");
   const { runtime, runtimes } = runtimeDeps(config);
   console.log(
     `Running task ${task.id} in project ${project.id} (spec approval: ${autoApproveSpec ? "auto" : "manual"})`,
@@ -237,6 +237,7 @@ async function runOne(
       runtimes,
       runsDir: RUNS_DIR,
       project,
+      ...(remote ? { remote } : {}),
       ...(await memoryDeps(config, store)),
       store,
       specApprovalMode: autoApproveSpec ? "auto" : "manual",
@@ -953,9 +954,10 @@ async function dashboard(port: number): Promise<number> {
 async function projectCheck(projectId: string): Promise<number> {
   const config = await loadConfig();
   const project = await projectSourceFor(projectId, "interactive");
+  const remote = await remoteFor(config, projectId, "interactive");
   console.log(`Project check: ${projectId}`);
   const lines = await checkProject(project, {
-    ensureRepo: (p) => ensureTargetRepo(p, config.workdirAbs, "main"),
+    ensureRepo: (p) => ensureTargetRepo(p, config.workdirAbs, "main", remote),
     sandbox: async (repoDir, profile) => {
       const tag = await ensureSandboxImage(repoDir, profile);
       return {
