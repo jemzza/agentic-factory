@@ -572,9 +572,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         ctx.log(`  spec draft #${attempt}: invalid (${validation.issues.length} issue(s))`);
         return { ...invalid(validation.issues), spec, specFiles: files };
       }
+      // The revision (1 + human rejections) makes every draft its own commit even when the
+      // planner returns the same spec within the same second: a spec version is identified by
+      // its commit, and a rejection must always lead to a new version.
       const commit = await snapshot(
         wt,
-        `factory: ${s.task.id} OpenSpec change (draft #${attempt})`,
+        `factory: ${s.task.id} OpenSpec change (revision ${String(s.specRejections.length + 1)}, draft #${String(attempt)})`,
         hostDepsDir(s),
       );
       ctx.log(`  spec draft #${attempt}: valid (${changeDir(s.task.id)})`);
