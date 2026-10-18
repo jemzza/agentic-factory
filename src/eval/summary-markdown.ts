@@ -1,4 +1,4 @@
-import type { EvalSummary } from "./run-eval.js";
+import type { EvalSummary, RescoredFrom } from "./run-eval.js";
 
 const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
 const cycles = (t: EvalSummary["tasks"][number]) =>
@@ -7,6 +7,16 @@ const cycles = (t: EvalSummary["tasks"][number]) =>
     : `${t.gateFixCycles} / ${t.reviewCycles}${t.maxReviewCycles !== null && t.reviewCycles === t.maxReviewCycles && t.maxReviewCycles > 0 ? " (review limit)" : ""}`;
 const num = (x: number | null) => (x === null ? "n/a" : x.toFixed(2));
 const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+
+/** Says what a rescored summary is, so it is never mistaken for a fresh measurement. */
+export function rescoredBanner(f: RescoredFrom): string {
+  return (
+    `> **Rescored** from \`${f.sourceEvalId}\` on ${f.rescoredAt.slice(0, 10)}: no agent calls. ` +
+    `Each run's stored final diff was applied to baseline \`${f.baselineCommit.slice(0, 12)}\` and the ` +
+    `current hidden tests (factory \`${f.hiddenTestsCommit ?? "unknown"}\`) were run in the sandbox. ` +
+    "Time and cost are those of the source eval."
+  );
+}
 
 export function renderEvalSummaryMarkdown(s: EvalSummary): string {
   const m = s.metrics;
@@ -18,7 +28,8 @@ export function renderEvalSummaryMarkdown(s: EvalSummary): string {
       ? ` (${m.splitCyclesKnown} of ${reachedDev} tasks; the rest were recorded before the split)`
       : "";
   const lines: string[] = [];
-  lines.push(`# Eval ${s.evalId}`);
+  lines.push(`# Eval ${s.evalId}${s.rescoredFrom ? " — rescored" : ""}`);
+  if (s.rescoredFrom) lines.push(rescoredBanner(s.rescoredFrom));
   lines.push(
     [
       `- **Started:** ${s.startedAt}  **Finished:** ${s.finishedAt}`,

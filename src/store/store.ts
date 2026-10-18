@@ -144,6 +144,8 @@ export const EvalRowSchema = z.object({
   cost_cap_usd: z.number().nullable(),
   cost_usd: z.number(),
   summary_path: z.string().nullable(),
+  kind: z.enum(["run", "rescore"]),
+  source_eval_id: z.string().nullable(),
 });
 export type EvalRow = z.output<typeof EvalRowSchema>;
 
@@ -550,13 +552,24 @@ export class Store {
     repeatCount: number;
     baselineCommit: string;
     costCapUsd: number | null;
+    /** A rescore of `sourceEvalId` (hidden tests only, no agent calls). */
+    rescoreOf?: string;
   }): EvalRow {
     this.db
       .prepare(
-        `INSERT INTO evals (id, started_at, status, repeat_count, baseline_commit, cost_cap_usd)
-         VALUES (?, ?, 'running', ?, ?, ?)`,
+        `INSERT INTO evals (id, started_at, status, repeat_count, baseline_commit, cost_cap_usd,
+           kind, source_eval_id)
+         VALUES (?, ?, 'running', ?, ?, ?, ?, ?)`,
       )
-      .run(e.id, this.ts(), e.repeatCount, e.baselineCommit, e.costCapUsd);
+      .run(
+        e.id,
+        this.ts(),
+        e.repeatCount,
+        e.baselineCommit,
+        e.costCapUsd,
+        e.rescoreOf === undefined ? "run" : "rescore",
+        e.rescoreOf ?? null,
+      );
     return this.requireEval(e.id);
   }
 

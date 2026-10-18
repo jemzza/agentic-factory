@@ -1,13 +1,24 @@
 diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
-index 6dcf307..9ccdd6a 100644
+index 6dcf307..c59a790 100644
 --- a/src/routes/tasks.ts
 +++ b/src/routes/tasks.ts
-@@ -54,6 +54,11 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+@@ -30,6 +30,9 @@ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
+ });
+ 
++/** Action routes take no body fields; an absent body is the same as `{}`. */
++const emptyBodySchema = z.strictObject({});
++
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+   app.post("/tasks", async (request, reply) => {
+     const body = parseInput(createTaskBodySchema, request.body);
+@@ -54,6 +57,12 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
      return toTaskDto(await service.update(id, body));
    });
  
 +  app.post("/tasks/:id/complete", async (request) => {
 +    const { id } = parseInput(taskIdParamsSchema, request.params);
++    parseInput(emptyBodySchema, request.body ?? {});
 +    return toTaskDto(await service.complete(id));
 +  });
 +
@@ -34,10 +45,10 @@ index 5faae72..3e84ab5 100644
      const now = this.deps.clock();
 diff --git a/tests/complete-task.test.ts b/tests/complete-task.test.ts
 new file mode 100644
-index 0000000..702c443
+index 0000000..36ef7ff
 --- /dev/null
 +++ b/tests/complete-task.test.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,45 @@
 +import { describe, expect, it } from "vitest";
 +import { createTask, deleteTask, setup } from "./helpers.js";
 +
@@ -69,5 +80,17 @@ index 0000000..702c443
 +    const res = await app.inject({ method: "POST", url: "/tasks/nope/complete" });
 +    expect(res.statusCode).toBe(404);
 +    expect(res.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
++  });
++
++  it("returns 400 VALIDATION_ERROR for an unknown body key", async () => {
++    const { app } = setup();
++    const created = await createTask(app);
++    const res = await app.inject({
++      method: "POST",
++      url: `/tasks/${created.id}/complete`,
++      payload: { unexpected: true },
++    });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
 +  });
 +});

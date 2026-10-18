@@ -1,13 +1,24 @@
 diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
-index 6dcf307..e88297f 100644
+index 6dcf307..d6bbcd9 100644
 --- a/src/routes/tasks.ts
 +++ b/src/routes/tasks.ts
-@@ -54,6 +54,11 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+@@ -30,6 +30,9 @@ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
+ });
+ 
++/** Action routes take no body fields; an absent body is the same as `{}`. */
++const emptyBodySchema = z.strictObject({});
++
+ export function registerTaskRoutes(app: FastifyInstance, service: TaskService): void {
+   app.post("/tasks", async (request, reply) => {
+     const body = parseInput(createTaskBodySchema, request.body);
+@@ -54,6 +57,12 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
      return toTaskDto(await service.update(id, body));
    });
  
 +  app.post("/tasks/:id/reopen", async (request) => {
 +    const { id } = parseInput(taskIdParamsSchema, request.params);
++    parseInput(emptyBodySchema, request.body ?? {});
 +    return toTaskDto(await service.reopen(id));
 +  });
 +
@@ -38,10 +49,10 @@ index 5faae72..d942377 100644
      const now = this.deps.clock();
 diff --git a/tests/reopen-task.test.ts b/tests/reopen-task.test.ts
 new file mode 100644
-index 0000000..120f679
+index 0000000..520353d
 --- /dev/null
 +++ b/tests/reopen-task.test.ts
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,52 @@
 +import { describe, expect, it } from "vitest";
 +import { createTask, deleteTask, setup } from "./helpers.js";
 +
@@ -80,5 +91,17 @@ index 0000000..120f679
 +    const res = await app.inject({ method: "POST", url: "/tasks/nope/reopen" });
 +    expect(res.statusCode).toBe(404);
 +    expect(res.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
++  });
++
++  it("returns 400 VALIDATION_ERROR for an unknown body key", async () => {
++    const { app } = setup();
++    const created = await createTask(app, { title: "A", status: "done" });
++    const res = await app.inject({
++      method: "POST",
++      url: `/tasks/${created.id}/reopen`,
++      payload: { unexpected: true },
++    });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
 +  });
 +});

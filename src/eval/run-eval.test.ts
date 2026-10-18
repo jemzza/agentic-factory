@@ -6,7 +6,7 @@ import type { RunTaskResult } from "../pipeline/run-task.js";
 import type { RunReport, RunStatus } from "../schemas/report.js";
 import type { EvalMeta, TaskSpec } from "../schemas/task.js";
 import type { HiddenTestResult } from "./hidden-tests.js";
-import { parseVitestJson } from "./hidden-tests.js";
+import { parseVitestCases, parseVitestJson } from "./hidden-tests.js";
 import { classify, computeMetrics, firstPassOf, runEval, type EvalTaskResult } from "./run-eval.js";
 
 let tmp: string;
@@ -269,6 +269,29 @@ describe("parseVitestJson", () => {
       failures: ["✗ hidden: b rejects: AssertionError: expected 200 to be 409"],
     });
     expect(parseVitestJson("no json here")).toBeNull();
+  });
+});
+
+describe("parseVitestCases", () => {
+  it("returns file base name, own title and status per test", () => {
+    const json = {
+      numTotalTests: 2,
+      numFailedTests: 1,
+      testResults: [
+        {
+          name: "/work/tests/__hidden__/a.rules.hidden.test.ts",
+          assertionResults: [
+            { fullName: "rules: [guard] keeps", title: "[guard] keeps", status: "passed" },
+            { fullName: "rules: rejects", status: "failed" },
+          ],
+        },
+      ],
+    };
+    expect(parseVitestCases(`noise\n${JSON.stringify(json)}`)).toEqual([
+      { file: "a.rules.hidden.test.ts", title: "[guard] keeps", status: "passed" },
+      { file: "a.rules.hidden.test.ts", title: "rules: rejects", status: "failed" },
+    ]);
+    expect(parseVitestCases("{}")).toBeNull();
   });
 });
 

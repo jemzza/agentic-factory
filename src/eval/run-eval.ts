@@ -86,6 +86,17 @@ export const EvalTaskResultSchema = z.strictObject({
   /** Files from evals/hidden or evals/reference found in the agent's worktree (must be empty). */
   hiddenLeaks: z.array(z.string()),
   reportPath: z.string().nullable(),
+  /**
+   * Set only by `eval:rescore`: the outcome before rescoring and where the rescored tree came
+   * from (`diff`: the stored final diff applied to the baseline; `commit`: the run's head
+   * commit; `unavailable`: neither could be used, the outcome is `hidden_error`).
+   */
+  rescore: z
+    .strictObject({
+      previousOutcome: z.enum(EVAL_OUTCOMES),
+      source: z.enum(["diff", "commit", "unavailable"]),
+    })
+    .optional(),
 });
 export type EvalTaskResult = z.infer<typeof EvalTaskResultSchema>;
 
@@ -148,6 +159,19 @@ export const EvalMetricsSchema = z.strictObject({
 });
 export type EvalMetrics = z.infer<typeof EvalMetricsSchema>;
 
+/**
+ * Provenance of a rescored summary: the agents' results come from `sourceEvalId`; only the
+ * hidden tests (at `hiddenTestsCommit`) were run again, on `baselineCommit` + each stored diff.
+ * Time and cost are those of the source eval.
+ */
+export const RescoredFromSchema = z.strictObject({
+  sourceEvalId: z.string(),
+  baselineCommit: z.string(),
+  hiddenTestsCommit: z.string().nullable(),
+  rescoredAt: z.string(),
+});
+export type RescoredFrom = z.infer<typeof RescoredFromSchema>;
+
 export const EvalSummarySchema = z.strictObject({
   schemaVersion: z.literal(1),
   evalId: z.string(),
@@ -184,6 +208,8 @@ export const EvalSummarySchema = z.strictObject({
   replacedInfraTasks: z.array(z.string()).default([]),
   /** Factory git commit that ran this pass (`-dirty` with uncommitted changes); null before it was recorded. */
   factoryCommit: z.string().nullable().default(null),
+  /** Set when this summary was produced by `eval:rescore` (no agent calls) from another eval. */
+  rescoredFrom: RescoredFromSchema.nullable().default(null),
 });
 export type EvalSummary = z.infer<typeof EvalSummarySchema>;
 

@@ -26,11 +26,13 @@ const VitestJsonSchema = z.looseObject({
   testResults: z
     .array(
       z.looseObject({
+        name: z.string().optional(),
         message: z.string().optional(),
         assertionResults: z
           .array(
             z.looseObject({
               fullName: z.string(),
+              title: z.string().optional(),
               status: z.string(),
               failureMessages: z.array(z.string()).optional(),
             }),
@@ -48,8 +50,9 @@ export interface VitestSummary {
   failures: string[];
 }
 
-/** Parses `vitest --reporter=json` stdout (may be surrounded by other output). */
-export function parseVitestJson(stdout: string): VitestSummary | null {
+type VitestJson = z.infer<typeof VitestJsonSchema>;
+
+function extractVitestJson(stdout: string): VitestJson | null {
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -60,10 +63,48 @@ export function parseVitestJson(stdout: string): VitestSummary | null {
     return null;
   }
   const parsed = VitestJsonSchema.safeParse(json);
-  if (!parsed.success) return null;
+  return parsed.success ? parsed.data : null;
+}
+
+/** One test case from Vitest's JSON report. */
+export interface VitestCase {
+  /** Base name of the test file (e.g. `x.rules.hidden.test.ts`). */
+  file: string;
+  /** The test's own title, without describe blocks (falls back to the full name). */
+  title: string;
+  /** Vitest status: `passed`, `failed`, `skipped`, `todo`, ... */
+  status: string;
+}
+
+/** Per-test results from `vitest --reporter=json` stdout; null if it cannot be parsed. */
+export function parseVitestCases(stdout: string): VitestCase[] | null {
+  const data = extractVitestJson(stdout);
+  if (!data) return null;
+  return (data.testResults ?? []).flatMap((file) =>
+    (file.assertionResults ?? []).map((a) => ({
+      file: path.basename(file.name ?? ""),
+      title: a.title ?? a.fullName,
+      status: a.status,
+    })),
+  );
+}
+
+/**
+ * Runs Vitest on the directory passed as $1 and prints its JSON report, keeping Vitest's
+ * exit code. Vitest 5 writes the JSON report to a file; there is no shell interpolation of
+ * the directory. Usage: `["sh", "-c", VITEST_JSON_SCRIPT, "sh", dir]`.
+ */
+export const VITEST_JSON_SCRIPT =
+  'node_modules/.bin/vitest run --reporter=json --outputFile.json=/tmp/hidden-report.json "$1"; ' +
+  "rc=$?; cat /tmp/hidden-report.json 2>/dev/null; exit $rc";
+
+/** Parses `vitest --reporter=json` stdout (may be surrounded by other output). */
+export function parseVitestJson(stdout: string): VitestSummary | null {
+  const data = extractVitestJson(stdout);
+  if (!data) return null;
   const firstLine = (s: string) => s.split("\n")[0] ?? "";
   const failures: string[] = [];
-  for (const file of parsed.data.testResults ?? []) {
+  for (const file of data.testResults ?? []) {
     if (file.message) failures.push(`suite error: ${firstLine(file.message)}`);
     for (const a of file.assertionResults ?? []) {
       if (a.status === "failed") {
@@ -71,7 +112,7 @@ export function parseVitestJson(stdout: string): VitestSummary | null {
       }
     }
   }
-  return { total: parsed.data.numTotalTests, failed: parsed.data.numFailedTests, failures };
+  return { total: data.numTotalTests, failed: data.numFailedTests, failures };
 }
 
 /**
@@ -93,12 +134,11 @@ export async function runHiddenTests(opts: {
     const copy = path.join(root, "copy");
     await prepareTargetCopy({ source: opts.worktreePath, dest: copy });
     const hiddenDir = await installHiddenTests(copy, files);
-    // Vitest 5 writes the JSON report to a file; print it after the run and keep
-    // vitest's exit code. The hidden dir is passed as $1 (no shell interpolation).
-    const script =
-      'node_modules/.bin/vitest run --reporter=json --outputFile.json=/tmp/hidden-report.json "$1"; ' +
-      "rc=$?; cat /tmp/hidden-report.json 2>/dev/null; exit $rc";
-    const res = await opts.exec(copy, ["sh", "-c", script, "sh", hiddenDir], opts.timeoutMs);
+    const res = await opts.exec(
+      copy,
+      ["sh", "-c", VITEST_JSON_SCRIPT, "sh", hiddenDir],
+      opts.timeoutMs,
+    );
     const counts = parseVitestJson(res.stdout);
     return {
       passed: res.infraError === undefined && res.exitCode === 0 && !res.timedOut,

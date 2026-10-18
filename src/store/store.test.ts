@@ -61,6 +61,7 @@ describe("migrations", () => {
       { version: 2, name: "run_durations" },
       { version: 3, name: "eval_interrupted" },
       { version: 4, name: "cycle_budgets" },
+      { version: 5, name: "eval_rescore" },
     ]);
   });
 
@@ -78,7 +79,7 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1, 2, 3, 4]);
+    expect(migrate(fresh)).toEqual([1, 2, 3, 4, 5]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
@@ -104,6 +105,33 @@ describe("migrations", () => {
       status: "success",
       active_duration_ms: null,
       wall_duration_ms: null,
+    });
+    old.close();
+  });
+
+  it("migration 005 marks existing evals as runs and records rescores with their source", () => {
+    const old = new Database(":memory:");
+    old.pragma("foreign_keys = ON");
+    migrate(old, loadMigrations().slice(0, 4));
+    old
+      .prepare(
+        `INSERT INTO evals (id, started_at, status, repeat_count, baseline_commit, cost_usd)
+         VALUES ('eval-old', '2026-10-17T00:00:00Z', 'completed', 3, 'c3e', 17.93)`,
+      )
+      .run();
+    expect(migrate(old)).toEqual([5]);
+    const s = new Store(old);
+    expect(s.getEval("eval-old")).toMatchObject({ kind: "run", source_eval_id: null });
+    s.createEval({
+      id: "eval-old-rescore-1",
+      repeatCount: 3,
+      baselineCommit: "c3e",
+      costCapUsd: null,
+      rescoreOf: "eval-old",
+    });
+    expect(s.getEval("eval-old-rescore-1")).toMatchObject({
+      kind: "rescore",
+      source_eval_id: "eval-old",
     });
     old.close();
   });
@@ -195,7 +223,7 @@ describe("migrations", () => {
       )
       .run();
 
-    expect(migrate(old)).toEqual([4]);
+    expect(migrate(old)).toEqual([4, 5]);
     const s = new Store(old);
     const pick = (id: string) => {
       const r = s.requireRun(id);

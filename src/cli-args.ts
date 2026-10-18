@@ -24,6 +24,7 @@ export type CliCommand =
       costCapUsd: number | null;
     }
   | { kind: "verify-hidden"; taskId: string | null }
+  | { kind: "eval-rescore"; evalId: string }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -48,6 +49,9 @@ export const USAGE = `Usage:
                                  Run the eval suite (all tasks, or the given ones) N times and
                                  verify successes with hidden tests. --resume continues an eval
                                  interrupted by a provider limit and/or adds repeats up to N
+  npm run eval:rescore -- <evalId>
+                                 Re-judge a finished eval with the current hidden tests: stored
+                                 final diffs on factory-baseline, no agent calls ($0)
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
   npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
@@ -112,6 +116,16 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         }
       }
       return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd };
+    }
+    case "eval-rescore": {
+      const [evalId, ...extra] = rest;
+      if (evalId === undefined || extra.length > 0 || !/^eval-\d{8}-\d{6}$/.test(evalId)) {
+        return {
+          kind: "invalid",
+          message: "eval-rescore: expected exactly one eval id (eval-YYYYMMDD-HHMMSS)",
+        };
+      }
+      return { kind: "eval-rescore", evalId };
     }
     case "verify-hidden": {
       const [taskId, ...extra] = rest;

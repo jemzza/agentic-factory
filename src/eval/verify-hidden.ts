@@ -14,6 +14,7 @@ import {
   type EvalDirs,
 } from "./tasks.js";
 import { applyPatch, installHiddenTests, prepareTargetCopy } from "./target-copy.js";
+import { parseVitestCases, VITEST_JSON_SCRIPT, type VitestCase } from "./hidden-tests.js";
 
 /** Runs a command against a prepared copy of the target repo. */
 export type CheckRunner = (
@@ -33,7 +34,7 @@ export async function sandboxRunner(target: string): Promise<CheckRunner> {
 }
 
 const STEP_TIMEOUT_MS = 5 * 60_000;
-const HIDDEN_ONLY = (dir: string) => ["node_modules/.bin/vitest", "run", dir];
+const HIDDEN_ONLY = (dir: string) => ["sh", "-c", VITEST_JSON_SCRIPT, "sh", dir];
 const FULL_CHECK = ["npm", "run", "check"];
 
 export interface VerificationOutcome {
@@ -67,6 +68,39 @@ export function evaluateVerification(input: {
   if (!input.referencePassed)
     return { ok: false, reason: "reference implementation fails the check" };
   return { ok: true, reason: "fail on baseline, pass on reference" };
+}
+
+/** Hidden tests for repository rules live in files with this suffix. */
+export const RULES_FILE_SUFFIX = ".rules.hidden.test.ts";
+/** A rules test with this title prefix guards existing behavior: it must pass on baseline. */
+export const GUARD_PREFIX = "[guard]";
+
+/**
+ * Per-test rule for repository-rule tests, checked on the baseline run:
+ * - implemented task: every rules test fails on baseline, except `[guard]` tests, which pass;
+ * - needs_clarification task: every rules test is a `[guard]` test and passes.
+ * A skipped or todo test is never accepted. Other hidden files keep the per-task rule only.
+ * Returns one line per offending test (empty = valid).
+ */
+export function rulesTestIssues(
+  expected: ExpectedOutcome,
+  baseline: readonly VitestCase[],
+): string[] {
+  const issues: string[] = [];
+  for (const t of baseline.filter((c) => c.file.endsWith(RULES_FILE_SUFFIX))) {
+    const guard = t.title.startsWith(GUARD_PREFIX);
+    const name = `${t.file}: "${t.title}"`;
+    if (t.status !== "passed" && t.status !== "failed") {
+      issues.push(`${name} is ${t.status} on baseline (hidden tests must not be skipped)`);
+    } else if (expected === "needs_clarification" && !guard) {
+      issues.push(`${name} must be a ${GUARD_PREFIX} test (clarification task)`);
+    } else if (guard && t.status !== "passed") {
+      issues.push(`${name} is a guard but fails on baseline`);
+    } else if (!guard && t.status !== "failed") {
+      issues.push(`${name} passes on baseline — it tests nothing new (mark it ${GUARD_PREFIX}?)`);
+    }
+  }
+  return issues;
 }
 
 export interface TaskVerification extends VerificationOutcome {
@@ -115,11 +149,26 @@ export async function verifyHiddenTests(
       reference = await runner(refDir, FULL_CHECK, STEP_TIMEOUT_MS);
     }
 
-    const outcome = evaluateVerification({
+    const taskOutcome = evaluateVerification({
       expected: meta.expected_outcome,
       baselinePassed: succeeded(baseline),
       referencePassed: reference === null ? null : succeeded(reference),
     });
+    const cases = parseVitestCases(baseline.stdout);
+    const ruleIssues =
+      cases === null
+        ? ["could not parse Vitest's JSON report of the baseline run"]
+        : rulesTestIssues(meta.expected_outcome, cases);
+    const outcome: VerificationOutcome =
+      ruleIssues.length === 0
+        ? taskOutcome
+        : {
+            ok: false,
+            reason: [
+              ...(taskOutcome.ok ? [] : [taskOutcome.reason]),
+              `rules tests: ${ruleIssues.join("; ")}`,
+            ].join("; "),
+          };
     return { taskId, expected: meta.expected_outcome, baseline, reference, ...outcome };
   } finally {
     await rm(workRoot, { recursive: true, force: true });

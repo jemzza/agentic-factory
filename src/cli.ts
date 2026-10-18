@@ -3,10 +3,11 @@ import path from "node:path";
 import { parseCliArgs, USAGE, type CliCommand } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
+import { rescoreEval } from "./eval/rescore.js";
 import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { writeFirstPass } from "./report/first-pass.js";
-import { BASELINE_TAG, ensureTargetRepo, moveBaselineTag } from "./git/target-repo.js";
+import { BASELINE_TAG, ensureTargetRepo, exportTree, moveBaselineTag } from "./git/target-repo.js";
 import { FACTORY_ROOT } from "./paths.js";
 import {
   defaultSandboxExec,
@@ -458,6 +459,72 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   return summary.repeats.every((r) => r.metrics.hiddenLeaks === 0) ? 0 : 1;
 }
 
+/**
+ * Re-judges a finished eval with the current hidden tests (no agent calls). Refuses to run with
+ * uncommitted hidden tests, so a rescore always names the exact tests it used.
+ */
+async function evalRescore(evalId: string): Promise<number> {
+  const evalDir = path.join(RUNS_DIR, evalId);
+  const pending = (await git(FACTORY_ROOT, ["status", "--porcelain", "--", "evals/hidden"])).trim();
+  if (pending) {
+    console.error(`error: evals/hidden has uncommitted changes; commit them first:\n${pending}`);
+    return 2;
+  }
+  const config = await loadConfig();
+  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
+  if (!repo.baselineCommit) throw new Error("the target has no factory-baseline tag");
+  const baselineCommit = repo.baselineCommit;
+  const exec = await defaultSandboxExec(repo.dir);
+  const hiddenTestsCommit = await factoryCommit();
+  console.log(
+    `Rescore ${evalId}: stored diffs on ${BASELINE_TAG} ${baselineCommit.slice(0, 12)}, hidden tests at ${hiddenTestsCommit}`,
+  );
+  const { summary, changes, outDir } = await rescoreEval(evalDir, {
+    baselineCommit,
+    hiddenTestsCommit,
+    materialize: (commit, dest) => exportTree(repo.dir, commit, dest),
+    runHidden: (treeDir, taskId) =>
+      runHiddenTests({
+        worktreePath: treeDir,
+        taskId,
+        exec,
+        timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+      }),
+    log: consoleLog,
+  });
+  const store = openStore(config);
+  try {
+    const id = `${evalId}-${path.basename(outDir)}`;
+    store.createEval({
+      id,
+      repeatCount: summary.repeatsPlanned,
+      baselineCommit,
+      costCapUsd: null,
+      ...(store.getEval(evalId) ? { rescoreOf: evalId } : {}),
+    });
+    store.finishEval(id, {
+      status: "completed",
+      costUsd: 0,
+      summaryPath: path.join(outDir, "summary.md"),
+    });
+  } finally {
+    store.db.close();
+  }
+  const m = summary.metrics;
+  const pct = (x: number | null) => (x === null ? "n/a" : `${(x * 100).toFixed(1)}%`);
+  const hiddenErrors = summary.repeats.reduce(
+    (n, r) => n + r.tasks.filter((t) => t.outcome === "hidden_error").length,
+    0,
+  );
+  console.log(
+    `\nRescored ${summary.repeats.length} pass(es): first pass ${pct(m.firstPassRate.mean)} ± ${pct(m.firstPassRate.stdev)}, ` +
+      `verified ${pct(m.verifiedRate.mean)} ± ${pct(m.verifiedRate.stdev)}, false success ${pct(m.falseSuccessRate.mean)} ± ${pct(m.falseSuccessRate.stdev)}\n` +
+      `${changes.length} outcome change(s), ${hiddenErrors} hidden_error(s)\n` +
+      `summary: ${path.relative(process.cwd(), path.join(outDir, "summary.md"))}`,
+  );
+  return hiddenErrors === 0 ? 0 : 1;
+}
+
 async function resumeOne(runId: string): Promise<number> {
   const config = await loadConfig();
   const store = openStore(config);
@@ -530,6 +597,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     case "verify-hidden":
       return verifyHidden(cmd.taskId);
+    case "eval-rescore":
+      return evalRescore(cmd.evalId);
     case "run":
       return runOne(cmd.taskId, cmd.autoApproveSpec);
     case "decide":

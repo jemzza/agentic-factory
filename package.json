@@ -19,6 +19,7 @@
     "run-task": "tsx src/cli.ts run",
     "eval": "tsx src/cli.ts eval",
     "verify-hidden": "tsx src/cli.ts verify-hidden",
+    "eval:rescore": "tsx src/cli.ts eval-rescore",
     "smoke:claude": "tsx scripts/smoke-claude.ts",
     "runs": "tsx src/cli.ts runs",
     "resume": "tsx src/cli.ts resume",

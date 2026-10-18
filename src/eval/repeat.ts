@@ -3,12 +3,15 @@ import path from "node:path";
 import { z } from "zod";
 import {
   EvalSummarySchema,
+  RescoredFromSchema,
   makeEvalId,
   runEval,
   type EvalSummary,
   type EvalTaskInput,
+  type RescoredFrom,
   type RunEvalDeps,
 } from "./run-eval.js";
+import { rescoredBanner } from "./summary-markdown.js";
 
 export const StatSchema = z.strictObject({
   n: z.number().int(),
@@ -66,6 +69,8 @@ export const RepeatedSummarySchema = z.strictObject({
   /** Per task: the outcome in each repeat, in order. */
   tasks: z.record(z.string(), z.array(z.string())),
   repeats: z.array(EvalSummarySchema),
+  /** Set when produced by `eval:rescore` from another eval (see RescoredFromSchema). */
+  rescoredFrom: RescoredFromSchema.nullable().default(null),
 });
 export type RepeatedSummary = z.infer<typeof RepeatedSummarySchema>;
 
@@ -79,6 +84,7 @@ export function aggregate(
     costCapUsd: number | null;
     costCapReached: boolean;
     interrupted?: boolean;
+    rescoredFrom?: RescoredFrom | null;
   },
 ): RepeatedSummary {
   // Statistics only over complete passes: an interrupted pass has not decided every task.
@@ -112,6 +118,7 @@ export function aggregate(
     },
     tasks,
     repeats,
+    rescoredFrom: info.rescoredFrom ?? null,
   });
 }
 
@@ -128,7 +135,8 @@ export function renderRepeatedMarkdown(r: RepeatedSummary): string {
   const usd = (x: number) => `$${x.toFixed(2)}`;
   return (
     [
-      `# Eval ${r.evalId} — ${r.repeatsDone}/${r.repeatsPlanned} repeat(s)`,
+      `# Eval ${r.evalId} — ${r.repeatsDone}/${r.repeatsPlanned} repeat(s)${r.rescoredFrom ? " — rescored" : ""}`,
+      ...(r.rescoredFrom ? [rescoredBanner(r.rescoredFrom)] : []),
       [
         `- **Roles:** ${Object.entries(r.roles)
           .map(([k, v]) => `${k} = ${v}`)

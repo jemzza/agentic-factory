@@ -72,6 +72,18 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["eval", "../x"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses eval-rescore with exactly one eval id", () => {
+    expect(parseCliArgs(["eval-rescore", "eval-20261017-095351"])).toEqual({
+      kind: "eval-rescore",
+      evalId: "eval-20261017-095351",
+    });
+    expect(parseCliArgs(["eval-rescore"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval-rescore", "../x"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval-rescore", "eval-20261017-095351", "x"])).toMatchObject({
+      kind: "invalid",
+    });
+  });
+
   it("parses verify-hidden with and without a taskId", () => {
     expect(parseCliArgs(["verify-hidden"])).toEqual({ kind: "verify-hidden", taskId: null });
     expect(parseCliArgs(["verify-hidden", "pagination"])).toEqual({

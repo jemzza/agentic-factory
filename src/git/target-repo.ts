@@ -144,3 +144,25 @@ export async function moveBaselineTag(
   if (previous !== current) await git(repoDir, ["tag", "-f", BASELINE_TAG, current]);
   return { previous, current };
 }
+
+/**
+ * Writes the tree of `commit` (tracked files only, no .git) into the existing empty directory
+ * `dest`, without touching the repository's index or working tree (`git archive` + `tar`).
+ * Returns false if the commit does not exist in the repository.
+ */
+export async function exportTree(repoDir: string, commit: string, dest: string): Promise<boolean> {
+  const known = await runCommand("git", ["cat-file", "-e", `${commit}^{commit}`], {
+    cwd: repoDir,
+    timeoutMs: 30_000,
+  });
+  if (known.exitCode !== 0) return false;
+  const tar = `${dest}.tar`;
+  try {
+    await git(repoDir, ["archive", "--format=tar", "-o", tar, commit]);
+    const res = await runCommand("tar", ["-xf", tar, "-C", dest], { cwd: dest, timeoutMs: 60_000 });
+    if (res.exitCode !== 0) throw new Error(`tar -xf failed: ${res.stderr}`);
+    return true;
+  } finally {
+    await rm(tar, { force: true });
+  }
+}
