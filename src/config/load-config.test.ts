@@ -6,7 +6,7 @@ describe("config", () => {
   it("loads the committed factory.config.json", async () => {
     const config = await loadConfig(undefined, { FACTORY_WORKDIR: "/tmp/af-work" });
     expect(config.workdirAbs).toBe("/tmp/af-work");
-    expect(config.target.checks.length).toBeGreaterThan(0);
+    expect(config.roles.developer.runtime).toBe("claude-code");
   });
 
   it("expands ~", () => {
@@ -32,13 +32,6 @@ describe("config", () => {
   it("validates role bindings: OpenCode is read-only, independent and pinned", () => {
     const base = {
       workdir: "/tmp/af-work",
-      target: {
-        name: "t",
-        source: { kind: "fixture", path: "x" },
-        install: ["true"],
-        checks: [{ name: "test", command: ["npm", "test"] }],
-        conventionsFile: "CLAUDE.md",
-      },
       roles: {
         planner: { runtime: "claude-code", model: "opus" },
         developer: { runtime: "claude-code", model: "opus" },

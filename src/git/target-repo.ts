@@ -3,10 +3,22 @@ import { access, appendFile, cp, mkdir, readdir, readFile, rename, rm } from "no
 import path from "node:path";
 import { FACTORY_ROOT } from "../paths.js";
 import { runCommand } from "../process/run-command.js";
-import type { TargetConfig } from "../schemas/config.js";
+import type { TargetSource } from "../schemas/config.js";
 import { git } from "./git.js";
 
-const SKIP = new Set(["node_modules", ".git", "dist", "coverage"]);
+/** Build and dependency directories never copied from a fixture (any stack). */
+const SKIP = new Set([
+  ".git",
+  ".DS_Store",
+  "node_modules",
+  "dist",
+  "coverage",
+  ".venv",
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+]);
 
 /**
  * Immutable tag marking the eval baseline. Factory code never moves it; only an explicit
@@ -57,20 +69,28 @@ export async function hashDirectory(dir: string): Promise<string> {
   return hash.digest("hex").slice(0, 12);
 }
 
+/** What the factory needs to materialize a project's repository. */
+export interface ProjectSource {
+  id: string;
+  source: TargetSource;
+}
+
 /**
- * Makes sure the target exists as a git repository under `<workdir>/repos/` with
- * dependencies installed on the host, and returns its base commit.
+ * Makes sure the project exists as a git repository under `<workdir>/repos/` and returns its
+ * base commit. Dependencies are NOT installed here: how to install them is part of the
+ * project's config, which is read from this repository afterwards (`ensureHostDeps`).
  *
- * - fixture: files are copied into `repos/<name>-<contentHash>` and committed as
- *   "baseline". The directory name is content-addressed, so a changed fixture gets a
- *   fresh repo and an existing one is reused as-is.
- * - git: cloned into `repos/<name>-<urlHash>`, then `ref` is checked out (detached).
+ * - fixture: files are copied into `repos/<id>-<contentHash>` and committed as
+ *   "baseline" on `main`. The directory name is content-addressed, so a changed fixture gets
+ *   a fresh repo and an existing one is reused as-is.
+ * - git: cloned into `repos/<id>-<urlHash>`, then the branch `ref` is checked out (merges
+ *   fast-forward that branch in this clone).
  *
- * `node_modules` is added to the repo's info/exclude so the per-worktree symlink never
- * shows up in diffs, whatever the target's own .gitignore says.
+ * `from`: "baseline" = the immutable `factory-baseline` tag (eval); "main" = the HEAD of the
+ * clone, i.e. its checked-out target branch (interactive runs).
  */
 export async function ensureTargetRepo(
-  target: TargetConfig,
+  project: ProjectSource,
   workdir: string,
   from: RepoRef = "main",
 ): Promise<TargetRepo> {
@@ -78,9 +98,9 @@ export async function ensureTargetRepo(
   await mkdir(reposDir, { recursive: true });
 
   let dir: string;
-  if (target.source.kind === "fixture") {
-    const src = path.resolve(FACTORY_ROOT, target.source.path);
-    dir = path.join(reposDir, `${target.name}-${await hashDirectory(src)}`);
+  if (project.source.kind === "fixture") {
+    const src = path.resolve(FACTORY_ROOT, project.source.path);
+    dir = path.join(reposDir, `${project.id}-${await hashDirectory(src)}`);
     if (!(await exists(path.join(dir, ".git")))) {
       const staging = `${dir}.tmp-${process.pid}`;
       await rm(staging, { recursive: true, force: true });
@@ -91,32 +111,17 @@ export async function ensureTargetRepo(
       await rename(staging, dir);
     }
   } else {
-    const urlHash = createHash("sha256").update(target.source.url).digest("hex").slice(0, 12);
-    dir = path.join(reposDir, `${target.name}-${urlHash}`);
+    const urlHash = createHash("sha256").update(project.source.url).digest("hex").slice(0, 12);
+    dir = path.join(reposDir, `${project.id}-${urlHash}`);
     if (!(await exists(path.join(dir, ".git")))) {
       await git(
         reposDir,
-        ["clone", "-q", "--no-recurse-submodules", target.source.url, dir],
+        ["clone", "-q", "--no-recurse-submodules", project.source.url, dir],
         15 * 60_000,
       );
     }
-    await git(dir, ["checkout", "-q", "--detach", target.source.ref]);
-  }
-
-  const exclude = path.join(dir, ".git", "info", "exclude");
-  const current = (await exists(exclude)) ? await readFile(exclude, "utf8") : "";
-  if (!current.split("\n").includes("node_modules")) {
-    await mkdir(path.dirname(exclude), { recursive: true });
-    await appendFile(exclude, "\n# added by agentic-factory\nnode_modules\n");
-  }
-
-  if (!(await exists(path.join(dir, "node_modules")))) {
-    const [bin, ...args] = target.install;
-    if (bin === undefined) throw new Error("target.install is empty");
-    const res = await runCommand(bin, args, { cwd: dir, timeoutMs: 15 * 60_000 });
-    if (res.exitCode !== 0) {
-      throw new Error(`${target.install.join(" ")} failed in ${dir}:\n${res.stderr || res.stdout}`);
-    }
+    const current = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (current !== project.source.ref) await git(dir, ["checkout", "-q", project.source.ref]);
   }
 
   let baselineCreated = false;
@@ -132,15 +137,41 @@ export async function ensureTargetRepo(
 }
 
 /**
- * Explicitly moves the baseline tag to main's current head (`npm run baseline:update`).
+ * Installs the project's dependencies on the host (for the developer's own checks), once:
+ * `profile.install` runs in the main clone if `host_deps_dir` is missing. The dependency
+ * directory is added to the clone's info/exclude so its per-worktree link never shows up in
+ * diffs, whatever the project's own .gitignore says.
+ */
+export async function ensureHostDeps(
+  dir: string,
+  profile: { install: readonly string[]; hostDepsDir: string },
+): Promise<void> {
+  const exclude = path.join(dir, ".git", "info", "exclude");
+  const current = (await exists(exclude)) ? await readFile(exclude, "utf8") : "";
+  if (!current.split("\n").includes(profile.hostDepsDir)) {
+    await mkdir(path.dirname(exclude), { recursive: true });
+    await appendFile(exclude, `\n# added by agentic-factory\n${profile.hostDepsDir}\n`);
+  }
+  if (await exists(path.join(dir, profile.hostDepsDir))) return;
+  const [bin, ...args] = profile.install;
+  if (bin === undefined) throw new Error("profile.install is empty");
+  const res = await runCommand(bin, args, { cwd: dir, timeoutMs: 15 * 60_000 });
+  if (res.exitCode !== 0) {
+    throw new Error(`${profile.install.join(" ")} failed in ${dir}:\n${res.stderr || res.stdout}`);
+  }
+}
+
+/**
+ * Explicitly moves the baseline tag to the target branch's current head (`npm run baseline:update`).
  * The only code path that changes the tag; merges never do. Returns both commits so the
  * caller can record who moved it, when and from where.
  */
 export async function moveBaselineTag(
   repoDir: string,
+  targetBranch: string,
 ): Promise<{ previous: string; current: string }> {
   const previous = (await git(repoDir, ["rev-parse", `${BASELINE_TAG}^{commit}`])).trim();
-  const current = (await git(repoDir, ["rev-parse", "main^{commit}"])).trim();
+  const current = (await git(repoDir, ["rev-parse", `${targetBranch}^{commit}`])).trim();
   if (previous !== current) await git(repoDir, ["tag", "-f", BASELINE_TAG, current]);
   return { previous, current };
 }

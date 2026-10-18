@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { FIXTURES_DIR } from "../paths.js";
 import type { ReviewVerdict } from "../schemas/agents.js";
 import { FakeRuntime } from "../testing/fakes.js";
 import { loadReviewCases, type ReviewCase } from "./review-cases.js";
@@ -12,6 +11,7 @@ import {
   runReviewEval,
   scoreCase,
 } from "./review-eval.js";
+import { loadEvalStand } from "./stand.js";
 import { loadTaskSpec } from "./tasks.js";
 
 let tmp: string;
@@ -132,6 +132,7 @@ describe("runReviewEval", () => {
         return Promise.resolve({ structured: verdict({ criteria }) });
       },
     });
+    const stand = await loadEvalStand();
     const results = await runReviewEval({
       cases: subset,
       reviewers: [
@@ -139,7 +140,8 @@ describe("runReviewEval", () => {
         { label: "lenient", runtime: lenient, model: "m2" },
       ],
       loadTask: loadTaskSpec,
-      baselineSource: path.join(FIXTURES_DIR, "taskflow"),
+      baselineSource: stand.fixtureDir,
+      projectConfig: stand.projectConfig,
       outDir: tmp,
       maxDiffChars: 100_000,
       timeoutMs: 10_000,

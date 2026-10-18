@@ -11,7 +11,8 @@ export interface Worktree {
 /**
  * Creates an isolated worktree of the target repo on a new branch
  * `factory/<taskId>-<runId>`, starting at `baseCommit`. The repo's host-installed
- * node_modules is symlinked in so the developer agent can run the project's checks.
+ * dependency directory (`hostDepsDir`, e.g. node_modules or .venv) is symlinked in so the
+ * developer agent can run the project's checks.
  *
  * Idempotent: if a previous attempt (e.g. a crashed `prepare`) already created the
  * worktree on the expected branch, it is reused and reset to `baseCommit`.
@@ -22,6 +23,8 @@ export async function createWorktree(opts: {
   worktreesDir: string;
   taskId: string;
   runId: string;
+  /** Dependency directory of the main clone to link in (null: none). */
+  hostDepsDir: string | null;
 }): Promise<Worktree> {
   const name = `${opts.taskId}-${opts.runId}`;
   const branch = `factory/${name}`;
@@ -39,12 +42,19 @@ export async function createWorktree(opts: {
     await git(opts.repoDir, ["worktree", "add", "-q", "-b", branch, wtPath, opts.baseCommit]);
   }
 
-  const nodeModules = path.join(opts.repoDir, "node_modules");
-  const link = path.join(wtPath, "node_modules");
-  if ((await exists(nodeModules)) && !(await exists(link))) {
-    await symlink(nodeModules, link, "dir");
-  }
+  if (opts.hostDepsDir !== null) await linkHostDeps(opts.repoDir, wtPath, opts.hostDepsDir);
   return wt;
+}
+
+/** Symlinks `<repoDir>/<depsDir>` into `<wtPath>/<depsDir>` if the source exists. */
+export async function linkHostDeps(
+  repoDir: string,
+  wtPath: string,
+  depsDir: string,
+): Promise<void> {
+  const source = path.join(repoDir, depsDir);
+  const link = path.join(wtPath, depsDir);
+  if ((await exists(source)) && !(await exists(link))) await symlink(source, link, "dir");
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -97,11 +107,19 @@ export async function resetWorktree(
  * returns the commit hash. Commits even when nothing changed, so every cycle has a
  * snapshot to compare against.
  */
-export async function snapshot(wt: Worktree, message: string): Promise<string> {
+export async function snapshot(
+  wt: Worktree,
+  message: string,
+  /** The linked host dependency directory, which must never be committed. */
+  hostDepsDir: string | null = null,
+): Promise<string> {
   await git(wt.path, ["add", "-A"]);
   const staged = await git(wt.path, ["diff", "--cached", "--name-only"]);
-  if (staged.split("\n").some((f) => f === "node_modules" || f.startsWith("node_modules/"))) {
-    throw new Error("refusing to snapshot: node_modules is staged");
+  if (
+    hostDepsDir !== null &&
+    staged.split("\n").some((f) => f === hostDepsDir || f.startsWith(`${hostDepsDir}/`))
+  ) {
+    throw new Error(`refusing to snapshot: ${hostDepsDir} is staged`);
   }
   await git(wt.path, ["commit", "-q", "--no-verify", "--allow-empty", "-m", message]);
   return (await git(wt.path, ["rev-parse", "HEAD"])).trim();

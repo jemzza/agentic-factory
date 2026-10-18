@@ -2,17 +2,54 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FACTORY_ROOT } from "../paths.js";
 import type { AgentRole } from "../runtimes/types.js";
+import type { ProjectConfig } from "../schemas/project.js";
 import type { TaskContent } from "../schemas/task.js";
 
 export const PROMPTS_DIR = path.join(FACTORY_ROOT, "prompts");
 
+/** Project facts a role prompt may reference as `{{name}}` (from .factory/config.yaml). */
+export interface PromptVars {
+  /** The command the developer runs before finishing, e.g. `npm run check`. */
+  self_check: string;
+  /** Dependency manifests the developer must not change. */
+  dependency_files: string;
+  /** Paths no agent may change. */
+  protected_paths: string;
+}
+
+/** Replaces `{{name}}` placeholders; a placeholder without a value is a factory bug. */
+export function fillPlaceholders(text: string, vars: PromptVars): string {
+  return text.replace(/\{\{([a-z_]+)\}\}/g, (_m, name: string) => {
+    if (!(name in vars)) throw new Error(`prompt placeholder {{${name}}} has no value`);
+    return vars[name as keyof PromptVars];
+  });
+}
+
+/** `a`, `b` → "`a`, `b`" (for prompt lists). */
+export const codeList = (items: readonly string[]) => items.map((i) => `\`${i}\``).join(", ");
+
+export function promptVars(c: ProjectConfig): PromptVars {
+  return {
+    self_check: c.profile.self_check,
+    dependency_files: codeList(c.profile.dependency_files),
+    protected_paths: codeList(c.scope.protected_paths),
+  };
+}
+
 /**
- * System prompt for a role: the role's instructions plus the target repository's
- * conventions. Conventions are injected by the factory because the runtime runs with
- * all settings sources disabled (no CLAUDE.md auto-loading).
+ * System prompt for a role: the role's instructions (with project facts filled in) plus the
+ * target repository's conventions. Conventions are injected by the factory because the
+ * runtime runs with all settings sources disabled (no CLAUDE.md auto-loading).
  */
-export async function buildSystemPrompt(role: AgentRole, conventions: string): Promise<string> {
-  const rolePrompt = await readFile(path.join(PROMPTS_DIR, `${role}.md`), "utf8");
+export async function buildSystemPrompt(
+  role: AgentRole,
+  conventions: string,
+  vars: PromptVars,
+): Promise<string> {
+  const rolePrompt = fillPlaceholders(
+    await readFile(path.join(PROMPTS_DIR, `${role}.md`), "utf8"),
+    vars,
+  );
   return [
     rolePrompt.trim(),
     "## Repository conventions",

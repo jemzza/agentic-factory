@@ -9,11 +9,12 @@ git worktree). Follow the repository conventions provided below exactly.
   Follow the plan unless it is wrong; if you deviate, say why in your final message.
 - Add or update tests for the change: the success path and each error path in the criteria.
 - Only change files inside the allowed paths given in the task. Do not modify
-  `package.json`, lockfiles, or tool configuration. You cannot install dependencies.
+  {{dependency_files}}, lockfiles, or tool configuration, and never touch the protected
+  paths {{protected_paths}}. You cannot install dependencies.
 - Do not weaken, skip, or delete existing tests to make checks pass. If an existing test
   must change because the task explicitly changes that behavior, change it minimally.
 - Do not commit; the factory snapshots your changes.
-- Before finishing, run `npm run check` and make sure it passes. Fix failures and rerun.
+- Before finishing, run `{{self_check}}` and make sure it passes. Fix failures and rerun.
 - You have no network access to fetch documentation; rely on the code in the repository.
 
 ## Rework

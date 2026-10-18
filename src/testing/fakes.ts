@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { git } from "../git/git.js";
-import type { TargetRepo } from "../git/target-repo.js";
+import type { ProjectSource, TargetRepo } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
 import type { PlannerOutput, ReviewVerdict } from "../schemas/agents.js";
@@ -53,6 +53,33 @@ export const FAKE_PLAN: PlannerOutput = {
 };
 
 /** Minimal `openspec init --tools none` layout, so the real `openspec validate` can run. */
+/** `.factory/config.yaml` of the fake target (a Node profile; checks are faked anyway). */
+export const FAKE_PROJECT_CONFIG_YAML = `version: 1
+profile:
+  image: node22
+  dependency_files: [package.json]
+  host_deps_dir: node_modules
+  install: "true"
+  checks:
+    - { name: typecheck, run: npm run typecheck }
+    - { name: test, run: npm test }
+  agent_commands: [npm run check, npm test]
+  self_check: npm run check
+conventions_file: CLAUDE.md
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+  protected_paths: [".factory/**", "CLAUDE.md"]
+budget_defaults:
+  max_gate_fix_cycles: 2
+  max_review_cycles: 1
+  max_cost_usd: 1.0
+  timeout_minutes: 15
+target_branch: main
+`;
+
+/** The fake target as a project (materialized by tests themselves via ensureRepo). */
+export const FAKE_PROJECT: ProjectSource = { id: "t", source: { kind: "fixture", path: "unused" } };
+
 export const OPENSPEC_SKELETON: Record<string, string> = {
   "openspec/config.yaml": "schema: spec-driven\n",
   "openspec/specs/.gitkeep": "",
@@ -163,7 +190,12 @@ export async function makeFakeRepo(
   await writeFile(path.join(dir, "package.json"), '{"name":"t"}\n');
   await writeFile(path.join(dir, "CLAUDE.md"), "# Target conventions\nUse the clock.\n");
   await writeFile(path.join(dir, "src", "index.ts"), "export {};\n");
-  for (const [rel, content] of Object.entries({ ...OPENSPEC_SKELETON, ...extraFiles })) {
+  const files = {
+    ...OPENSPEC_SKELETON,
+    ".factory/config.yaml": FAKE_PROJECT_CONFIG_YAML,
+    ...extraFiles,
+  };
+  for (const [rel, content] of Object.entries(files)) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
     await writeFile(path.join(dir, rel), content);
   }
@@ -178,16 +210,6 @@ export function fakeConfig(workdir: string): ResolvedConfig {
   return {
     workdir,
     workdirAbs: workdir,
-    target: {
-      name: "t",
-      source: { kind: "fixture", path: "unused" },
-      install: ["true"],
-      checks: [
-        { name: "typecheck", command: ["npm", "run", "typecheck"] },
-        { name: "test", command: ["npm", "test"] },
-      ],
-      conventionsFile: "CLAUDE.md",
-    },
     models: { planner: "p-model", developer: "d-model", reviewer: "r-model" },
     roles: {
       planner: { runtime: "claude-code", model: "p-model", keyEnv: [] },

@@ -18,6 +18,7 @@ import {
   fakeReviewer,
   FakeRuntime,
   makeFakeRepo,
+  FAKE_PROJECT,
 } from "../testing/fakes.js";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { buildGraph } from "../workflow/graph.js";
@@ -58,6 +59,7 @@ async function successfulRun(exec: SandboxExec = fakeExec) {
     runtime,
     runsDir: path.join(base, "runs"),
     store,
+    project: FAKE_PROJECT,
     ensureRepo: () => Promise.resolve(repo),
     makeSandboxExec: () => Promise.resolve(exec),
     specApprovalMode: "auto",
@@ -282,10 +284,10 @@ describe("merge gate", () => {
     try {
       await decide(c, "merge");
       expect(await head(c.repo.dir, "factory-baseline")).toBe(c.baseline);
-      const moved = await moveBaselineTag(c.repo.dir);
+      const moved = await moveBaselineTag(c.repo.dir, "main");
       expect(moved).toEqual({ previous: c.baseline, current: await head(c.repo.dir) });
       expect(await head(c.repo.dir, "factory-baseline")).toBe(await head(c.repo.dir));
-      expect(await moveBaselineTag(c.repo.dir)).toEqual({
+      expect(await moveBaselineTag(c.repo.dir, "main")).toEqual({
         previous: moved.current,
         current: moved.current,
       });

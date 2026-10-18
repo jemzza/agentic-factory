@@ -1,0 +1,23 @@
+# Agentic Software Factory settings for this repository. The factory reads this file from the
+# target branch as committed (never from an agent's worktree); agents may not change it.
+version: 1
+profile:
+  image: node22 # sandbox/node22/ in the factory repository
+  dependency_files: [package.json, package-lock.json]
+  host_deps_dir: node_modules
+  install: npm ci --no-audit --no-fund
+  checks:
+    - { name: typecheck, run: npm run typecheck }
+    - { name: test, run: npm test }
+  agent_commands: [npm run check, npm run typecheck, npm test, npm run test]
+  self_check: npm run check
+conventions_file: CLAUDE.md
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+  protected_paths: [".factory/**", ".github/**", "CLAUDE.md"]
+budget_defaults:
+  max_gate_fix_cycles: 2
+  max_review_cycles: 1
+  max_cost_usd: 1.0
+  timeout_minutes: 15
+target_branch: main

@@ -7,21 +7,23 @@ export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 const DEVELOPER_TOOLS = new Set(["Read", "Grep", "Glob", "Edit", "Write", "Bash"]);
 
 /**
- * Default developer tool set: edit files and run the project's own checks.
- * Bash rules are exact commands, no wildcards: e.g. `git diff *` would admit
+ * Developer tool set for a project: edit files and run the project's own commands
+ * (`profile.agent_commands` in its .factory/config.yaml), plus read-only git. Bash rules are
+ * exact commands, no wildcards: e.g. `git diff *` would admit
  * `git diff --output=<path outside the worktree>`.
  */
-export const DEVELOPER_DEFAULT_TOOLS = [
-  ...READ_ONLY_TOOLS,
-  "Edit",
-  "Write",
-  "Bash(npm run check)",
-  "Bash(npm run typecheck)",
-  "Bash(npm test)",
-  "Bash(npm run test)",
-  "Bash(git status)",
-  "Bash(git diff)",
-];
+export function developerTools(agentCommands: readonly string[]): string[] {
+  const tools = [
+    ...READ_ONLY_TOOLS,
+    "Edit",
+    "Write",
+    ...agentCommands.map((c) => `Bash(${c})`),
+    "Bash(git status)",
+    "Bash(git diff)",
+  ];
+  assertToolsAllowed("developer", tools);
+  return tools;
+}
 
 /**
  * Files no agent may touch, even inside the worktree. Expressed as Claude Code

@@ -122,6 +122,8 @@ export const RunReportSchema = z.strictObject({
   task: StoredTaskSpecSchema,
   runtime: z.string(),
   models: z.record(z.string(), z.string()),
+  /** Project from projects.yaml (absent in reports written before projects existed). */
+  projectId: z.string().optional(),
   target: z
     .strictObject({ name: z.string(), repoDir: z.string(), baseCommit: z.string() })
     .nullable(),

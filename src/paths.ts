@@ -12,6 +12,3 @@ export const FIXTURES_DIR = path.join(FACTORY_ROOT, "fixtures");
 
 /** Shared helper copied next to hidden tests. */
 export const HIDDEN_HARNESS_FILE = path.join(HIDDEN_DIR, "_harness.ts");
-
-/** Where hidden tests are placed inside a throwaway copy of the target repository. */
-export const HIDDEN_TESTS_DIR_IN_TARGET = path.join("tests", "__hidden__");

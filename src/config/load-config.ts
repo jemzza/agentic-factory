@@ -7,6 +7,12 @@ import { FactoryConfigSchema, roleBindingIssues, type FactoryConfig } from "../s
 
 export const CONFIG_FILE = path.join(FACTORY_ROOT, "factory.config.ts");
 
+/** The config file in use: `FACTORY_CONFIG` (relative to the factory root) or the default. */
+export function configFile(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env["FACTORY_CONFIG"];
+  return override ? path.resolve(FACTORY_ROOT, override) : CONFIG_FILE;
+}
+
 /** What factory.config.ts exports (input shape: defaults may be omitted). */
 export type FactoryConfigInput = z.input<typeof FactoryConfigSchema>;
 
@@ -46,7 +52,7 @@ export function resolveConfig(
  * from evals/ (hidden tests, reference patches) may be reachable from it.
  */
 export async function loadConfig(
-  file: string = CONFIG_FILE,
+  file: string = configFile(),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ResolvedConfig> {
   const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };

@@ -3,14 +3,19 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { git } from "../git/git.js";
-import { ensureTargetRepo, type RepoRef, type TargetRepo } from "../git/target-repo.js";
+import { readProjectConfig } from "../config/projects.js";
+import {
+  ensureTargetRepo,
+  type ProjectSource,
+  type RepoRef,
+  type TargetRepo,
+} from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
-import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
+import { ensureSandboxImage, runInSandbox, type SandboxProfile } from "../quality/sandbox.js";
 import type { AgentRole, AgentRuntime } from "../runtimes/types.js";
-import type { TargetConfig } from "../schemas/config.js";
 import { RunReportSchema, type RunReport } from "../schemas/report.js";
 import type { PersistedSpecChange } from "../schemas/spec.js";
-import type { TaskSpec } from "../schemas/task.js";
+import { resolveTask, type TaskFile, type TaskSpec } from "../schemas/task.js";
 import type { RunRow, Store } from "../store/store.js";
 import { Command, MemorySaver } from "@langchain/langgraph";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
@@ -25,10 +30,12 @@ export interface RunTaskDeps {
   runtimes?: Partial<Record<AgentRole, AgentRuntime>>;
   /** Directory for run outputs (`runs/`). */
   runsDir: string;
-  /** Returns a sandbox executor for the target repo. Default: Docker sandbox. */
-  makeSandboxExec?: (repoDir: string) => Promise<SandboxExec>;
-  /** Materializes the target repo. Default: ensureTargetRepo. */
-  ensureRepo?: (target: TargetConfig, workdir: string, from: RepoRef) => Promise<TargetRepo>;
+  /** The project (projects.yaml entry, or the eval stand's source override). */
+  project: ProjectSource;
+  /** Returns a sandbox executor for the project's profile. Default: Docker sandbox. */
+  makeSandboxExec?: (repoDir: string, profile: SandboxProfile) => Promise<SandboxExec>;
+  /** Materializes the project's repo. Default: ensureTargetRepo. */
+  ensureRepo?: (project: ProjectSource, workdir: string, from: RepoRef) => Promise<TargetRepo>;
   now?: () => Date;
   /** Progress messages for the CLI. */
   log?: (message: string) => void;
@@ -81,8 +88,11 @@ export function makeRunId(now: Date): string {
   return `${ts}-${randomBytes(2).toString("hex")}`;
 }
 
-export const defaultSandboxExec = async (repoDir: string): Promise<SandboxExec> => {
-  const image = await ensureSandboxImage(repoDir);
+export const defaultSandboxExec = async (
+  repoDir: string,
+  profile: SandboxProfile,
+): Promise<SandboxExec> => {
+  const image = await ensureSandboxImage(repoDir, profile);
   return (worktreePath, command, timeoutMs) =>
     runInSandbox(worktreePath, command, timeoutMs, { image });
 };
@@ -109,6 +119,7 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
     config: deps.config,
     runtimeFor: (role) => deps.runtimes?.[role] ?? deps.runtime,
     store: deps.store,
+    project: deps.project,
     ensureRepo: deps.ensureRepo ?? ensureTargetRepo,
     makeSandboxExec: deps.makeSandboxExec ?? defaultSandboxExec,
     now,
@@ -303,7 +314,7 @@ function renderSpecApprovalNotice(
  * structured verdict — never by the developer's message.
  */
 export async function runTask(
-  task: TaskSpec,
+  taskFile: TaskFile,
   deps: RunTaskDeps,
   opts: { runId?: string } = {},
 ): Promise<RunOutcome> {
@@ -315,9 +326,32 @@ export async function runTask(
   await mkdir(runDir, { recursive: true });
   const mode = deps.runContext?.mode ?? "interactive";
   const specApprovalMode = mode === "eval" ? "auto" : (deps.specApprovalMode ?? "manual");
+  const repoRef: RepoRef = mode === "eval" ? "baseline" : "main";
+
+  // The project's rules come from its main clone as committed (eval: at the baseline tag),
+  // read once here and frozen in the run state. Missing task scope/budget take its defaults.
+  const repo = await (deps.ensureRepo ?? ensureTargetRepo)(
+    deps.project,
+    config.workdirAbs,
+    repoRef,
+  );
+  const projectConfig = await readProjectConfig(repo.dir, repo.baseCommit);
+  if (repoRef === "main") {
+    const branch = (await git(repo.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (branch !== projectConfig.config.target_branch) {
+      throw new Error(
+        `${repo.dir} has ${branch} checked out, but the project's target_branch is ${projectConfig.config.target_branch}`,
+      );
+    }
+  }
+  const task = resolveTask(taskFile, {
+    scope: projectConfig.config.scope,
+    budget: projectConfig.config.budget_defaults,
+  });
 
   store?.createRun({
     id: runId,
+    projectId: deps.project.id,
     taskId: task.id,
     mode,
     budgetUsd: task.budget.max_cost_usd,
@@ -337,7 +371,12 @@ export async function runTask(
       task,
       mode,
       specApprovalMode,
-      repoRef: mode === "eval" ? "baseline" : "main",
+      repoRef,
+      project: {
+        id: deps.project.id,
+        configCommit: projectConfig.commit,
+        config: projectConfig.config,
+      },
       startedAtMs: started.getTime(),
       deadlineMs: started.getTime() + task.budget.timeout_minutes * 60_000,
     };

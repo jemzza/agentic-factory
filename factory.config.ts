@@ -1,20 +1,12 @@
 // Factory configuration, validated with Zod at load time (src/config/load-config.ts).
 // Secrets never go here: provider keys live in .env (git-ignored) and are referenced by
-// variable name only.
+// variable name only. Projects are not configured here: they are registered in
+// projects.yaml, and each project's rules live in its own .factory/config.yaml.
+// Another file can be used for one command with FACTORY_CONFIG=<file>.
 import type { FactoryConfigInput } from "./src/config/load-config.js";
 
 const config: FactoryConfigInput = {
   workdir: "~/agentic-factory-work",
-  target: {
-    name: "taskflow",
-    source: { kind: "fixture", path: "fixtures/taskflow" },
-    install: ["npm", "ci", "--no-audit", "--no-fund"],
-    checks: [
-      { name: "typecheck", command: ["npm", "run", "typecheck"] },
-      { name: "test", command: ["npm", "test"] },
-    ],
-    conventionsFile: "CLAUDE.md",
-  },
   roles: {
     planner: { runtime: "claude-code", model: "opus" },
     developer: { runtime: "claude-code", model: "opus" },

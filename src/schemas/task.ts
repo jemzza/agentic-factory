@@ -63,6 +63,51 @@ const taskFields = {
 export const TaskSpecSchema = z.strictObject({ ...taskFields, budget: TaskFileBudgetSchema });
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;
 
+/**
+ * A task as a human writes it for a project (a YAML file or, later, a GitHub issue): scope and
+ * budget are optional and default to the project's `.factory/config.yaml`. Any budget field
+ * that is given still obeys the factory's caps. `resolveTask` turns it into a full TaskSpec.
+ */
+export const TaskFileSchema = z.strictObject({
+  ...taskFields,
+  scope: taskFields.scope.optional(),
+  budget: z.preprocess(
+    (value, ctx) => {
+      if (typeof value === "object" && value !== null && "max_fix_cycles" in value) {
+        ctx.addIssue({
+          code: "custom",
+          message: LEGACY_FIX_CYCLES_MESSAGE,
+          path: ["max_fix_cycles"],
+        });
+        return Object.fromEntries(Object.entries(value).filter(([k]) => k !== "max_fix_cycles"));
+      }
+      return value;
+    },
+    z
+      .strictObject({
+        max_gate_fix_cycles: z.number().int().min(0).max(MAX_CYCLES_PER_KIND),
+        max_review_cycles: z.number().int().min(0).max(MAX_CYCLES_PER_KIND),
+        max_cost_usd: z.number().positive(),
+        timeout_minutes: z.number().positive(),
+      })
+      .partial()
+      .optional(),
+  ),
+});
+export type TaskFile = z.infer<typeof TaskFileSchema>;
+
+/** Fills a task's missing scope and budget fields from the project's defaults. */
+export function resolveTask(
+  task: TaskFile,
+  defaults: { scope: { allowed_paths: string[] }; budget: TaskBudget },
+): TaskSpec {
+  return TaskSpecSchema.parse({
+    ...task,
+    scope: task.scope ?? { allowed_paths: defaults.scope.allowed_paths },
+    budget: { ...defaults.budget, ...(task.budget ?? {}) },
+  });
+}
+
 /** A task as stored in run state and reports: current budget, or the pre-split one. */
 export const StoredTaskSpecSchema = z.strictObject({
   ...taskFields,

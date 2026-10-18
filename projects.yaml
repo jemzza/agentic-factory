@@ -1,0 +1,8 @@
+# Projects served by this factory. Each project keeps its own rules in .factory/config.yaml
+# in its repository (read from the target branch as committed, never from an agent's
+# worktree). `source` is where the factory gets the repository; the eval stand
+# (evals/eval.config.yaml) has its own source and never uses a remote.
+version: 1
+projects:
+  - id: taskflow
+    source: { kind: fixture, path: fixtures/taskflow }

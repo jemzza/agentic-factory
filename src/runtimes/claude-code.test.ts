@@ -10,7 +10,7 @@ import {
   isProviderUnavailable,
   parseStreamJson,
 } from "./claude-code.js";
-import { DEVELOPER_DEFAULT_TOOLS, READ_ONLY_TOOLS } from "./tool-policy.js";
+import { developerTools, READ_ONLY_TOOLS } from "./tool-policy.js";
 import type { AgentRunInput } from "./types.js";
 
 const FAKE = path.join(
@@ -63,7 +63,7 @@ describe("buildClaudeArgs", () => {
 
   it("runs the developer in acceptEdits mode with exact Bash allow rules only", () => {
     const argv = buildClaudeArgs(
-      input({ role: "developer", allowedTools: DEVELOPER_DEFAULT_TOOLS }),
+      input({ role: "developer", allowedTools: developerTools(["npm run check", "npm test"]) }),
       "opus",
     );
     expect(flag(argv, "--tools")).toEqual(["Read,Grep,Glob,Edit,Write,Bash"]);

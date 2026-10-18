@@ -33,6 +33,7 @@ const jsonText = <S extends z.ZodType>(schema: S) =>
 
 export const RunRowSchema = z.object({
   id: z.string(),
+  project_id: z.string(),
   task_id: z.string(),
   mode: z.enum(["interactive", "eval"]),
   eval_id: z.string().nullable(),
@@ -103,6 +104,7 @@ export type EventKind = (typeof EVENT_KINDS)[number];
 export const EventRowSchema = z.object({
   id: z.number().int(),
   run_id: z.string(),
+  project_id: z.string(),
   ts: z.string(),
   kind: z.enum(EVENT_KINDS),
   node: z.string().nullable(),
@@ -114,6 +116,7 @@ export type EventRow = z.output<typeof EventRowSchema>;
 export const ApprovalRowSchema = z.object({
   id: z.number().int(),
   run_id: z.string(),
+  project_id: z.string(),
   gate: z.enum(["spec", "merge"]),
   decision: z.enum(["approve", "reject", "merge", "close"]),
   actor: z.string(),
@@ -125,6 +128,7 @@ export type ApprovalRow = z.output<typeof ApprovalRowSchema>;
 export const BaselineRowSchema = z.object({
   id: z.number().int(),
   target: z.string(),
+  project_id: z.string(),
   tag: z.string(),
   commit_hash: z.string(),
   previous_hash: z.string().nullable(),
@@ -144,6 +148,7 @@ export const EvalRowSchema = z.object({
   cost_cap_usd: z.number().nullable(),
   cost_usd: z.number(),
   summary_path: z.string().nullable(),
+  project_id: z.string(),
   kind: z.enum(["run", "rescore"]),
   source_eval_id: z.string().nullable(),
 });
@@ -151,6 +156,8 @@ export type EvalRow = z.output<typeof EvalRowSchema>;
 
 export interface NewRun {
   id: string;
+  /** Project from projects.yaml. */
+  projectId: string;
   taskId: string;
   mode: "interactive" | "eval";
   budgetUsd: number;
@@ -259,14 +266,15 @@ export class Store {
     const now = run.startedAt ?? this.ts();
     this.db
       .prepare(
-        `INSERT INTO runs (id, task_id, mode, eval_id, eval_repeat, status, spec_approval, started_at,
-           updated_at, budget_usd, roles_json, baseline_commit, gate_fix_cycles, review_cycles,
-           spec_revisions)
-         VALUES (@id, @taskId, @mode, @evalId, @evalRepeat, @status, @specApproval, @now, @now, @budgetUsd,
-           @roles, @baselineCommit, 0, 0, @specRevisions)`,
+        `INSERT INTO runs (id, project_id, task_id, mode, eval_id, eval_repeat, status, spec_approval,
+           started_at, updated_at, budget_usd, roles_json, baseline_commit, gate_fix_cycles,
+           review_cycles, spec_revisions)
+         VALUES (@id, @projectId, @taskId, @mode, @evalId, @evalRepeat, @status, @specApproval, @now,
+           @now, @budgetUsd, @roles, @baselineCommit, 0, 0, @specRevisions)`,
       )
       .run({
         id: run.id,
+        projectId: run.projectId,
         taskId: run.taskId,
         mode: run.mode,
         evalId: run.evalId ?? null,
@@ -451,16 +459,26 @@ export class Store {
 
   // ---- events -------------------------------------------------------------
 
+  /** Project of a run (events and approvals carry it too). */
+  private projectOfRun(runId: string): string {
+    const row = this.db.prepare("SELECT project_id FROM runs WHERE id = ?").get(runId) as
+      { project_id: string } | undefined;
+    if (!row) throw new Error(`run ${runId} not found`);
+    return row.project_id;
+  }
+
   appendEvent(
     runId: string,
     event: { kind: EventKind; node?: string | null; next?: string | null; payload?: unknown },
   ): void {
     this.db
       .prepare(
-        "INSERT INTO events (run_id, ts, kind, node, next, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        `INSERT INTO events (run_id, project_id, ts, kind, node, next, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         runId,
+        this.projectOfRun(runId),
         this.ts(),
         event.kind,
         event.node ?? null,
@@ -487,10 +505,12 @@ export class Store {
   }): ApprovalRow {
     const info = this.db
       .prepare(
-        "INSERT INTO approvals (run_id, gate, decision, actor, comment, decided_at) VALUES (?, ?, ?, ?, ?, ?)",
+        `INSERT INTO approvals (run_id, project_id, gate, decision, actor, comment, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         a.runId,
+        this.projectOfRun(a.runId),
         a.gate,
         a.decision,
         a.actor,
@@ -521,10 +541,12 @@ export class Store {
   }): BaselineRow {
     const info = this.db
       .prepare(
-        `INSERT INTO baselines (target, tag, commit_hash, previous_hash, actor, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO baselines (target, project_id, tag, commit_hash, previous_hash, actor, reason,
+           created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
+        b.target,
         b.target,
         b.tag,
         b.commitHash,
@@ -552,17 +574,19 @@ export class Store {
     repeatCount: number;
     baselineCommit: string;
     costCapUsd: number | null;
+    projectId: string;
     /** A rescore of `sourceEvalId` (hidden tests only, no agent calls). */
     rescoreOf?: string;
   }): EvalRow {
     this.db
       .prepare(
-        `INSERT INTO evals (id, started_at, status, repeat_count, baseline_commit, cost_cap_usd,
-           kind, source_eval_id)
-         VALUES (?, ?, 'running', ?, ?, ?, ?, ?)`,
+        `INSERT INTO evals (id, project_id, started_at, status, repeat_count, baseline_commit,
+           cost_cap_usd, kind, source_eval_id)
+         VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
       )
       .run(
         e.id,
+        e.projectId,
         this.ts(),
         e.repeatCount,
         e.baselineCommit,

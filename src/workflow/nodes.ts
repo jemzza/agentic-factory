@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { developerPrompt, type FixFeedback, type FixReason } from "../agents/developer.js";
 import {
@@ -20,8 +20,14 @@ import {
   prepareMergeCandidate,
   removeTempWorktree,
 } from "../git/merge.js";
-import { BASELINE_TAG, type RepoRef } from "../git/target-repo.js";
-import { buildSystemPrompt } from "../agents/prompts.js";
+import {
+  BASELINE_TAG,
+  ensureHostDeps,
+  type ProjectSource,
+  type RepoRef,
+} from "../git/target-repo.js";
+import { buildSystemPrompt, promptVars } from "../agents/prompts.js";
+import { readConventions } from "../config/projects.js";
 import {
   isApproved,
   REVIEWER_OUTPUT_SCHEMA,
@@ -48,9 +54,11 @@ import {
   type SandboxExec,
 } from "../quality/gate.js";
 import { renderReportMarkdown } from "../report/markdown.js";
-import { DEVELOPER_DEFAULT_TOOLS, READ_ONLY_TOOLS } from "../runtimes/tool-policy.js";
+import { matchesAny } from "../quality/scope.js";
+import type { SandboxProfile } from "../quality/sandbox.js";
+import { developerTools, READ_ONLY_TOOLS } from "../runtimes/tool-policy.js";
 import type { AgentRole, AgentRunResult, AgentRuntime } from "../runtimes/types.js";
-import type { TargetConfig } from "../schemas/config.js";
+import { profileChecks, splitCommand, type ProjectConfig } from "../schemas/project.js";
 import { RunReportSchema, type RunReport, type StepResult } from "../schemas/report.js";
 import { cycleLimits } from "../schemas/task.js";
 import type { Store } from "../store/store.js";
@@ -59,6 +67,7 @@ import {
   MergeAnswerSchema,
   SpecApprovalAnswerSchema,
   type NodeName,
+  type ProjectSnapshot,
   type RunStateUpdate,
   type RunStateValue,
   type StepError,
@@ -70,8 +79,10 @@ export interface NodeContext {
   /** Runtime serving each role (from the config's role bindings). */
   runtimeFor: (role: AgentRole) => AgentRuntime;
   store?: Store | undefined;
-  ensureRepo: (target: TargetConfig, workdir: string, from: RepoRef) => Promise<TargetRepo>;
-  makeSandboxExec: (repoDir: string) => Promise<SandboxExec>;
+  /** The project this run belongs to (where its repository comes from). */
+  project: ProjectSource;
+  ensureRepo: (project: ProjectSource, workdir: string, from: RepoRef) => Promise<TargetRepo>;
+  makeSandboxExec: (repoDir: string, profile: SandboxProfile) => Promise<SandboxExec>;
   now: () => Date;
   /**
    * Clock for deadline math (ms): wall time minus time the run spent paused/crashed
@@ -93,6 +104,28 @@ const AGENT_STEP_NODES = new Set(["planner", "developer", "reviewer"]);
 function requireWorktree(s: RunStateValue): Worktree {
   if (!s.worktree) throw new Error("worktree not prepared");
   return s.worktree;
+}
+
+/** The project's frozen settings; runs checkpointed before projects existed cannot continue. */
+function projectOf(s: RunStateValue): ProjectSnapshot {
+  if (!s.project) {
+    throw new Error(
+      "this run was started before projects existed (no project config in its checkpoint); re-run the task",
+    );
+  }
+  return s.project;
+}
+
+export const sandboxProfile = (c: ProjectConfig): SandboxProfile => ({
+  image: c.profile.image,
+  dependencyFiles: c.profile.dependency_files,
+});
+
+/** Changed files under the project's protected paths: never allowed, whatever the scope. */
+export function protectedPathViolations(c: ProjectConfig, changed: readonly string[]): string[] {
+  return changed
+    .filter((f) => matchesAny(f, c.scope.protected_paths))
+    .map((f) => `\`${f}\` is a protected path of this project and may not be changed; revert it`);
 }
 
 /**
@@ -126,6 +159,7 @@ async function agentStep(
 ): Promise<{ res: AgentRunResult; update: RunStateUpdate }> {
   const wt = requireWorktree(s);
   const { config, store } = ctx;
+  const project = projectOf(s).config;
   const runtime = ctx.runtimeFor(role);
   const timeLeft = s.deadlineMs - ctx.deadlineNow();
   const timeoutMs = Math.max(1, Math.min(config.stepTimeoutsMinutes[role] * 60_000, timeLeft));
@@ -141,9 +175,10 @@ async function agentStep(
     role,
     prompt,
     cwd: wt.path,
-    allowedTools: role === "developer" ? DEVELOPER_DEFAULT_TOOLS : [...READ_ONLY_TOOLS],
+    allowedTools:
+      role === "developer" ? developerTools(project.profile.agent_commands) : [...READ_ONLY_TOOLS],
     timeoutMs,
-    systemPrompt: await buildSystemPrompt(role, s.conventions),
+    systemPrompt: await buildSystemPrompt(role, s.conventions, promptVars(project)),
     maxBudgetUsd: Math.max(0.01, roundUsd(remainingCost)),
     model: config.models[role],
     logPath: path.join(logsDir(s), `${String(seq).padStart(2, "0")}-${role}-c${cycle}.jsonl`),
@@ -239,11 +274,14 @@ async function assertNoHiddenArtifacts(dir: string): Promise<void> {
 export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
   const { config } = ctx;
   const worktreesRoot = path.join(config.workdirAbs, "worktrees");
-  let execCache: { repoDir: string; exec: Promise<SandboxExec> } | null = null;
-  const execFor = (repoDir: string) => {
-    if (execCache?.repoDir !== repoDir) execCache = { repoDir, exec: ctx.makeSandboxExec(repoDir) };
+  let execCache: { key: string; exec: Promise<SandboxExec> } | null = null;
+  const execFor = (repoDir: string, c: ProjectConfig) => {
+    const profile = sandboxProfile(c);
+    const key = JSON.stringify([repoDir, profile]);
+    if (execCache?.key !== key) execCache = { key, exec: ctx.makeSandboxExec(repoDir, profile) };
     return execCache.exec;
   };
+  const hostDepsDir = (s: RunStateValue) => projectOf(s).config.profile.host_deps_dir;
 
   /** The approved spec as committed (never read from the working tree). */
   const approvedSpec = async (s: RunStateValue): Promise<Record<string, string>> => {
@@ -266,31 +304,40 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
   return {
     prepare: node("prepare", async (s) => {
       await mkdir(logsDir(s), { recursive: true });
-      const fullRepo = await ctx.ensureRepo(config.target, config.workdirAbs, s.repoRef);
+      const project = projectOf(s);
+      const fullRepo = await ctx.ensureRepo(ctx.project, config.workdirAbs, s.repoRef);
       const repo = { dir: fullRepo.dir, baseCommit: fullRepo.baseCommit };
       if (fullRepo.baselineCreated && fullRepo.baselineCommit && ctx.store) {
         ctx.store.recordBaseline({
-          target: config.target.name,
+          target: project.id,
           tag: BASELINE_TAG,
           commitHash: fullRepo.baselineCommit,
           actor: "factory",
           reason: "initial materialization",
         });
       }
+      await ensureHostDeps(repo.dir, {
+        install: splitCommand(project.config.profile.install) ?? [],
+        hostDepsDir: project.config.profile.host_deps_dir,
+      });
       const wt = await createWorktree({
         repoDir: repo.dir,
         baseCommit: repo.baseCommit,
         worktreesDir: worktreesRoot,
         taskId: s.task.id,
         runId: s.runId,
+        hostDepsDir: project.config.profile.host_deps_dir,
       });
       ctx.log(`worktree: ${wt.path} (${wt.branch})`);
       await assertNoHiddenArtifacts(wt.path);
-      await execFor(repo.dir); // build/verify the sandbox image up front
-      const conventions = await readFile(
-        path.join(wt.path, config.target.conventionsFile),
-        "utf8",
-      ).catch(() => "(The repository has no conventions file.)");
+      await execFor(repo.dir, project.config); // build/verify the sandbox image up front
+      // From the commit the project config was read from, never from the worktree: an agent
+      // cannot change the conventions it is held to.
+      const conventions = await readConventions(
+        repo.dir,
+        project.configCommit,
+        project.config.conventions_file,
+      );
       ctx.store?.updateRun(s.runId, {
         worktreePath: wt.path,
         branch: wt.branch,
@@ -387,6 +434,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       const commit = await snapshot(
         wt,
         `factory: ${s.task.id} OpenSpec change (draft #${attempt})`,
+        hostDepsDir(s),
       );
       ctx.log(`  spec draft #${attempt}: valid (${changeDir(s.task.id)})`);
       ctx.store?.updateRun(s.runId, { headCommit: commit });
@@ -470,10 +518,20 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         s,
         "developer",
         cycle,
-        developerPrompt(s.task, s.planResult, fixFeedback(s, cycle), await approvedSpec(s)),
+        developerPrompt(
+          s.task,
+          s.planResult,
+          fixFeedback(s, cycle),
+          await approvedSpec(s),
+          projectOf(s).config.profile.self_check,
+        ),
       );
       if (update.lastError) return { ...update, ...counters, cycle, reviewVerdict: null };
-      const commit = await snapshot(wt, `factory: ${s.task.id} developer cycle ${cycle}`);
+      const commit = await snapshot(
+        wt,
+        `factory: ${s.task.id} developer cycle ${cycle}`,
+        hostDepsDir(s),
+      );
       await assertNoHiddenArtifacts(wt.path);
       const steps: StepResult[] = [
         ...(update.steps as StepResult[]),
@@ -491,17 +549,22 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     gate: node("gate", async (s) => {
       const wt = requireWorktree(s);
       if (!s.repo) throw new Error("gate without a target repo");
-      const exec = await execFor(s.repo.dir);
+      const project = projectOf(s).config;
+      const exec = await execFor(s.repo.dir, project);
       const started = ctx.now();
       ctx.log("→ quality gate…");
       const dbStep = ctx.store?.startStep(s.runId, "gate", s.cycle);
+      // Scope covers the developer's work only: everything after the approved spec commit.
+      const changed = (await changedFiles(wt, s.specCommit ?? wt.baseCommit)).map((f) => f.path);
       const gate = await runGate({
         worktreePath: wt.path,
-        // Scope covers the developer's work only: everything after the approved spec commit.
-        changedFiles: (await changedFiles(wt, s.specCommit ?? wt.baseCommit)).map((f) => f.path),
-        policyViolations: await specPolicyViolations(s),
+        changedFiles: changed,
+        policyViolations: [
+          ...(await specPolicyViolations(s)),
+          ...protectedPathViolations(project, changed),
+        ],
         allowedPaths: s.task.scope.allowed_paths,
-        checks: config.target.checks,
+        checks: profileChecks(project),
         checkTimeoutMs: Math.max(
           1,
           Math.min(config.stepTimeoutsMinutes.check * 60_000, s.deadlineMs - ctx.deadlineNow()),
@@ -628,8 +691,13 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           ),
         ].join("+"),
         models: { ...config.models },
+        projectId: s.project?.id ?? ctx.project.id,
         target: s.repo
-          ? { name: config.target.name, repoDir: s.repo.dir, baseCommit: s.repo.baseCommit }
+          ? {
+              name: s.project?.id ?? ctx.project.id,
+              repoDir: s.repo.dir,
+              baseCommit: s.repo.baseCommit,
+            }
           : null,
         worktree: s.worktree
           ? { path: s.worktree.path, branch: s.worktree.branch, headCommit: head }
@@ -722,14 +790,16 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       const wt = requireWorktree(s);
       if (!s.repo || !s.headCommit) throw new Error("merge without a repo or head commit");
       const repoDir = s.repo.dir;
+      const project = projectOf(s).config;
+      const targetBranch = project.target_branch;
       const blocked = (reason: string): RunStateUpdate => {
         ctx.log(`  merge blocked: ${reason}`);
         return { mergeOutcome: { kind: "blocked", reason } };
       };
 
       // Replay after a crash: the branch may already be on main.
-      if (await isMergedIntoMain(repoDir, s.headCommit)) {
-        const mergeCommit = (await findMergeCommit(repoDir, s.runId)) ?? s.headCommit;
+      if (await isMergedIntoMain(repoDir, s.headCommit, targetBranch)) {
+        const mergeCommit = (await findMergeCommit(repoDir, s.runId, targetBranch)) ?? s.headCommit;
         ctx.store?.updateRun(s.runId, {
           status: "merged",
           statusMessage: `merged as ${mergeCommit}`,
@@ -758,6 +828,8 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         runId: s.runId,
         message,
         archive: async (dir) => (await archiveChange(dir, s.task.id))?.archivedAs ?? null,
+        targetBranch,
+        hostDepsDir: project.profile.host_deps_dir,
       });
       if (candidate.kind === "conflict") {
         return blocked(
@@ -782,11 +854,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         const gate = await runGate({
           worktreePath: candidate.worktreePath,
           changedFiles: changed,
+          policyViolations: protectedPathViolations(project, changed),
           // The merge also carries the approved spec and its archive.
           allowedPaths: [...s.task.scope.allowed_paths, "openspec/**"],
-          checks: config.target.checks,
+          checks: profileChecks(project),
           checkTimeoutMs: config.stepTimeoutsMinutes.check * 60_000,
-          exec: await execFor(repoDir),
+          exec: await execFor(repoDir, project),
           logDir: checksDir(s),
           logPrefix: "merge",
         });
@@ -804,7 +877,12 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
             `the quality gate failed on the merge result with current main:\n${describeGateFailures(gate)}`,
           );
         }
-        const ff = await fastForwardMain(repoDir, candidate.mainBefore, candidate.mergeCommit);
+        const ff = await fastForwardMain(
+          repoDir,
+          candidate.mainBefore,
+          candidate.mergeCommit,
+          targetBranch,
+        );
         if (ff.kind === "main_moved") {
           return blocked(
             `main moved to ${ff.mainNow.slice(0, 10)} while the merge was being checked; retry the merge`,

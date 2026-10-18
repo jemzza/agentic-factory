@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prepareTargetCopy } from "./target-copy.js";
-import { FIXTURES_DIR } from "../paths.js";
 import { runCommand } from "../process/run-command.js";
 import { loadReviewCases, verifyManifest } from "./review-cases.js";
+import { loadEvalStand } from "./stand.js";
 import { listTaskIds } from "./tasks.js";
 
 let tmp: string;
@@ -32,10 +32,11 @@ describe("evals/review case set", () => {
     }
   });
 
-  it("every diff applies cleanly to the TaskFlow baseline", async () => {
+  it("every diff applies cleanly to the eval stand's baseline", async () => {
+    const { fixtureDir } = await loadEvalStand();
     for (const c of await loadReviewCases()) {
       const dir = path.join(tmp, c.id);
-      await prepareTargetCopy({ source: path.join(FIXTURES_DIR, "taskflow"), dest: dir });
+      await prepareTargetCopy({ source: fixtureDir, dest: dir });
       const res = await runCommand("git", ["apply", "--check", c.patchPath], {
         cwd: dir,
         timeoutMs: 30_000,

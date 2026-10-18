@@ -39,6 +39,8 @@ export function developerPrompt(
   plan: PlannerOutput,
   feedback?: FixFeedback,
   specFiles: Readonly<Record<string, string>> = {},
+  /** The project's self-check command (`profile.self_check`). */
+  selfCheck = "the project's checks",
 ): string {
   const parts = [renderTask(task)];
   if (Object.keys(specFiles).length > 0) parts.push(renderSpecForPrompt(specFiles));
@@ -50,7 +52,7 @@ export function developerPrompt(
         `## Rework: quality gate failed (gate fix cycle ${ofMax})`,
         "Your previous attempt is already in the working tree but the factory's independent " +
           "checks rejected it. Fix the failures below, keep what already works, then run " +
-          "`npm run check` again.",
+          `\`${selfCheck}\` again.`,
         "### Quality Gate failures (checks run independently in a sandbox)",
         feedback.gateFailures,
       );
@@ -59,7 +61,7 @@ export function developerPrompt(
         `## Rework: reviewer requested changes (review cycle ${ofMax})`,
         "Your previous attempt is already in the working tree. It passed the quality gate, but " +
           "the independent reviewer did not accept it. Address every point below without " +
-          "breaking what passes, then run `npm run check` again.",
+          `breaking what passes, then run \`${selfCheck}\` again.`,
       );
       if (feedback.unmetCriteria.length) {
         parts.push(

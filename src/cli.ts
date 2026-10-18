@@ -7,7 +7,17 @@ import { rescoreEval } from "./eval/rescore.js";
 import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { writeFirstPass } from "./report/first-pass.js";
-import { BASELINE_TAG, ensureTargetRepo, exportTree, moveBaselineTag } from "./git/target-repo.js";
+import {
+  BASELINE_TAG,
+  ensureTargetRepo,
+  exportTree,
+  moveBaselineTag,
+  type ProjectSource,
+} from "./git/target-repo.js";
+import { findProject, loadRegistry, readProjectConfig } from "./config/projects.js";
+import { loadEvalStand } from "./eval/stand.js";
+import { sandboxProfile } from "./workflow/nodes.js";
+import { TaskFileSchema, type TaskFile } from "./schemas/task.js";
 import { FACTORY_ROOT } from "./paths.js";
 import {
   defaultSandboxExec,
@@ -22,6 +32,7 @@ import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { loadReviewCases, verifyManifest } from "./eval/review-cases.js";
 import { renderReviewEvalMarkdown, runReviewEval } from "./eval/review-eval.js";
 import { readFile, writeFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
 import { git } from "./git/git.js";
 import { createRedactor, secretsFromEnv } from "./store/redact.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
@@ -38,9 +49,10 @@ function describeRun(result: CommandResult | null): string {
 
 async function verifyHidden(taskId: string | null): Promise<number> {
   const ids = taskId === null ? await listTaskIds() : [taskId];
+  const stand = await loadEvalStand();
   let failures = 0;
   for (const id of ids) {
-    const v = await verifyHiddenTests(id);
+    const v = await verifyHiddenTests(id, { stand });
     if (!v.ok) failures++;
     console.log(
       `${v.ok ? "PASS" : "FAIL"}  ${id.padEnd(16)} expected=${v.expected.padEnd(19)} ` +
@@ -78,6 +90,35 @@ function runtimeDeps(config: ResolvedConfig) {
   return { runtime: runtimes.developer, runtimes };
 }
 
+/**
+ * Where a run's project comes from: eval runs use the eval stand's own source (never a remote);
+ * interactive runs use the project's entry in projects.yaml.
+ */
+async function projectSourceFor(
+  projectId: string,
+  mode: "interactive" | "eval",
+): Promise<ProjectSource> {
+  if (mode === "eval") {
+    const stand = await loadEvalStand();
+    if (stand.project.id !== projectId) {
+      throw new Error(
+        `eval run of project ${projectId}, but the eval stand is ${stand.project.id}`,
+      );
+    }
+    return stand.project;
+  }
+  const p = findProject(await loadRegistry(), projectId);
+  return { id: p.id, source: p.source };
+}
+
+/** A task to run: a YAML file (any project) or the id of an eval task (the eval stand). */
+async function loadRunnableTask(task: string): Promise<TaskFile> {
+  if (!task.endsWith(".yaml") && !task.endsWith(".yml")) return loadTaskSpec(task);
+  const parsed = TaskFileSchema.safeParse(parseYaml(await readFile(task, "utf8")));
+  if (!parsed.success) throw new Error(`Invalid ${task}: ${parsed.error.message}`);
+  return parsed.data;
+}
+
 function printOutcome(outcome: RunOutcome): number {
   if (outcome.kind === "awaiting") {
     const next =
@@ -102,12 +143,20 @@ const consoleLog = (m: string) => {
   console.log(m);
 };
 
-async function runOne(taskId: string, autoApproveSpec: boolean): Promise<number> {
+async function runOne(
+  projectId: string | null,
+  taskRef: string,
+  autoApproveSpec: boolean,
+): Promise<number> {
   const config = await loadConfig();
-  const task = await loadTaskSpec(taskId);
+  const task = await loadRunnableTask(taskRef);
+  const project = await projectSourceFor(
+    projectId ?? (await loadEvalStand()).project.id,
+    "interactive",
+  );
   const { runtime, runtimes } = runtimeDeps(config);
   console.log(
-    `Running task ${task.id} (budget $${task.budget.max_cost_usd}, ${task.budget.timeout_minutes} min, spec approval: ${autoApproveSpec ? "auto" : "manual"})`,
+    `Running task ${task.id} in project ${project.id} (spec approval: ${autoApproveSpec ? "auto" : "manual"})`,
   );
   const store = openStore(config);
   try {
@@ -116,6 +165,7 @@ async function runOne(taskId: string, autoApproveSpec: boolean): Promise<number>
       runtime,
       runtimes,
       runsDir: RUNS_DIR,
+      project,
       store,
       specApprovalMode: autoApproveSpec ? "auto" : "manual",
       log: consoleLog,
@@ -156,9 +206,10 @@ async function decideGate(
     const actor = os.userInfo().username;
     store.recordApproval({ runId, gate, decision, actor, comment });
     const { runtime, runtimes } = runtimeDeps(config);
+    const project = await projectSourceFor(run.project_id, run.mode);
     const res = await resumeRun(
       runId,
-      { config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog },
+      { config, runtime, runtimes, runsDir: RUNS_DIR, store, project, log: consoleLog },
       { answer: { decision, actor, ...(comment ? { comment } : {}) } },
     );
     if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
@@ -176,6 +227,7 @@ async function decideGate(
 /** Compares the configured reviewers on the frozen evals/review/ set. */
 async function evalReview(only: string | null): Promise<number> {
   const config = await loadConfig();
+  const stand = await loadEvalStand();
   const problems = await verifyManifest();
   if (problems.length) {
     console.error(`error: evals/review/ does not match its manifest:\n- ${problems.join("\n- ")}`);
@@ -197,7 +249,8 @@ async function evalReview(only: string | null): Promise<number> {
     cases,
     reviewers,
     loadTask: loadTaskSpec,
-    baselineSource: path.join(FACTORY_ROOT, "fixtures", "taskflow"),
+    baselineSource: stand.fixtureDir,
+    projectConfig: stand.projectConfig,
     outDir,
     maxDiffChars: config.maxDiffCharsForReview,
     timeoutMs: config.stepTimeoutsMinutes.reviewer * 60_000,
@@ -221,9 +274,11 @@ async function reopenMerge(runId: string): Promise<number> {
   const store = openStore(config);
   try {
     const { runtime, runtimes } = runtimeDeps(config);
+    const run = store.requireRun(runId);
+    const project = await projectSourceFor(run.project_id, run.mode);
     const outcome = await reopenForMerge(
       runId,
-      { config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog },
+      { config, runtime, runtimes, runsDir: RUNS_DIR, store, project, log: consoleLog },
       os.userInfo().username,
     );
     return printOutcome(outcome);
@@ -235,10 +290,13 @@ async function reopenMerge(runId: string): Promise<number> {
 /** Explicit, recorded move of the eval baseline tag (merges never move it). */
 async function baselineUpdate(reason: string): Promise<number> {
   const config = await loadConfig();
-  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "main");
+  // The baseline tag is the eval stand's: eval runs start from it.
+  const { project } = await loadEvalStand();
+  const repo = await ensureTargetRepo(project, config.workdirAbs, "main");
+  const { config: projectConfig } = await readProjectConfig(repo.dir, "HEAD");
   const store = openStore(config);
   try {
-    const { previous, current } = await moveBaselineTag(repo.dir);
+    const { previous, current } = await moveBaselineTag(repo.dir, projectConfig.target_branch);
     if (previous === current) {
       console.log(
         `${BASELINE_TAG} already points at main (${current.slice(0, 10)}); nothing to do`,
@@ -246,7 +304,7 @@ async function baselineUpdate(reason: string): Promise<number> {
       return 0;
     }
     store.recordBaseline({
-      target: config.target.name,
+      target: project.id,
       tag: BASELINE_TAG,
       commitHash: current,
       previousHash: previous,
@@ -333,9 +391,11 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   const ids = taskIds.length > 0 ? taskIds : await listTaskIds();
   const tasks = [];
   for (const id of ids) tasks.push({ task: await loadTaskSpec(id), meta: await loadEvalMeta(id) });
-  // Eval always starts from the immutable baseline tag.
-  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
-  const exec = await defaultSandboxExec(repo.dir);
+  // Eval always starts from the immutable baseline tag of the eval stand (never a remote).
+  const stand = await loadEvalStand();
+  const repo = await ensureTargetRepo(stand.project, config.workdirAbs, "baseline");
+  const { config: baselineProject } = await readProjectConfig(repo.dir, BASELINE_TAG);
+  const exec = await defaultSandboxExec(repo.dir, sandboxProfile(baselineProject));
   const { runtime, runtimes } = runtimeDeps(config);
   const roles = Object.fromEntries(
     (["planner", "developer", "reviewer"] as const).map((r) => [
@@ -347,7 +407,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   const store = openStore(config);
   if (repo.baselineCreated && repo.baselineCommit) {
     store.recordBaseline({
-      target: config.target.name,
+      target: stand.project.id,
       tag: BASELINE_TAG,
       commitHash: repo.baselineCommit,
       actor: "factory",
@@ -369,6 +429,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
         repeatCount: repeat,
         baselineCommit: repo.baseCommit,
         costCapUsd,
+        projectId: stand.project.id,
       });
     evalIds.add(cmd.resume);
   }
@@ -394,6 +455,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
           repeatCount: repeat,
           baselineCommit: repo.baseCommit,
           costCapUsd,
+          projectId: stand.project.id,
         });
       }
       const outcome = await runTask(task, {
@@ -402,6 +464,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
         runtimes,
         runsDir,
         store,
+        project: stand.project,
         runContext: { mode: "eval", evalId, evalRepeat, baselineCommit: repo.baseCommit },
         makeSandboxExec: () => Promise.resolve(exec),
         log: consoleLog,
@@ -423,6 +486,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
         taskId,
         exec,
         timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+        hidden: stand.hidden,
       }),
   });
   for (const id of evalIds) {
@@ -471,10 +535,12 @@ async function evalRescore(evalId: string): Promise<number> {
     return 2;
   }
   const config = await loadConfig();
-  const repo = await ensureTargetRepo(config.target, config.workdirAbs, "baseline");
+  const stand = await loadEvalStand();
+  const repo = await ensureTargetRepo(stand.project, config.workdirAbs, "baseline");
   if (!repo.baselineCommit) throw new Error("the target has no factory-baseline tag");
   const baselineCommit = repo.baselineCommit;
-  const exec = await defaultSandboxExec(repo.dir);
+  const { config: baselineProject } = await readProjectConfig(repo.dir, BASELINE_TAG);
+  const exec = await defaultSandboxExec(repo.dir, sandboxProfile(baselineProject));
   const hiddenTestsCommit = await factoryCommit();
   console.log(
     `Rescore ${evalId}: stored diffs on ${BASELINE_TAG} ${baselineCommit.slice(0, 12)}, hidden tests at ${hiddenTestsCommit}`,
@@ -489,6 +555,7 @@ async function evalRescore(evalId: string): Promise<number> {
         taskId,
         exec,
         timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+        hidden: stand.hidden,
       }),
     log: consoleLog,
   });
@@ -500,6 +567,7 @@ async function evalRescore(evalId: string): Promise<number> {
       repeatCount: summary.repeatsPlanned,
       baselineCommit,
       costCapUsd: null,
+      projectId: stand.project.id,
       ...(store.getEval(evalId) ? { rescoreOf: evalId } : {}),
     });
     store.finishEval(id, {
@@ -530,12 +598,14 @@ async function resumeOne(runId: string): Promise<number> {
   const store = openStore(config);
   try {
     const { runtime, runtimes } = runtimeDeps(config);
+    const run = store.requireRun(runId);
     const res = await resumeRun(runId, {
       config,
       runtime,
       runtimes,
       runsDir: RUNS_DIR,
       store,
+      project: await projectSourceFor(run.project_id, run.mode),
       log: (m) => {
         console.log(m);
       },
@@ -600,7 +670,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "eval-rescore":
       return evalRescore(cmd.evalId);
     case "run":
-      return runOne(cmd.taskId, cmd.autoApproveSpec);
+      return runOne(cmd.projectId, cmd.task, cmd.autoApproveSpec);
     case "decide":
       return decideGate(cmd.runId, cmd.gate, cmd.decision, cmd.comment);
     case "baseline-update":

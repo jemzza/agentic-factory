@@ -34,11 +34,21 @@ function insertReport(
   evalId: string | null,
 ): void {
   const baseline = report.target?.baseCommit ?? null;
+  // Week 1 reports predate projects; their target name is the project id.
+  const projectId = report.projectId ?? report.target?.name;
+  if (projectId === undefined) throw new Error(`report ${report.runId} names no project`);
   if (evalId && !store.getEval(evalId) && baseline) {
-    store.createEval({ id: evalId, repeatCount: 1, baselineCommit: baseline, costCapUsd: null });
+    store.createEval({
+      id: evalId,
+      repeatCount: 1,
+      baselineCommit: baseline,
+      costCapUsd: null,
+      projectId,
+    });
   }
   store.createRun({
     id: report.runId,
+    projectId,
     taskId: report.task.id,
     mode: evalId ? "eval" : "interactive",
     budgetUsd: report.cost.budgetUsd,

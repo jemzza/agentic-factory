@@ -5,11 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prepareTargetCopy } from "../../src/eval/target-copy.js";
-import { FIXTURES_DIR } from "../../src/paths.js";
 import { runCommand } from "../../src/process/run-command.js";
 import { ensureSandboxImage, runInSandbox } from "../../src/quality/sandbox.js";
+import { loadEvalStand, type EvalStand } from "../../src/eval/stand.js";
 
-const TARGET = path.join(FIXTURES_DIR, "taskflow");
+// The eval stand's project (its fixture and sandbox profile).
+let stand: EvalStand;
+let TARGET: string;
 let image: string;
 let workRoot: string;
 let worktree: string;
@@ -18,7 +20,12 @@ const run = (command: string[], timeoutMs = 120_000) =>
   runInSandbox(worktree, command, timeoutMs, { image });
 
 beforeAll(async () => {
-  image = await ensureSandboxImage(TARGET);
+  stand = await loadEvalStand();
+  TARGET = stand.fixtureDir;
+  image = await ensureSandboxImage(TARGET, {
+    image: stand.projectConfig.profile.image,
+    dependencyFiles: stand.projectConfig.profile.dependency_files,
+  });
   workRoot = await mkdtemp(path.join(os.tmpdir(), "factory-sandbox-it-"));
   worktree = path.join(workRoot, "wt");
   await prepareTargetCopy({ source: TARGET, dest: worktree });
@@ -117,8 +124,9 @@ describe("runHiddenTests (docker)", () => {
       taskId: "complete-task",
       exec,
       timeoutMs: 120_000,
+      hidden: stand.hidden,
     });
-    expect(baseline).toMatchObject({ passed: false, total: 4, failed: 3 });
+    expect(baseline).toMatchObject({ passed: false, total: 9, failed: 7 });
     expect(baseline.outputTail).toMatch(/✗ hidden: complete-task/);
 
     const ref = path.join(workRoot, "ref");
@@ -129,8 +137,9 @@ describe("runHiddenTests (docker)", () => {
       taskId: "complete-task",
       exec,
       timeoutMs: 120_000,
+      hidden: stand.hidden,
     });
-    expect(passed).toMatchObject({ passed: true, total: 4, failed: 0 });
+    expect(passed).toMatchObject({ passed: true, total: 9, failed: 0 });
 
     expect(await findHiddenArtifacts(ref)).toEqual([]);
     expect(await findHiddenArtifacts(worktree)).toEqual([]);

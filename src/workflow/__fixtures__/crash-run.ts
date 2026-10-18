@@ -15,6 +15,7 @@ import {
   fakePlanner,
   fakeReviewer,
   FakeRuntime,
+  FAKE_PROJECT,
 } from "../../testing/fakes.js";
 
 interface Args {
@@ -54,6 +55,7 @@ await runTask(
     runtime,
     runsDir: args.runsDir,
     store,
+    project: FAKE_PROJECT,
     ensureRepo: () => Promise.resolve({ dir: args.repoDir, baseCommit: args.baseCommit }),
     makeSandboxExec: () => Promise.resolve(exec),
     specApprovalMode: "auto",

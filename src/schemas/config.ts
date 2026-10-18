@@ -16,18 +16,6 @@ export const CheckSchema = z.strictObject({
 });
 export type Check = z.infer<typeof CheckSchema>;
 
-export const TargetConfigSchema = z.strictObject({
-  name: z.string().regex(/^[a-z][a-z0-9-]*$/),
-  source: TargetSourceSchema,
-  /** Installs dependencies on the host for the developer's own checks (network allowed). */
-  install: Argv,
-  /** Checks run by the Quality Gate inside the sandbox, in order. */
-  checks: z.array(CheckSchema).min(1),
-  /** Repository conventions file injected into every agent's system prompt. */
-  conventionsFile: z.string().min(1),
-});
-export type TargetConfig = z.infer<typeof TargetConfigSchema>;
-
 const Minutes = z.number().positive();
 
 export const RUNTIME_NAMES = ["claude-code", "opencode"] as const;
@@ -44,7 +32,6 @@ export type RoleBinding = z.infer<typeof RoleBindingSchema>;
 export const FactoryConfigSchema = z.strictObject({
   /** Where target repos and worktrees live. Must be outside this repository. `~` expands. */
   workdir: z.string().min(1),
-  target: TargetConfigSchema,
   /**
    * Runtime and model per role. Switching a role to another runtime is a config change, not
    * a code change. OpenCode runs read-only, so it may only serve planner/reviewer.

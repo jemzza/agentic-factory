@@ -6,17 +6,27 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs([])).toEqual({ kind: "help" });
   });
 
-  it("parses run <taskId>", () => {
+  it("parses run <taskId>, a task file and --project", () => {
     expect(parseCliArgs(["run", "complete-task"])).toEqual({
       kind: "run",
-      taskId: "complete-task",
+      projectId: null,
+      task: "complete-task",
       autoApproveSpec: false,
     });
     expect(parseCliArgs(["run", "complete-task", "--auto-approve-spec"])).toEqual({
       kind: "run",
-      taskId: "complete-task",
+      projectId: null,
+      task: "complete-task",
       autoApproveSpec: true,
     });
+    expect(parseCliArgs(["run", "--project", "ledgerlite", "tasks/balance.yaml"])).toEqual({
+      kind: "run",
+      projectId: "ledgerlite",
+      task: "tasks/balance.yaml",
+      autoApproveSpec: false,
+    });
+    expect(parseCliArgs(["run", "--project", "Bad_Id", "x"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["run", "--project"])).toMatchObject({ kind: "invalid" });
   });
 
   it("rejects run without a taskId", () => {

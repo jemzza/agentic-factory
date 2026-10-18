@@ -1,0 +1,44 @@
+# A task for the Agentic Software Factory. Issues with the `factory` label from an allowed
+# user are picked up by `npm run factory:watch`; the issue title is the task title.
+name: Factory task
+description: A development task for the Agentic Software Factory
+labels: [factory]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: Request
+      description: What should change, and why.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: One criterion per line. Each must be checkable.
+      placeholder: |
+        - POST /tasks/:id/archive returns 200 with the archived task
+        - Archiving a deleted task returns 409 CONFLICT
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope (optional)
+      description: Allowed path globs, one per line. Default — the project's scope.
+      placeholder: |
+        src/**
+        tests/**
+    validations:
+      required: false
+  - type: textarea
+    id: budget
+    attributes:
+      label: Budget (optional)
+      description: >-
+        Any of max_cost_usd, timeout_minutes, max_gate_fix_cycles, max_review_cycles as
+        `key: value`, one per line. Default — the project's budget.
+      placeholder: |
+        max_cost_usd: 1.5
+    validations:
+      required: false

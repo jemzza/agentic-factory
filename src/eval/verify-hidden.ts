@@ -1,9 +1,9 @@
 import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { FIXTURES_DIR } from "../paths.js";
 import { succeeded, type CommandResult } from "../process/run-command.js";
-import { ensureSandboxImage, runInSandbox } from "../quality/sandbox.js";
+import { ensureSandboxImage, runInSandbox, type SandboxProfile } from "../quality/sandbox.js";
+import { splitCommand } from "../schemas/project.js";
 import type { ExpectedOutcome } from "../schemas/task.js";
 import {
   DEFAULT_EVAL_DIRS,
@@ -14,7 +14,8 @@ import {
   type EvalDirs,
 } from "./tasks.js";
 import { applyPatch, installHiddenTests, prepareTargetCopy } from "./target-copy.js";
-import { parseVitestCases, VITEST_JSON_SCRIPT, type VitestCase } from "./hidden-tests.js";
+import { parseVitestCases, type VitestCase } from "./hidden-tests.js";
+import type { EvalStand } from "./stand.js";
 
 /** Runs a command against a prepared copy of the target repo. */
 export type CheckRunner = (
@@ -24,8 +25,8 @@ export type CheckRunner = (
 ) => Promise<CommandResult>;
 
 /** Default runner: the Docker sandbox. Sandbox infrastructure failures abort verification. */
-export async function sandboxRunner(target: string): Promise<CheckRunner> {
-  const image = await ensureSandboxImage(target);
+export async function sandboxRunner(target: string, profile: SandboxProfile): Promise<CheckRunner> {
+  const image = await ensureSandboxImage(target, profile);
   return async (cwd, command, timeoutMs) => {
     const res = await runInSandbox(cwd, command, timeoutMs, { image });
     if (res.infraError !== undefined) throw new Error(res.infraError);
@@ -34,8 +35,6 @@ export async function sandboxRunner(target: string): Promise<CheckRunner> {
 }
 
 const STEP_TIMEOUT_MS = 5 * 60_000;
-const HIDDEN_ONLY = (dir: string) => ["sh", "-c", VITEST_JSON_SCRIPT, "sh", dir];
-const FULL_CHECK = ["npm", "run", "check"];
 
 export interface VerificationOutcome {
   ok: boolean;
@@ -121,11 +120,19 @@ async function exists(file: string): Promise<boolean> {
 
 export async function verifyHiddenTests(
   taskId: string,
-  opts: { target?: string; runner?: CheckRunner; dirs?: EvalDirs } = {},
+  opts: { stand: EvalStand; runner?: CheckRunner; dirs?: EvalDirs },
 ): Promise<TaskVerification> {
   const dirs = opts.dirs ?? DEFAULT_EVAL_DIRS;
-  const target = opts.target ?? path.join(FIXTURES_DIR, "taskflow");
-  const runner = opts.runner ?? (await sandboxRunner(target));
+  const { stand } = opts;
+  const target = stand.fixtureDir;
+  const runner =
+    opts.runner ??
+    (await sandboxRunner(target, {
+      image: stand.projectConfig.profile.image,
+      dependencyFiles: stand.projectConfig.profile.dependency_files,
+    }));
+  const hiddenOnly = (dir: string) => ["sh", "-c", stand.hidden.script, "sh", dir];
+  const fullCheck = splitCommand(stand.hidden.reference_check) ?? [];
 
   await loadTaskSpec(taskId, dirs); // validates task.yaml
   const meta = await loadEvalMeta(taskId, dirs);
@@ -137,16 +144,16 @@ export async function verifyHiddenTests(
   try {
     const baseDir = path.join(workRoot, "baseline");
     await prepareTargetCopy({ source: target, dest: baseDir });
-    const hiddenDir = await installHiddenTests(baseDir, hiddenFiles);
-    const baseline = await runner(baseDir, HIDDEN_ONLY(hiddenDir), STEP_TIMEOUT_MS);
+    const hiddenDir = await installHiddenTests(baseDir, hiddenFiles, stand.hidden.dir);
+    const baseline = await runner(baseDir, hiddenOnly(hiddenDir), STEP_TIMEOUT_MS);
 
     let reference: CommandResult | null = null;
     if (hasPatch) {
       const refDir = path.join(workRoot, "reference");
       await prepareTargetCopy({ source: target, dest: refDir });
       await applyPatch(refDir, patch);
-      await installHiddenTests(refDir, hiddenFiles);
-      reference = await runner(refDir, FULL_CHECK, STEP_TIMEOUT_MS);
+      await installHiddenTests(refDir, hiddenFiles, stand.hidden.dir);
+      reference = await runner(refDir, fullCheck, STEP_TIMEOUT_MS);
     }
 
     const taskOutcome = evaluateVerification({

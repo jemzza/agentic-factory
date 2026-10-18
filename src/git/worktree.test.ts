@@ -24,6 +24,7 @@ async function setup(name: string) {
     worktreesDir,
     taskId: "t",
     runId: "r1",
+    hostDepsDir: "node_modules",
   });
   return { repo, worktreesDir, wt };
 }
@@ -76,6 +77,7 @@ describe("createWorktree", () => {
       worktreesDir,
       taskId: "t",
       runId: "r1",
+      hostDepsDir: "node_modules",
     });
     expect(again).toEqual(wt);
     expect((await git(wt.path, ["status", "--porcelain"])).trim()).toBe("");

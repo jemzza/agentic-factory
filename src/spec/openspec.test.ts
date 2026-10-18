@@ -2,7 +2,7 @@ import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { FIXTURES_DIR } from "../paths.js";
+import { loadEvalStand } from "../eval/stand.js";
 import { SpecChangeSchema, type SpecChange } from "../schemas/spec.js";
 import {
   archiveChange,
@@ -63,7 +63,7 @@ afterAll(async () => {
 let n = 0;
 async function repoWithOpenSpec(): Promise<string> {
   const dir = path.join(tmp, `repo-${++n}`);
-  await cp(path.join(FIXTURES_DIR, "taskflow", "openspec"), path.join(dir, "openspec"), {
+  await cp(path.join((await loadEvalStand()).fixtureDir, "openspec"), path.join(dir, "openspec"), {
     recursive: true,
   });
   return dir;

@@ -9,6 +9,7 @@ import {
   type StepResult,
 } from "../schemas/report.js";
 import { OpenSpecIssueSchema, PersistedSpecChangeSchema } from "../schemas/spec.js";
+import { ProjectConfigSchema } from "../schemas/project.js";
 import { StoredTaskSpecSchema } from "../schemas/task.js";
 
 /** Spec rejections a human may send back to planning before the run asks for clarification. */
@@ -80,6 +81,17 @@ export const StepErrorSchema = z.strictObject({
 });
 export type StepError = z.infer<typeof StepErrorSchema>;
 
+/**
+ * The project's settings as committed in its main clone when the run started (never read from
+ * the worktree). Frozen in state, so a resumed run keeps the rules it started with.
+ */
+export const ProjectSnapshotSchema = z.strictObject({
+  id: z.string(),
+  configCommit: z.string(),
+  config: ProjectConfigSchema,
+});
+export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
+
 export const TargetRepoSchema = z.strictObject({ dir: z.string(), baseCommit: z.string() });
 export const WorktreeSchema = z.strictObject({
   path: z.string(),
@@ -103,8 +115,13 @@ export const RunState = new StateSchema({
   mode: z.enum(["interactive", "eval"]).default("interactive"),
   /** "auto" (eval) approves the spec without a human; "manual" interrupts for approval. */
   specApprovalMode: z.enum(["manual", "auto"]).default("manual"),
-  /** Which commit tasks start from: the immutable baseline tag (eval) or main (interactive). */
+  /**
+   * Which commit tasks start from: the immutable baseline tag (eval) or "main" = the project's
+   * target branch as checked out in its main clone (interactive).
+   */
   repoRef: z.enum(["baseline", "main"]).default("main"),
+  /** Null only in checkpoints written before projects existed (Week 3); such runs cannot go on. */
+  project: ProjectSnapshotSchema.nullable().default(null),
   startedAtMs: z.number(),
   deadlineMs: z.number(),
 

@@ -36,7 +36,14 @@ afterEach(() => {
 });
 
 const newRun = (id = "run-1") =>
-  store.createRun({ id, taskId: "complete-task", mode: "interactive", budgetUsd: 1, roles: ROLES });
+  store.createRun({
+    id,
+    projectId: "p",
+    taskId: "complete-task",
+    mode: "interactive",
+    budgetUsd: 1,
+    roles: ROLES,
+  });
 
 describe("migrations", () => {
   it("creates all tables and records the applied version", () => {
@@ -62,6 +69,7 @@ describe("migrations", () => {
       { version: 3, name: "eval_interrupted" },
       { version: 4, name: "cycle_budgets" },
       { version: 5, name: "eval_rescore" },
+      { version: 6, name: "project_id" },
     ]);
   });
 
@@ -79,7 +87,7 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1, 2, 3, 4, 5]);
+    expect(migrate(fresh)).toEqual([1, 2, 3, 4, 5, 6]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
@@ -119,7 +127,7 @@ describe("migrations", () => {
          VALUES ('eval-old', '2026-10-17T00:00:00Z', 'completed', 3, 'c3e', 17.93)`,
       )
       .run();
-    expect(migrate(old)).toEqual([5]);
+    expect(migrate(old)).toEqual([5, 6]);
     const s = new Store(old);
     expect(s.getEval("eval-old")).toMatchObject({ kind: "run", source_eval_id: null });
     s.createEval({
@@ -127,12 +135,55 @@ describe("migrations", () => {
       repeatCount: 3,
       baselineCommit: "c3e",
       costCapUsd: null,
+      projectId: "p",
       rescoreOf: "eval-old",
     });
     expect(s.getEval("eval-old-rescore-1")).toMatchObject({
       kind: "rescore",
       source_eval_id: "eval-old",
     });
+    old.close();
+  });
+
+  it("migration 006 assigns every existing row to taskflow and new rows carry their project", () => {
+    const old = new Database(":memory:");
+    old.pragma("foreign_keys = ON");
+    migrate(old, loadMigrations().slice(0, 5));
+    old
+      .prepare(
+        `INSERT INTO runs (id, task_id, mode, status, started_at, updated_at, budget_usd, roles_json)
+         VALUES ('old', 't', 'interactive', 'merged', 'x', 'x', 1, '{}')`,
+      )
+      .run();
+    old
+      .prepare(
+        `INSERT INTO approvals (run_id, gate, decision, actor, decided_at)
+         VALUES ('old', 'spec', 'approve', 'alice', 'x')`,
+      )
+      .run();
+    old
+      .prepare(
+        `INSERT INTO baselines (target, tag, commit_hash, actor, created_at)
+         VALUES ('taskflow', 'factory-baseline', 'c3e', 'factory', 'x')`,
+      )
+      .run();
+    expect(migrate(old)).toEqual([6]);
+    const s = new Store(old);
+    expect(s.requireRun("old").project_id).toBe("taskflow");
+    expect(s.listApprovals("old")[0]?.project_id).toBe("taskflow");
+    s.createRun({
+      id: "new",
+      projectId: "ledgerlite",
+      taskId: "t",
+      mode: "interactive",
+      budgetUsd: 1,
+      roles: ROLES,
+    });
+    s.appendEvent("new", { kind: "status", payload: { x: 1 } });
+    s.recordApproval({ runId: "new", gate: "spec", decision: "approve", actor: "bob" });
+    expect(s.requireRun("new").project_id).toBe("ledgerlite");
+    expect(s.listEvents("new")[0]?.project_id).toBe("ledgerlite");
+    expect(s.listApprovals("new")[0]?.project_id).toBe("ledgerlite");
     old.close();
   });
 
@@ -223,7 +274,7 @@ describe("migrations", () => {
       )
       .run();
 
-    expect(migrate(old)).toEqual([4, 5]);
+    expect(migrate(old)).toEqual([4, 5, 6]);
     const s = new Store(old);
     const pick = (id: string) => {
       const r = s.requireRun(id);
@@ -237,6 +288,7 @@ describe("migrations", () => {
     // New runs start with explicit counters; first_pass stays NULL until an eval decides it.
     const fresh = s.createRun({
       id: "new",
+      projectId: "p",
       taskId: "t",
       mode: "eval",
       budgetUsd: 1,
@@ -457,9 +509,16 @@ describe("approvals, baselines, evals", () => {
   });
 
   it("tracks eval runs with their baseline commit", () => {
-    store.createEval({ id: "eval-1", repeatCount: 3, baselineCommit: "aaa", costCapUsd: 25 });
+    store.createEval({
+      id: "eval-1",
+      repeatCount: 3,
+      baselineCommit: "aaa",
+      costCapUsd: 25,
+      projectId: "p",
+    });
     store.createRun({
       id: "run-e1",
+      projectId: "p",
       taskId: "t",
       mode: "eval",
       budgetUsd: 1,

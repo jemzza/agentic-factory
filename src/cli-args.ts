@@ -1,9 +1,17 @@
+import { PROJECT_ID_PATTERN } from "./schemas/project.js";
 import { TASK_ID_PATTERN } from "./schemas/task.js";
 
 export const RUN_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
 
 export type CliCommand =
-  | { kind: "run"; taskId: string; autoApproveSpec: boolean }
+  | {
+      kind: "run";
+      /** Project from projects.yaml (default: the eval stand's project). */
+      projectId: string | null;
+      /** A task YAML file, or the id of an eval task. */
+      task: string;
+      autoApproveSpec: boolean;
+    }
   | {
       kind: "decide";
       runId: string;
@@ -32,8 +40,9 @@ export type CliCommand =
   | { kind: "invalid"; message: string };
 
 export const USAGE = `Usage:
-  npm run run-task -- <taskId> [--auto-approve-spec]
-                                 Run one task; stops for spec approval unless --auto-approve-spec
+  npm run run-task -- [--project <id>] <task.yaml | evalTaskId> [--auto-approve-spec]
+                                 Run one task in a project (default: the eval stand's project);
+                                 stops for spec approval unless --auto-approve-spec
   npm run approve -- <runId> spec
   npm run reject -- <runId> spec --comment "..."
                                  Approve the OpenSpec change, or send it back to planning
@@ -67,19 +76,33 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     case "-h":
       return { kind: "help" };
     case "run": {
-      const autoApproveSpec = rest.includes("--auto-approve-spec");
-      const [taskId, ...extra] = rest.filter((a) => a !== "--auto-approve-spec");
-      if (taskId === undefined) return { kind: "invalid", message: "run: missing <taskId>" };
-      if (!TASK_ID_PATTERN.test(taskId)) {
-        return {
-          kind: "invalid",
-          message: `run: invalid taskId "${taskId}" (expected kebab-case)`,
-        };
+      let projectId: string | null = null;
+      let autoApproveSpec = false;
+      const positional: string[] = [];
+      for (let k = 0; k < rest.length; k++) {
+        const a = rest[k] ?? "";
+        if (a === "--auto-approve-spec") autoApproveSpec = true;
+        else if (a === "--project") {
+          const id = rest[++k];
+          if (id === undefined || !PROJECT_ID_PATTERN.test(id)) {
+            return { kind: "invalid", message: "run: --project expects a project id" };
+          }
+          projectId = id;
+        } else positional.push(a);
       }
+      const [task, ...extra] = positional;
+      if (task === undefined) return { kind: "invalid", message: "run: missing <task>" };
       if (extra.length > 0) {
         return { kind: "invalid", message: `run: unexpected arguments: ${extra.join(" ")}` };
       }
-      return { kind: "run", taskId, autoApproveSpec };
+      const isFile = /\.ya?ml$/.test(task);
+      if (!isFile && !TASK_ID_PATTERN.test(task)) {
+        return {
+          kind: "invalid",
+          message: `run: invalid taskId "${task}" (expected kebab-case, or a .yaml task file)`,
+        };
+      }
+      return { kind: "run", projectId, task, autoApproveSpec };
     }
     case "eval": {
       let repeat = 1;

@@ -52,7 +52,7 @@ describe("buildDockerRunArgs", () => {
     const argv = args(["npm", "run", "check; rm -rf /"]);
     expect(argv.slice(-3)).toEqual(["npm", "run", "check; rm -rf /"]);
     const imageIndex = argv.indexOf("agentic-factory-sandbox:abc");
-    expect(argv.slice(imageIndex + 1, imageIndex + 3)).toEqual(["sh", "-c"]);
+    expect(argv.slice(imageIndex + 1, imageIndex + 3)).toEqual(["sh", "/opt/factory/bootstrap.sh"]);
   });
 });
 

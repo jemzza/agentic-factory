@@ -89,15 +89,6 @@ export function parseVitestCases(stdout: string): VitestCase[] | null {
   );
 }
 
-/**
- * Runs Vitest on the directory passed as $1 and prints its JSON report, keeping Vitest's
- * exit code. Vitest 5 writes the JSON report to a file; there is no shell interpolation of
- * the directory. Usage: `["sh", "-c", VITEST_JSON_SCRIPT, "sh", dir]`.
- */
-export const VITEST_JSON_SCRIPT =
-  'node_modules/.bin/vitest run --reporter=json --outputFile.json=/tmp/hidden-report.json "$1"; ' +
-  "rc=$?; cat /tmp/hidden-report.json 2>/dev/null; exit $rc";
-
 /** Parses `vitest --reporter=json` stdout (may be surrounded by other output). */
 export function parseVitestJson(stdout: string): VitestSummary | null {
   const data = extractVitestJson(stdout);
@@ -126,6 +117,8 @@ export async function runHiddenTests(opts: {
   taskId: string;
   exec: SandboxExec;
   timeoutMs: number;
+  /** The eval stand's hidden-test settings (evals/eval.config.yaml). */
+  hidden: { dir: string; script: string };
   dirs?: EvalDirs;
 }): Promise<HiddenTestResult> {
   const files = await listHiddenTestFiles(opts.taskId, opts.dirs ?? DEFAULT_EVAL_DIRS);
@@ -133,10 +126,10 @@ export async function runHiddenTests(opts: {
   try {
     const copy = path.join(root, "copy");
     await prepareTargetCopy({ source: opts.worktreePath, dest: copy });
-    const hiddenDir = await installHiddenTests(copy, files);
+    const hiddenDir = await installHiddenTests(copy, files, opts.hidden.dir);
     const res = await opts.exec(
       copy,
-      ["sh", "-c", VITEST_JSON_SCRIPT, "sh", hiddenDir],
+      ["sh", "-c", opts.hidden.script, "sh", hiddenDir],
       opts.timeoutMs,
     );
     const counts = parseVitestJson(res.stdout);

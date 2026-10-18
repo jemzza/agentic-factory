@@ -18,6 +18,7 @@ import {
   FakeRuntime,
   makeFakeRepo,
   resultOf,
+  FAKE_PROJECT,
 } from "../testing/fakes.js";
 import { resumeRun, type RunTaskDeps } from "./run-task.js";
 
@@ -73,6 +74,7 @@ function resumeDeps(
     runtime,
     runsDir: a.runsDir,
     store,
+    project: FAKE_PROJECT,
     ensureRepo: () => Promise.resolve(a.repo),
     makeSandboxExec: () => Promise.resolve(fakeExec),
     specApprovalMode: "auto",

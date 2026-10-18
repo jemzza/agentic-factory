@@ -1,0 +1,17 @@
+# The eval stand: which registered project the hidden tests belong to, where eval
+# materializes it from, and how hidden tests run. Eval never depends on GitHub: the source
+# here overrides the project's entry in projects.yaml.
+version: 1
+project: taskflow
+source: { kind: fixture, path: fixtures/taskflow }
+hidden_tests:
+  # Placed inside a throwaway copy of the target (never in an agent worktree).
+  dir: tests/__hidden__
+  # Run in the sandbox as `sh -c <script> sh <dir>`: Vitest writes its JSON report to a file,
+  # which is printed after the run; Vitest's exit code is kept.
+  script: >-
+    node_modules/.bin/vitest run --reporter=json --outputFile.json=/tmp/hidden-report.json "$1";
+    rc=$?; cat /tmp/hidden-report.json 2>/dev/null; exit $rc
+  report: vitest-json
+  # Full check on reference implementations (verify-hidden).
+  reference_check: npm run check

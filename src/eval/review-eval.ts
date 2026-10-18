@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { buildSystemPrompt } from "../agents/prompts.js";
+import { buildSystemPrompt, promptVars } from "../agents/prompts.js";
+import type { ProjectConfig } from "../schemas/project.js";
 import {
   isApproved,
   REVIEWER_OUTPUT_SCHEMA,
@@ -128,6 +129,8 @@ export async function runReviewEval(opts: {
   reviewers: readonly ReviewerUnderTest[];
   loadTask: (id: string) => Promise<TaskSpec>;
   baselineSource: string;
+  /** The stand project's config: conventions file name and prompt facts. */
+  projectConfig: ProjectConfig;
   outDir: string;
   maxDiffChars: number;
   timeoutMs: number;
@@ -151,8 +154,15 @@ export async function runReviewEval(opts: {
         await git(repo, ["commit", "-q", "--no-verify", "-m", c.id]);
         const diff = await git(repo, ["diff", "--no-color", base, "HEAD"]);
         const task = await opts.loadTask(c.task);
-        const conventions = await readFile(path.join(repo, "CLAUDE.md"), "utf8").catch(() => "");
-        const systemPrompt = await buildSystemPrompt("reviewer", conventions);
+        const conventions = await readFile(
+          path.join(repo, opts.projectConfig.conventions_file),
+          "utf8",
+        ).catch(() => "");
+        const systemPrompt = await buildSystemPrompt(
+          "reviewer",
+          conventions,
+          promptVars(opts.projectConfig),
+        );
         const logDir = path.join(
           opts.outDir,
           reviewer.label.replace(/[^a-zA-Z0-9._-]/g, "_"),

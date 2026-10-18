@@ -1,10 +1,10 @@
-import { access, rm, symlink } from "node:fs/promises";
+import { access, rm } from "node:fs/promises";
 import path from "node:path";
 import { git, GitError } from "./git.js";
-import { assertManagedWorktree } from "./worktree.js";
+import { assertManagedWorktree, linkHostDeps } from "./worktree.js";
 
-/** The target repository's integration branch (the branch humans merge into). */
-export const MAIN_BRANCH = "main";
+// "main" below means the project's target branch (`target_branch` in .factory/config.yaml):
+// the integration branch humans merge into. Every function takes it explicitly.
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -20,9 +20,13 @@ export async function revParse(dir: string, ref: string): Promise<string> {
 }
 
 /** True when `commit` is already reachable from main (the run's branch was merged). */
-export async function isMergedIntoMain(repoDir: string, commit: string): Promise<boolean> {
+export async function isMergedIntoMain(
+  repoDir: string,
+  commit: string,
+  targetBranch: string,
+): Promise<boolean> {
   try {
-    await git(repoDir, ["merge-base", "--is-ancestor", commit, MAIN_BRANCH]);
+    await git(repoDir, ["merge-base", "--is-ancestor", commit, targetBranch]);
     return true;
   } catch (err) {
     if (err instanceof GitError) return false;
@@ -31,10 +35,14 @@ export async function isMergedIntoMain(repoDir: string, commit: string): Promise
 }
 
 /** The merge commit on main that brought in `runId`, if any (searched by its trailer). */
-export async function findMergeCommit(repoDir: string, runId: string): Promise<string | null> {
+export async function findMergeCommit(
+  repoDir: string,
+  runId: string,
+  targetBranch: string,
+): Promise<string | null> {
   const out = await git(repoDir, [
     "log",
-    MAIN_BRANCH,
+    targetBranch,
     "--merges",
     "--format=%H",
     "--fixed-strings",
@@ -82,15 +90,16 @@ export async function prepareMergeCandidate(opts: {
   runId: string;
   message: string;
   archive: (worktreePath: string) => Promise<string | null>;
+  targetBranch: string;
+  /** Dependency directory of the main clone to link in for the gate (null: none). */
+  hostDepsDir: string | null;
 }): Promise<MergeCandidate> {
-  const mainBefore = await revParse(opts.repoDir, MAIN_BRANCH);
+  const mainBefore = await revParse(opts.repoDir, opts.targetBranch);
   const wtPath = path.join(opts.worktreesRoot, `merge-${opts.runId}`);
   await removeTempWorktree(opts.repoDir, wtPath);
   await git(opts.repoDir, ["worktree", "add", "-q", "--detach", wtPath, mainBefore]);
   await assertManagedWorktree(wtPath, opts.worktreesRoot);
-  const nodeModules = path.join(opts.repoDir, "node_modules");
-  if (await exists(nodeModules))
-    await symlink(nodeModules, path.join(wtPath, "node_modules"), "dir");
+  if (opts.hostDepsDir !== null) await linkHostDeps(opts.repoDir, wtPath, opts.hostDepsDir);
 
   try {
     await git(wtPath, ["merge", "--no-ff", "--no-commit", opts.branch]);
@@ -119,13 +128,14 @@ export async function fastForwardMain(
   repoDir: string,
   mainBefore: string,
   mergeCommit: string,
+  targetBranch: string,
 ): Promise<{ kind: "moved" } | { kind: "main_moved"; mainNow: string }> {
-  const mainNow = await revParse(repoDir, MAIN_BRANCH);
+  const mainNow = await revParse(repoDir, targetBranch);
   if (mainNow !== mainBefore) return { kind: "main_moved", mainNow };
   const current = (await git(repoDir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-  if (current !== MAIN_BRANCH) {
+  if (current !== targetBranch) {
     throw new Error(
-      `${repoDir} must have ${MAIN_BRANCH} checked out to receive merges (found ${current})`,
+      `${repoDir} must have ${targetBranch} checked out to receive merges (found ${current})`,
     );
   }
   await git(repoDir, ["merge", "-q", "--ff-only", mergeCommit]);

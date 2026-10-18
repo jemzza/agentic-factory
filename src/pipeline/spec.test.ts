@@ -20,6 +20,7 @@ import {
   makeFakeRepo,
   resultOf,
   type FakeScript,
+  FAKE_PROJECT,
 } from "../testing/fakes.js";
 import { resumeRun, runTask, type RunOutcome, type RunTaskDeps } from "./run-task.js";
 
@@ -51,6 +52,7 @@ async function setup(script: FakeScript, specApprovalMode: "manual" | "auto" = "
     runtime,
     runsDir: path.join(base, "runs"),
     store,
+    project: FAKE_PROJECT,
     ensureRepo: () => Promise.resolve(repo),
     makeSandboxExec: () => Promise.resolve(fakeExec),
     specApprovalMode,

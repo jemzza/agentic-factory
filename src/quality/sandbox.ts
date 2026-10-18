@@ -1,15 +1,28 @@
 import { createHash, randomBytes } from "node:crypto";
-import { copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FACTORY_ROOT } from "../paths.js";
 import { runCommand, type CommandResult } from "../process/run-command.js";
 
-export const SANDBOX_DOCKERFILE = path.join(FACTORY_ROOT, "sandbox", "Dockerfile");
-const IMAGE_REPO = "agentic-factory-sandbox";
+/** Sandbox profiles: `sandbox/<image>/{Dockerfile,bootstrap.sh}` (one per stack). */
+export const SANDBOX_DIR = path.join(FACTORY_ROOT, "sandbox");
+/** Path of the profile's bootstrap script inside the image. */
+export const BOOTSTRAP_IN_IMAGE = "/opt/factory/bootstrap.sh";
 
-/** Files from the target repo that determine the sandbox image (its dependency set). */
-const DEPENDENCY_FILES = ["package.json", "package-lock.json"] as const;
+/** What the sandbox needs from a project's profile to build and run its image. */
+export interface SandboxProfile {
+  /** Profile directory name under sandbox/. */
+  image: string;
+  /** Repo-relative files that define the dependency set (copied to deps/ in the context). */
+  dependencyFiles: readonly string[];
+}
+
+const profileFiles = (image: string) => {
+  if (!/^[a-z][a-z0-9-]*$/.test(image)) throw new Error(`invalid sandbox profile "${image}"`);
+  const dir = path.join(SANDBOX_DIR, image);
+  return { dockerfile: path.join(dir, "Dockerfile"), bootstrap: path.join(dir, "bootstrap.sh") };
+};
 
 export interface SandboxResult {
   exitCode: number | null;
@@ -41,39 +54,33 @@ export const DEFAULT_LIMITS: SandboxLimits = {
 };
 
 /**
- * Container-side bootstrap, run by `sh -c` before the actual command (passed as "$@"):
- * copy the read-only mounted worktree into the tmpfs at /work, then build a writable
- * /work/node_modules made of symlinks into the image's /deps/node_modules. It must be a
- * real directory because tools (vite/vitest) write temp files into node_modules.
- * Any node_modules from the host copy is discarded: host binaries are for another OS.
+ * Image tag derived from the profile's Dockerfile and bootstrap script and the project's
+ * dependency files (paths and bytes): a lockfile change produces a new image.
  */
-export const BOOTSTRAP_SCRIPT = [
-  "set -e",
-  "cp -a /src/. /work/",
-  "rm -rf /work/node_modules",
-  "mkdir /work/node_modules",
-  'for e in /deps/node_modules/* /deps/node_modules/.[!.]*; do [ -e "$e" ] && ln -s "$e" /work/node_modules/; done',
-  'exec "$@"',
-].join("\n");
-
-/** Image tag derived from the Dockerfile and the target's dependency manifests. */
-export async function sandboxImageTag(targetDir: string): Promise<string> {
+export async function sandboxImageTag(repoDir: string, profile: SandboxProfile): Promise<string> {
+  const files = profileFiles(profile.image);
   const hash = createHash("sha256");
-  hash.update(await readFile(SANDBOX_DOCKERFILE));
-  for (const file of DEPENDENCY_FILES) {
+  hash.update(await readFile(files.dockerfile));
+  hash.update("\0bootstrap\0");
+  hash.update(await readFile(files.bootstrap));
+  for (const file of profile.dependencyFiles) {
     hash.update(`\0${file}\0`);
-    hash.update(await readFile(path.join(targetDir, file)));
+    hash.update(await readFile(path.join(repoDir, file)));
   }
-  return `${IMAGE_REPO}:${hash.digest("hex").slice(0, 12)}`;
+  return `agentic-factory-${profile.image}:${hash.digest("hex").slice(0, 12)}`;
 }
 
 /**
- * Returns the sandbox image tag for a target, building it if missing. The build context
- * is a temp dir with only the Dockerfile and the dependency manifests, so no source code,
- * secrets, or host node_modules ever reach the image. Building needs network (npm ci).
+ * Returns the sandbox image tag for a project, building it if missing. The build context
+ * is a temp dir with only the profile's Dockerfile and bootstrap script and the project's
+ * dependency files under deps/, so no source code, secrets, or host dependency directories
+ * ever reach the image. Building needs network (installing dependencies).
  */
-export async function ensureSandboxImage(targetDir: string): Promise<string> {
-  const tag = await sandboxImageTag(targetDir);
+export async function ensureSandboxImage(
+  repoDir: string,
+  profile: SandboxProfile,
+): Promise<string> {
+  const tag = await sandboxImageTag(repoDir, profile);
   const inspect = await runCommand("docker", ["image", "inspect", tag], {
     cwd: FACTORY_ROOT,
     timeoutMs: 30_000,
@@ -81,11 +88,15 @@ export async function ensureSandboxImage(targetDir: string): Promise<string> {
   if (inspect.exitCode === 0) return tag;
   if (inspect.spawnError) throw new Error(`docker is not available: ${inspect.spawnError}`);
 
+  const files = profileFiles(profile.image);
   const context = await mkdtemp(path.join(os.tmpdir(), "factory-sandbox-build-"));
   try {
-    await copyFile(SANDBOX_DOCKERFILE, path.join(context, "Dockerfile"));
-    for (const file of DEPENDENCY_FILES) {
-      await copyFile(path.join(targetDir, file), path.join(context, file));
+    await copyFile(files.dockerfile, path.join(context, "Dockerfile"));
+    await copyFile(files.bootstrap, path.join(context, "bootstrap.sh"));
+    for (const file of profile.dependencyFiles) {
+      const dest = path.join(context, "deps", file);
+      await mkdir(path.dirname(dest), { recursive: true });
+      await copyFile(path.join(repoDir, file), dest);
     }
     const build = await runCommand(
       "docker",
@@ -157,9 +168,7 @@ export function buildDockerRunArgs(opts: {
     "/work",
     opts.image,
     "sh",
-    "-c",
-    BOOTSTRAP_SCRIPT,
-    "sh",
+    BOOTSTRAP_IN_IMAGE,
     ...opts.command,
   ];
 }
