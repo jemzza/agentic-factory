@@ -52,6 +52,8 @@ export interface AgentRunResult {
   tokens?: { input: number; output: number };
   durationMs: number;
   numTurns?: number;
+  /** Models that actually answered, as the runtime reports them (an alias resolved). */
+  modelsUsed?: string[];
   /** Tool calls the permission system refused — evidence of attempted out-of-scope actions. */
   permissionDenials: PermissionDenial[];
   /** Full raw log (stream-json), saved under runs/. */

@@ -31,7 +31,8 @@ import type {
  *   is_error, result (final text), structured_output (with --json-schema),
  *   total_cost_usd, usage {input_tokens, output_tokens, cache_read_input_tokens,
  *   cache_creation_input_tokens}, num_turns, permission_denials [{tool_name, tool_input}],
- *   terminal_reason ("completed" | "budget_exhausted" | ...), errors [string].
+ *   terminal_reason ("completed" | "budget_exhausted" | ...), errors [string],
+ *   modelUsage {<resolved model id>: {...}} (e.g. "claude-opus-5-5" for --model opus).
  * Exit code is 0 on success and 1 on an error result (e.g. budget exhausted).
  * --max-budget-usd is checked between turns, so the final cost may exceed it.
  *
@@ -67,6 +68,8 @@ const ResultEventSchema = z.looseObject({
     .optional(),
   terminal_reason: z.string().optional(),
   errors: z.array(z.string()).optional(),
+  /** Keys are the models that actually answered (aliases resolved). */
+  modelUsage: z.record(z.string(), z.unknown()).optional(),
   /**
    * Set when the API refused the call (observed: 429 + "usage_limit_reached", 2.1.300).
    * A successful result carries `"api_error_status": null` (observed), so both are nullish.
@@ -225,6 +228,7 @@ export function interpretRun(
           },
         }),
         ...(event.num_turns !== undefined && { numTurns: event.num_turns }),
+        ...(event.modelUsage && { modelsUsed: Object.keys(event.modelUsage).sort() }),
         permissionDenials: (event.permission_denials ?? []).map((d) => ({
           tool: d.tool_name,
           input: d.tool_input,

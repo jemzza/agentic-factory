@@ -144,6 +144,7 @@ describe("live result events (Claude Code 2.1.300)", () => {
     expect(limited.kind).toBe("result");
     if (ok.kind !== "result" || limited.kind !== "result") return;
     expect(ok.event.api_error_status).toBeNull();
+    expect(Object.keys(ok.event.modelUsage ?? {})).toEqual(["claude-opus-5-5"]);
     expect(isProviderUnavailable(ok.event)).toBe(false);
     expect(isProviderUnavailable(limited.event)).toBe(true);
   });
@@ -180,6 +181,8 @@ describe("ClaudeCodeRuntime (fake process)", () => {
       numTurns: 3,
       permissionDenials: [],
     });
+    // The model that actually answered, as the CLI reports it (fake: "resolved-<--model>").
+    expect(res.modelsUsed).toEqual([`resolved-${input().model ?? "opus"}`]);
     expect(res.error).toBeUndefined();
     expect(await readFile(res.rawLogPath, "utf8")).toContain('"type":"result"');
     expect(await readFile(`${res.rawLogPath}.input.json`, "utf8")).toContain("plan it");

@@ -323,7 +323,13 @@ async function baselineUpdate(reason: string): Promise<number> {
 }
 
 /** Paths whose change alters what the agents are asked or allowed to do. */
-const MEASUREMENT_PATHS = ["prompts", "factory.config.ts", "src/agents", "src/runtimes"];
+const MEASUREMENT_PATHS = [
+  "prompts",
+  "factory.config.ts",
+  "factory.sonnet-dev.config.ts",
+  "src/agents",
+  "src/runtimes",
+];
 
 /** The factory's own commit, with `-dirty` when tracked files have uncommitted changes. */
 async function factoryCommit(): Promise<string> {

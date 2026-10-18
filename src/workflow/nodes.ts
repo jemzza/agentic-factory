@@ -196,6 +196,7 @@ async function agentStep(
     costUsd: res.costUsd ?? null,
     tokens: res.tokens ?? null,
     numTurns: res.numTurns ?? null,
+    ...(res.modelsUsed ? { modelsUsed: res.modelsUsed } : {}),
     permissionDenials: res.permissionDenials,
     rawLogPath: path.relative(s.runDir, res.rawLogPath),
     output: res.output,

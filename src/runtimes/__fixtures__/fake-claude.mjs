@@ -10,6 +10,8 @@ const stdin = await new Promise((resolve) => {
   process.stdin.on("end", () => resolve(data));
 });
 
+// The real CLI reports the resolved model id(s), e.g. "claude-opus-5-5" for --model opus.
+const modelFlag = flags[flags.indexOf("--model") + 1] ?? "unknown";
 const result = (extra) => ({
   type: "result",
   subtype: "success",
@@ -27,6 +29,7 @@ const result = (extra) => ({
   terminal_reason: "completed",
   // Live success results carry an explicit null here (Claude Code 2.1.300).
   api_error_status: null,
+  modelUsage: { [`resolved-${modelFlag}`]: { outputTokens: 20 } },
   ...extra,
 });
 

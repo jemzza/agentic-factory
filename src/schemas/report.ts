@@ -63,6 +63,8 @@ export const StepResultSchema = z.discriminatedUnion("kind", [
     costUsd: z.number().nonnegative().nullable(),
     tokens: z.strictObject({ input: z.number(), output: z.number() }).nullable(),
     numTurns: z.number().int().nullable(),
+    /** Resolved model ids reported by the runtime (absent before Week 3 or if unknown). */
+    modelsUsed: z.array(z.string()).optional(),
     permissionDenials: z.array(z.strictObject({ tool: z.string(), input: z.unknown() })),
     rawLogPath: z.string(),
     /** Agent's final message (developer summary; JSON for structured roles). Not evidence. */
