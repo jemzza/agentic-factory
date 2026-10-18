@@ -33,6 +33,7 @@ export type CliCommand =
     }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "eval-rescore"; evalId: string }
+  | { kind: "project-check"; projectId: string }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -58,6 +59,9 @@ export const USAGE = `Usage:
                                  Run the eval suite (all tasks, or the given ones) N times and
                                  verify successes with hidden tests. --resume continues an eval
                                  interrupted by a provider limit and/or adds repeats up to N
+  npm run project:check -- <projectId>
+                                 Check a project's .factory/config.yaml, sandbox image and that
+                                 its checks pass on a clean target branch (no agents)
   npm run eval:rescore -- <evalId>
                                  Re-judge a finished eval with the current hidden tests: stored
                                  final diffs on factory-baseline, no agent calls ($0)
@@ -139,6 +143,13 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         }
       }
       return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd };
+    }
+    case "project-check": {
+      const [projectId, ...extra] = rest;
+      if (projectId === undefined || extra.length > 0 || !PROJECT_ID_PATTERN.test(projectId)) {
+        return { kind: "invalid", message: "project-check: expected exactly one <projectId>" };
+      }
+      return { kind: "project-check", projectId };
     }
     case "eval-rescore": {
       const [evalId, ...extra] = rest;

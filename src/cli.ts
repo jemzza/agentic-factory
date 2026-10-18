@@ -4,6 +4,8 @@ import { parseCliArgs, USAGE, type CliCommand } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { rescoreEval } from "./eval/rescore.js";
+import { checkProject } from "./config/project-check.js";
+import { ensureSandboxImage, runInSandbox } from "./quality/sandbox.js";
 import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
 import { writeFirstPass } from "./report/first-pass.js";
@@ -561,6 +563,15 @@ async function evalRescore(evalId: string): Promise<number> {
   });
   const store = openStore(config);
   try {
+    if (repo.baselineCreated) {
+      store.recordBaseline({
+        target: stand.project.id,
+        tag: BASELINE_TAG,
+        commitHash: baselineCommit,
+        actor: "factory",
+        reason: "initial materialization",
+      });
+    }
     const id = `${evalId}-${path.basename(outDir)}`;
     store.createEval({
       id,
@@ -591,6 +602,28 @@ async function evalRescore(evalId: string): Promise<number> {
       `summary: ${path.relative(process.cwd(), path.join(outDir, "summary.md"))}`,
   );
   return hiddenErrors === 0 ? 0 : 1;
+}
+
+/** Is a registered project ready for the factory? (config, image, checks on clean main) */
+async function projectCheck(projectId: string): Promise<number> {
+  const config = await loadConfig();
+  const project = await projectSourceFor(projectId, "interactive");
+  console.log(`Project check: ${projectId}`);
+  const lines = await checkProject(project, {
+    ensureRepo: (p) => ensureTargetRepo(p, config.workdirAbs, "main"),
+    sandbox: async (repoDir, profile) => {
+      const tag = await ensureSandboxImage(repoDir, profile);
+      return {
+        tag,
+        exec: (wt, command, timeoutMs) => runInSandbox(wt, command, timeoutMs, { image: tag }),
+      };
+    },
+    checkTimeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+  });
+  for (const l of lines) console.log(`${l.ok ? "PASS" : "FAIL"}  ${l.name.padEnd(16)} ${l.detail}`);
+  const ok = lines.every((l) => l.ok);
+  console.log(`\n${projectId}: ${ok ? "ready" : "NOT ready"}`);
+  return ok ? 0 : 1;
 }
 
 async function resumeOne(runId: string): Promise<number> {
@@ -669,6 +702,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return verifyHidden(cmd.taskId);
     case "eval-rescore":
       return evalRescore(cmd.evalId);
+    case "project-check":
+      return projectCheck(cmd.projectId);
     case "run":
       return runOne(cmd.projectId, cmd.task, cmd.autoApproveSpec);
     case "decide":
