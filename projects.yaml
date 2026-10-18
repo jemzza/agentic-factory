@@ -6,3 +6,7 @@ version: 1
 projects:
   - id: taskflow
     source: { kind: fixture, path: fixtures/taskflow }
+  # Second stack (Python 3.12): checks the sandbox profiles. A local repository until it is
+  # pushed to GitHub (Week 3 Phase 3).
+  - id: ledgerlite
+    source: { kind: git, url: ~/Documents/2026/ledgerlite, ref: main }

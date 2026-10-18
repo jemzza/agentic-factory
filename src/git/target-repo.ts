@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, appendFile, cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { expandHome } from "../config/load-config.js";
 import { FACTORY_ROOT } from "../paths.js";
 import { runCommand } from "../process/run-command.js";
 import type { TargetSource } from "../schemas/config.js";
@@ -114,11 +115,9 @@ export async function ensureTargetRepo(
     const urlHash = createHash("sha256").update(project.source.url).digest("hex").slice(0, 12);
     dir = path.join(reposDir, `${project.id}-${urlHash}`);
     if (!(await exists(path.join(dir, ".git")))) {
-      await git(
-        reposDir,
-        ["clone", "-q", "--no-recurse-submodules", project.source.url, dir],
-        15 * 60_000,
-      );
+      // A local path may be written as ~/...; git itself does not expand it.
+      const url = expandHome(project.source.url);
+      await git(reposDir, ["clone", "-q", "--no-recurse-submodules", url, dir], 15 * 60_000);
     }
     const current = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     if (current !== project.source.ref) await git(dir, ["checkout", "-q", project.source.ref]);
