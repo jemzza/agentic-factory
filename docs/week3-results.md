@@ -563,3 +563,49 @@ Trade-offs to check before using it:
 Nothing was built or run for it.
 
 `npm run check` (Phase 7 commit): exit 0, 437 tests. With the Pi + Ollama reviewer: exit 0, 445 tests. After the eval:review run: exit 0, 446 tests.
+
+## Final block, items 1–2: equivalence and the Sonnet candidate
+
+One repeat each, on TaskFlow's 10 tasks, from `factory-baseline` = `8e6e21f`, sequential, memory
+off. Subscription limits hit: **0** in both. Spent so far in the final block: $1.71 (item 6) +
+$5.86 + $2.85 = **$10.42**.
+
+| Metric               | Week 3 baseline (3 repeats) | **Item 1: Opus in every role** (`eval-20261018-105434`) | **Item 2: Sonnet plans and develops, Opus reviews** (`eval-20261018-111804`) |
+| -------------------- | --------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Verified rate        | 66.7% ± 5.8%                | **80.0%** (8/10)¹                                       | **60.0%** (6/10)                                                             |
+| False success rate   | 34.7% ± 2.4%                | **22.2%** (2/9)                                         | **37.5%** (3/8)                                                              |
+| First-pass rate      | 63.0% ± 6.4%                | **77.8%** (7/9)                                         | **55.6%** (5/9)                                                              |
+| Gate / review cycles | 0.00 / 0.00                 | 0.00 / 0.00                                             | 0.00 / 0.00                                                                  |
+| Time per task        | 156.7 s ± 27.4 s            | 124.2 s                                                 | **76.5 s**                                                                   |
+| Cost per repeat      | $5.98 ± $0.38               | $5.86                                                   | **$2.85** (−51%)                                                             |
+| infra_error          | —                           | 0                                                       | 0                                                                            |
+
+¹ **The eval itself printed 70.0% (7/10), because of a harness bug.**
+
+- `hard-delete` ended `needs_clarification`, which is the correct outcome: its report and the
+  DB say so, and the planner asked 3 questions. The eval recorded it as `error` ("pipeline
+  crashed: Cannot read properties of undefined (reading 'report')").
+- Cause: since Phase 4, every run that ends without the merge gate was misread. Successes were
+  not affected.
+- Fixed in `1122e69`, with a regression test, before item 2. Item 2 judged `hard-delete`
+  correctly.
+- The 80% / 22.2% / 77.8% above count `hard-delete` as its run ended. Item 1 was not re-run.
+
+**Item 1: equivalence (the Phase 2–7 refactor did not make the factory worse).** Every number
+is at or above the Week 3 baseline, at the same cost. The same strict-body rule still fails:
+`complete-task` and `reopen-task` return 200 for an unknown body key on the new action route,
+where TaskFlow requires 400 (hidden 9/10). `restore-task` passed this time; in the baseline it
+failed in all 3 repeats. With n = 1 against a baseline of 3, a ±1-task difference is within
+the spread: the result is "not worse", not "better".
+
+**Item 2: the Sonnet candidate.**
+
+- Half the cost and 40% less time.
+- Lower quality: one more false success (`restore-task`, the same strict-body rule) and one
+  error. On `pagination`, the hard task, the Sonnet planner returned neither a spec nor
+  questions. That is `invalid_response`, a step error by design, not a harness problem.
+- Review cycles stayed 0: the Opus reviewer approved all three strict-body violations, as in
+  the baseline.
+
+On this one repeat Sonnet is cheaper but not as good. Keeping Opus or switching to the
+candidate is the owner's decision (design §11, item 7).
