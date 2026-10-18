@@ -506,6 +506,37 @@ the Pi reviewer was run (owner's rule); the result is recorded here.**
 - **Time:** 28.5 s per review on the M1 Pro, against Opus's 19.4 s, at $0 and with nothing
   leaving the machine.
 
+**Pi reviewer, summary of the measurement:**
+
+| Item                                       | Value                                                                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Model                                      | `qwen2.5-coder:7b-instruct-q4_K_M` (7.6B, Q4_K_M), 4.7 GB, ID `dae161e27b0e`            |
+| Derived model                              | `factory-reviewer-qwen2.5-coder-7b` (ID `32f12713d269`), `num_ctx 32768`, temperature 0 |
+| Recall (strict)                            | 20% (2/10); lenient 30% (3/10)                                                          |
+| False positive rate on the 5 correct diffs | 0% (0/5)                                                                                |
+| Invalid JSON                               | 0% (0 of 15 answers; no retries)                                                        |
+| Average review time                        | 28.5 s (M1 Pro, 16 GB), $0                                                              |
+
+**Context-truncation diagnostic.** The owner asked whether the low recall came from a cut-off
+prompt (a setup error) or from the model. Checked locally, at no cost:
+
+- **Pi's logs.** The reported prompt tokens (Ollama's `prompt_tokens`) were 938–3,501 per
+  case. Most cases showed 7–11 characters per token, against a normal ≈ 3.9. That is because
+  Ollama reuses its prompt cache for the shared system prompt and counts only the new tokens.
+- **Native `/api/chat`, cold.** Each case's exact system prompt and prompt were sent again,
+  with the model unloaded before every call so nothing came from the cache. Full prompts:
+  **2,576–5,138 tokens, at most 16% of `num_ctx 32768`.** Every case except the first had
+  1,636–1,642 tokens served from the cache (the shared system prompt). The first case's cold
+  count matches Pi's within 55 tokens, which is Pi's own `cwd` section.
+- **Conclusion: no truncation.** The derived model's `num_ctx` was also checked before every
+  review. Per the owner's rule, the 2/10 result is final and `eval:review` was not rerun.
+
+**Limitation of the measurement itself.** Opus found 10 of 10 defects, both here and in
+Week 2. The frozen `evals/review/` set may therefore be easy for a strong model, and it cannot
+tell strong reviewers apart. It does separate a strong reviewer from a weak one, as Pi's 2/10
+shows. With 10 defect cases and 5 clean ones, each percentage point carries a wide
+uncertainty.
+
 Conclusion: vendor independence without recall does not make the review more independent in
 any useful sense. A reviewer that approves 8 of 10 defective changes would mostly
 rubber-stamp Claude's work. Opus stays the reviewer for Phase 8. `PI_OLLAMA_REVIEWER` stays in
