@@ -415,3 +415,41 @@ the same marker (or PR for the branch) exists.
 | **Total**               |                                                                                             | **~$66–84** |
 
 Stop rule as in Week 2: a task over its estimate by ≥ 50 % stops the measurement for a check.
+
+## 11. Measurement plan (owner decision, 2026-10-18)
+
+**Working project first, then every measurement in one block, then a commit of the results.**
+Phases 2–7 are implemented and checked by `npm run check` (fake runtimes, fake `gh`, Docker
+sandbox tests, `verify-hidden`, `project:check`), without eval runs. Each phase report says
+"live measurement: in the final block". A phase counts as fully done only after its
+measurement has run.
+
+The final block runs after the code is committed. Runs go one after another and are scheduled
+around subscription limit resets, on AC power with the lid open:
+
+| #   | Measurement                                                                           | From phase | Estimate |
+| --- | ------------------------------------------------------------------------------------- | ---------- | -------- |
+| 1   | Equivalence: `npm run eval` (Opus in every role) vs the Week 3 baseline               | 2          | ~$6      |
+| 2   | Candidate roles: `FACTORY_CONFIG=factory.sonnet-dev.config.ts npm run eval`           | 2          | ~$5      |
+| 3   | Live GitHub cycle issue → `/approve` → PR → `/merge`, in two projects                 | 3          | ~$2–3    |
+| 4   | `npm run eval -- --concurrency 2`                                                     | 4          | ~$6      |
+| 5   | Memory A/B (`evals/memory/`, 20 task runs, design below)                              | 5          | ~$12     |
+| 6   | Pi: `eval:review` (if Pi reviews) + one `npm run eval`                                | 7          | ~$8      |
+| 7   | Owner decisions by the numbers: default roles, concurrency, `memory.enabled`, Pi role | —          | —        |
+| 8   | Final `npm run eval -- --repeat 3 --concurrency <chosen>`                             | 8          | ~$18     |
+
+Total ≈ $57–58 (list price; the practical limit is the subscription). Order: items 1–2 first
+(they check the Phase 2 refactor), items 3–6 next, then the decisions, then item 8.
+
+**Memory A/B with fewer runs** (owner: fewer runs in Phase 5). The brief's minimum still
+applies: 4 pairs "A → B", 2 repeats per condition.
+
+- `memory_off`: only B runs (2 repeats). Without memory, A cannot influence B.
+- `memory_on`: A runs **once** per pair. The memory it produces (the generalized rule from the
+  pre-recorded `/reject` comment, or a confirmed review finding) is stored, and both B repeats
+  read that same snapshot. Repeats then differ only by B's own variance.
+- 4 A + 8 B (on) + 8 B (off) = **20 task runs** instead of ~40. With n = 2 the comparison can
+  only show large effects; a result within the spread is recorded as such, and `memory.enabled`
+  stays off.
+- The pairs, their recorded reject comments and B's hidden tests are fixed in `evals/memory/`
+  before the first run and never changed afterwards.
