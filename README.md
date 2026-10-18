@@ -66,8 +66,17 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
   eval summaries. An answer that does not match its schema is a step error, never repaired.
 - `spec/openspec.ts` — renders the planner's spec JSON into `openspec/changes/<taskId>/`,
   `openspec validate --strict`, `openspec archive` at merge time.
-- `fixtures/taskflow/` — the target (Fastify + TypeScript), materialized as a real git repo
-  under `FACTORY_WORKDIR`; eval starts from its immutable `factory-baseline` tag.
+- **Projects** (Week 3): the factory knows no project. `projects.yaml` registers them; each
+  project keeps its rules in its own `.factory/config.yaml` (sandbox profile, install, gate
+  checks, developer commands, conventions file, allowed and protected paths, budget defaults,
+  target branch). The factory reads it with `git show` from the target branch as committed,
+  never from an agent's worktree, and freezes it in the run state. A test fails if factory
+  code names a project.
+- `fixtures/taskflow/` — the eval stand (Fastify + TypeScript), a registered project like any
+  other; `evals/eval.config.yaml` says how its hidden tests run. Materialized as a real git
+  repo under `FACTORY_WORKDIR`; eval starts from its immutable `factory-baseline` tag and
+  never uses a remote. Second project: `ledgerlite` (Python 3.12, pytest, mypy, ruff), a
+  separate repository.
 - `evals/tasks/` (visible) · `evals/hidden/` (hidden tests + eval metadata) ·
   `evals/reference/` (reference patches) — the last two are never reachable from agents.
   `evals/review/` — frozen reviewer evaluation set (15 diffs with known defects / clean).
@@ -124,23 +133,24 @@ cp .env.example .env          # optional paths; OPENAI_API_KEY only if the OpenC
 claude auth status            # the Claude Code CLI must be logged in
 ```
 
-| Command                                                       | What it does                                                                           |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `npm run run-task -- <taskId> [--auto-approve-spec]`          | Run one task from `main`; stops at spec approval (see `runs/<runId>/spec-approval.md`) |
-| `npm run approve -- <runId> spec`                             | Approve the spec and continue to development                                           |
-| `npm run reject -- <runId> spec --comment "…"`                | Send the spec back to the planner with the comment (≤ 2 times)                         |
-| `npm run merge -- <runId>`                                    | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
-| `npm run close -- <runId> --comment "…"`                      | Close a successful run without merging                                                 |
-| `npm run resume -- <runId>`                                   | Continue an interrupted run from its last checkpoint                                   |
-| `npm run runs [-- <limit>]`                                   | List recent runs from the database                                                     |
-| `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]` | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
-| `npm run eval -- --resume <evalId> [--repeat N]`              | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
-| `npm run eval:review [-- --only <runtime>]`                   | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
-| `npm run verify-hidden [-- <taskId>]`                         | Hidden tests fail on baseline and pass on reference patches                            |
-| `npm run eval:rescore -- <evalId>`                            | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)   |
-| `npm run baseline:update -- --reason "…"`                     | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
-| `npm run reopen-merge -- <runId>`                             | One-time: put a pre-merge-gate success run at the merge gate                           |
-| `npm run db:import`                                           | Import Week 1 run reports from `runs/` into the database                               |
+| Command                                                                                | What it does                                                                          |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `npm run run-task -- [--project <id>] <task.yaml \| evalTaskId> [--auto-approve-spec]` | Run one task in a project from its target branch; stops at spec approval              |
+| `npm run project:check -- <projectId>`                                                 | Config, sandbox image, host install, gate checks on a clean target branch (no agents) |
+| `npm run approve -- <runId> spec`                                                      | Approve the spec and continue to development                                          |
+| `npm run reject -- <runId> spec --comment "…"`                                         | Send the spec back to the planner with the comment (≤ 2 times)                        |
+| `npm run merge -- <runId>`                                                             | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff   |
+| `npm run close -- <runId> --comment "…"`                                               | Close a successful run without merging                                                |
+| `npm run resume -- <runId>`                                                            | Continue an interrupted run from its last checkpoint                                  |
+| `npm run runs [-- <limit>]`                                                            | List recent runs from the database                                                    |
+| `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]`                          | Eval suite from `factory-baseline`, N repeats, hidden-test verification               |
+| `npm run eval -- --resume <evalId> [--repeat N]`                                       | Continue an eval interrupted by a provider limit and/or add repeats up to N           |
+| `npm run eval:review [-- --only <runtime>]`                                            | Compare reviewers on `evals/review/` (recall, false positive rate)                    |
+| `npm run verify-hidden [-- <taskId>]`                                                  | Hidden tests fail on baseline and pass on reference patches                           |
+| `npm run eval:rescore -- <evalId>`                                                     | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)  |
+| `npm run baseline:update -- --reason "…"`                                              | Move the `factory-baseline` tag to `main` (recorded in the DB)                        |
+| `npm run reopen-merge -- <runId>`                                                      | One-time: put a pre-merge-gate success run at the merge gate                          |
+| `npm run db:import`                                                                    | Import Week 1 run reports from `runs/` into the database                              |
 
 ### Runtime configuration (`factory.config.ts`)
 
@@ -184,7 +194,7 @@ Sol-vs-Opus reviewer comparison from Week 2 is in [docs/week2-results.md](docs/w
 
 ## Security model
 
-### Checks run in a sandbox (`src/quality/sandbox.ts`, `sandbox/Dockerfile`)
+### Checks run in a sandbox (`src/quality/sandbox.ts`, `sandbox/<profile>/`)
 
 Typecheck and tests are executed by the factory, never trusted from the agent, inside a
 Docker container with:
@@ -195,10 +205,12 @@ Docker container with:
   `no-new-privileges`, memory / CPU / PID limits;
 - the worktree bind-mounted **read-only** at `/src` and copied into an in-memory `/work`;
   checks can never modify the worktree;
-- dependencies preinstalled at image build time from the target's `package-lock.json`
-  (`/deps/node_modules`, read-only). The image tag is a hash of the Dockerfile and the
-  dependency manifests, so a lockfile change produces a new image. The build context
-  contains only those files — no source code, secrets, or host `node_modules`.
+- one image per sandbox profile (`sandbox/node22/`, `sandbox/python312/`: a Dockerfile with
+  the base image pinned by digest, and a bootstrap script). Dependencies are preinstalled at
+  image build time from the project's `profile.dependency_files` (`/deps`, read-only). The
+  image tag is a hash of the profile and those files, so a lockfile change produces a new
+  image. The build context contains only those files — no source code, secrets, or host
+  dependency directories.
 - every run has a timeout; on timeout the container is killed (`docker kill`).
 
 The image build itself needs network (base image pull, `npm ci`). Checks never do.
