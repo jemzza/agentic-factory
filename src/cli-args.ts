@@ -30,6 +30,10 @@ export type CliCommand =
       costCapUsd: number | null;
       /** Continue a stopped A/B (whole pairs kept, interrupted pairs redone). */
       resume?: string;
+      /** B conditions to run (default both); [] = A only (a check of the A path). */
+      conditions?: ("memory_on" | "memory_off")[];
+      /** A subset of the pairs (default all). */
+      pairs?: string[];
     }
   | {
       kind: "eval";
@@ -75,6 +79,8 @@ export const USAGE = `Usage:
                                  Compare reviewers on evals/review/ (recall, false positive rate)
   npm run eval:memory [-- --repeat N] [-- --cost-cap USD]
   npm run eval:memory -- --resume <memeval-id>   (after a subscription limit: whole pairs kept)
+  npm run eval:memory -- [--pairs a,b] [--conditions memory_on|memory_off] [--a-only]
+                                 Subset of pairs / one condition / only task A (A-path check)
   npm run eval:memory -- verify | freeze
                                  Memory A/B on the frozen evals/memory/ pairs (A once with the
                                  recorded rejection, B N times with and without memory; needs
@@ -341,6 +347,8 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       let repeat = 2;
       let costCapUsd: number | null = null;
       let resume: string | undefined;
+      let conditions: ("memory_on" | "memory_off")[] | undefined;
+      let pairs: string[] | undefined;
       for (let k = 0; k < rest.length; k++) {
         const a = rest[k];
         if (a === "--repeat" && /^[1-5]$/.test(rest[k + 1] ?? "")) repeat = Number(rest[++k]);
@@ -352,6 +360,12 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
           costCapUsd = v;
         } else if (a === "--resume" && /^memeval-\d{8}-\d{6}$/.test(rest[k + 1] ?? "")) {
           resume = rest[++k];
+        } else if (a === "--conditions" && /^(memory_on|memory_off)$/.test(rest[k + 1] ?? "")) {
+          conditions = [rest[++k] as "memory_on" | "memory_off"];
+        } else if (a === "--a-only") {
+          conditions = [];
+        } else if (a === "--pairs" && /^[a-z0-9-]+(,[a-z0-9-]+)*$/.test(rest[k + 1] ?? "")) {
+          pairs = (rest[++k] ?? "").split(",");
         } else {
           return {
             kind: "invalid",
@@ -366,6 +380,8 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         repeat,
         costCapUsd,
         ...(resume ? { resume } : {}),
+        ...(conditions ? { conditions } : {}),
+        ...(pairs ? { pairs } : {}),
       };
     }
     case "eval-review": {

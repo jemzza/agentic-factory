@@ -747,7 +747,13 @@ async function evalRescore(evalId: string): Promise<number> {
  * memory backend is unavailable (memory_on must never silently become memory_off).
  */
 async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Promise<number> {
-  const pairs = await loadPairs();
+  const allPairs = await loadPairs();
+  const unknown = (cmd.pairs ?? []).filter((id) => !allPairs.some((p) => p.id === id));
+  if (unknown.length > 0) {
+    console.error(`unknown pair(s): ${unknown.join(", ")}`);
+    return 2;
+  }
+  const pairs = cmd.pairs ? allPairs.filter((p) => cmd.pairs?.includes(p.id)) : allPairs;
   const ids = pairs.flatMap((p) => [p.b]);
   if (cmd.action === "freeze") {
     await writeMemoryManifest();
@@ -815,7 +821,7 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
   }
   await mkdir(outDir, { recursive: true });
   console.log(
-    `Memory A/B ${evalId}: ${pairs.length} pair(s), A once + B ×${cmd.repeat} per condition; cost cap $${costCapUsd}; embedder ${embedModelId(config.memory.embedder)}`,
+    `Memory A/B ${evalId}: ${pairs.length} pair(s), A once + B ×${cmd.repeat} per condition (${(cmd.conditions ?? ["memory_on", "memory_off"]).join(", ") || "A only"}); cost cap $${costCapUsd}; embedder ${embedModelId(config.memory.embedder)}`,
   );
   const deps = (memory: MemoryAccess | undefined, approval: "auto" | "manual") => ({
     config,
@@ -858,6 +864,7 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
       repeats: cmd.repeat,
       namespace: evalId,
       costCapUsd,
+      ...(cmd.conditions ? { conditions: cmd.conditions } : {}),
       ...(progress ? { progress } : {}),
       saveProgress: (p) => writeFile(progressFile, JSON.stringify(p, null, 2)),
       loadTask: (id: string): Promise<TaskSpec> => loadTaskSpec(id, MEMORY_EVAL_DIRS),

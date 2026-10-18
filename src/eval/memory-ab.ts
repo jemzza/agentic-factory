@@ -151,6 +151,11 @@ export type BResult = z.infer<typeof BResultSchema>;
 export interface MemoryAbDeps {
   pairs: readonly Pair[];
   repeats: number;
+  /**
+   * Which B conditions run (default both). `[]` runs only A (a check of the A path: is the
+   * recorded rejection applied and a lesson stored?). Without memory_on, A is skipped.
+   */
+  conditions?: readonly Condition[];
   loadTask: (id: string) => Promise<TaskSpec>;
   /** The memory the A/B runs in (null `memory`: the backend is unavailable). */
   memory: () => Promise<MemoryAccess>;
@@ -245,6 +250,7 @@ export const LESSON_PREFIX = "[lesson]";
 
 export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> {
   const log = deps.log ?? (() => undefined);
+  const conditions: readonly Condition[] = deps.conditions ?? CONDITIONS;
   const progress = structuredClone(deps.progress ?? emptyProgress());
   const results = progress.results;
   const lessonsStored = progress.lessonsStored;
@@ -320,6 +326,26 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
     pairResults = [];
 
     // memory_on: one A, then B with the lesson. A fresh namespace per attempt.
+    if (!conditions.includes("memory_on") && conditions.length > 0) {
+      // memory_off alone needs no A and no memory.
+      for (let i = 1; i <= deps.repeats; i++) {
+        if (overCap()) {
+          await save();
+          return done("cost_cap_reached", `cost cap $${String(deps.costCapUsd)} reached`);
+        }
+        const rb = await deps.runB(b, undefined);
+        spent += rb.report.cost.totalUsd;
+        if (rb.report.status === "infra_error") {
+          await save();
+          return done("infra_error", rb.report.message);
+        }
+        await judge(pair, "memory_off", i, rb, 0);
+      }
+      results.push(...pairResults);
+      progress.completedPairs.push(pair.id);
+      await save();
+      continue;
+    }
     const access = await deps.memory();
     if (!access.memory)
       return done("infra_error", `memory unavailable: ${access.unavailable ?? ""}`);
@@ -350,10 +376,12 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
       (m) => m.source === "spec_rejection_comment",
     ).length;
     const forB: MemoryAccess = { ...access, memory: ns.readOnlyView(), required: true };
-    for (const [condition, memory] of [
-      ["memory_on", forB],
-      ["memory_off", undefined],
-    ] as const) {
+    for (const [condition, memory] of (
+      [
+        ["memory_on", forB],
+        ["memory_off", undefined],
+      ] as const
+    ).filter(([c]) => conditions.includes(c))) {
       for (let i = 1; i <= deps.repeats; i++) {
         if (overCap())
           return stop("cost_cap_reached", `cost cap $${String(deps.costCapUsd)} reached`);

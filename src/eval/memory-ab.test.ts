@@ -226,6 +226,20 @@ describe("runMemoryAb", () => {
     await expect(runMemoryAb(d)).rejects.toThrow(/ran without the recorded rejection/);
   });
 
+  it("runs only the chosen condition; --a-only runs A alone and reports its lesson", async () => {
+    const onOnly = deps(new InMemoryMemory(), { conditions: ["memory_on"] });
+    const s = await runMemoryAb(onOnly.d);
+    expect(s.results.map((r) => r.condition)).toEqual(["memory_on", "memory_on"]);
+    const aOnly = deps(new InMemoryMemory(), { conditions: [] });
+    const a = await runMemoryAb(aOnly.d);
+    expect(a).toMatchObject({ status: "completed", results: [], lessonsStored: { p1: 1 } });
+    expect(aOnly.calls).toEqual([`A task-a required=true comment=${PAIR.reject_comment}`]);
+    const offOnly = deps(new InMemoryMemory(), { conditions: ["memory_off"] });
+    const off = await runMemoryAb(offOnly.d);
+    expect(offOnly.calls).toEqual(["B task-b off", "B task-b off"]); // no A without memory_on
+    expect(off.results).toHaveLength(2);
+  });
+
   it("namespaces never share records", async () => {
     const mem = new InMemoryMemory();
     const a = new NamespacedMemory(mem, "x-p1");
