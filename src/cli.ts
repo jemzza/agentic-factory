@@ -61,6 +61,7 @@ import {
 } from "./eval/memory-ab.js";
 import { makeEvalId } from "./eval/run-eval.js";
 import { buildDashboard, DASHBOARD_HOST } from "./dashboard/server.js";
+import { checkOllama, checkOpenAI } from "./runtimes/provider-check.js";
 import type { CommandResult } from "./process/run-command.js";
 import { openDb } from "./store/db.js";
 import { importRunReports } from "./store/import-runs.js";
@@ -94,7 +95,10 @@ async function verifyHidden(taskId: string | null): Promise<number> {
   return failures === 0 ? 0 : 1;
 }
 
-export const RUNS_DIR = path.join(FACTORY_ROOT, "runs");
+/** Run outputs; FACTORY_RUNS points elsewhere (the demo keeps its own, see scripts/demo.ts). */
+export const RUNS_DIR = path.resolve(
+  process.env["FACTORY_RUNS"] ?? path.join(FACTORY_ROOT, "runs"),
+);
 
 // Provider keys for non-Anthropic runtimes live in .env (git-ignored). They reach only the
 // runtime that names them in keyEnv; Claude Code and the sandbox get explicit envs.
@@ -875,6 +879,15 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
   }
 }
 
+async function providerCheck(provider: "openai" | "ollama"): Promise<number> {
+  const result =
+    provider === "openai" ? await checkOpenAI(process.env) : await checkOllama(await loadConfig());
+  const redact = createRedactor(secretsFromEnv((await loadConfig()).secretEnv));
+  for (const l of result.lines)
+    console.log(redact(`${l.ok ? "PASS" : "FAIL"}  ${l.what}: ${l.detail}`));
+  return result.exitCode;
+}
+
 /** Read-only dashboard on 127.0.0.1 (the DB connection is query_only). Ctrl+C stops it. */
 async function dashboard(port: number): Promise<number> {
   const config = await loadConfig();
@@ -1186,6 +1199,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return evalSuite(cmd);
     case "dashboard":
       return dashboard(cmd.port);
+    case "provider-check":
+      return providerCheck(cmd.provider);
     case "runs":
       return listRuns(cmd.limit);
     case "resume":

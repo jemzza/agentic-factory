@@ -5,6 +5,37 @@ The factory knows no project in its code. A project is a git repository with its
 
 ## 1. The repository
 
+**Skeleton and tests first.** The factory judges work only by commands that exit 0 or not.
+So the project needs:
+
+- A working build and a **test suite that passes on a clean checkout**. `project:check` refuses
+  a project whose own checks fail.
+- **Tests that agents can extend.** The developer adds tests next to the code; the reviewer
+  checks that every criterion has one.
+- **One `check` command** that runs everything (typecheck, lint, tests). It becomes the
+  developer's `self_check`.
+- **No network in tests.** Gate checks run in the sandbox with `--network none`; dependencies
+  are installed on the host from the lock file.
+
+**`CLAUDE.md` (the conventions file).** Every agent gets it. The factory reads it with
+`git show` from the target branch, never from the worktree. Write in it:
+
+- the layout and layering, and where rules live;
+- the public API contract that must not break;
+- error and status conventions;
+- how to test (helpers, determinism);
+- what agents must not touch (dependencies, configs, the `openspec/` directory).
+
+The TaskFlow stand (`fixtures/taskflow/CLAUDE.md`) is a complete example.
+
+**Issue template.** Copy `fixtures/taskflow/.github/ISSUE_TEMPLATE/factory-task.yml` to
+`.github/ISSUE_TEMPLATE/`. It gives every issue the `factory` label and the sections the
+watcher parses:
+
+- Request;
+- Acceptance criteria, one per line;
+- Scope and Budget, both optional.
+
 Commit these files to the project's target branch:
 
 - `.factory/config.yaml`: how the factory works in this repository. The factory reads it with

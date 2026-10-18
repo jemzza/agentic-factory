@@ -1,0 +1,13 @@
+# Demo registry template (docs/demo.md). `npm run demo:reset -- --owner <login>` writes it into
+# the demo sandbox with the owner's login filled in. These are the owner's dedicated GitHub test
+# repositories; the working registry is projects.yaml.
+version: 1
+projects:
+  - id: taskflow-demo
+    source: { kind: git, url: https://github.com/__GITHUB_OWNER__/taskflow-demo.git, ref: main }
+    github: { repo: __GITHUB_OWNER__/taskflow-demo }
+    allowed_users: [__GITHUB_OWNER__]
+  - id: ledgerlite
+    source: { kind: git, url: https://github.com/__GITHUB_OWNER__/ledgerlite.git, ref: main }
+    github: { repo: __GITHUB_OWNER__/ledgerlite }
+    allowed_users: [__GITHUB_OWNER__]

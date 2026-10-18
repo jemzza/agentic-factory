@@ -15,11 +15,30 @@ Takes a development task against a target repository and drives it to a **verifi
 6. **Report**, then **merge approval** — a human merges or closes; the gate re-runs on the
    merge result before `main` moves. Nothing is ever merged automatically.
 
-> Status: Week 2 + the cycle-budget correction. The loop is a LangGraph.js state graph with
-> SQLite checkpoints (resume after a crash), OpenSpec specs with an approval gate, a merge
-> gate, separate gate and review fix budgets, and a first-pass metric. Results:
-> [docs/week2-results.md](docs/week2-results.md),
+**One factory, many projects.** The factory has no project in its code.
+
+- Each project is a git repository registered in `projects.yaml`, with its own rules in
+  `.factory/config.yaml` (sandbox profile, checks, scope, budget).
+- The main interface is GitHub: an issue is a task, comments are decisions (`/approve`,
+  `/reject`, `/merge`, `/close`, `/retry`), and the result is a PR. `npm run factory:watch`
+  polls GitHub from the owner's computer; there are no webhooks.
+- The CLI remains the backup path.
+- A read-only dashboard shows runs and evals.
+
+> Status: Week 3 code complete (projects, GitHub interface, parallel runs, optional project
+> memory, dashboard, Pi runtime). The live measurements of the final block are pending:
+> [docs/week3-results.md](docs/week3-results.md), plan in
+> [docs/week3-design.md](docs/week3-design.md) §11. Earlier results:
+> [docs/week2-results.md](docs/week2-results.md) and
 > [docs/cycles-budget-results.md](docs/cycles-budget-results.md).
+>
+> Guides:
+>
+> - [docs/demo.md](docs/demo.md): the 5–7 minute demo;
+> - [docs/new-project.md](docs/new-project.md): adding a project;
+> - [docs/enable-openai.md](docs/enable-openai.md): enabling OpenAI;
+> - [docs/pi-runtime.md](docs/pi-runtime.md): the Pi runtime.
+>
 > **Reviewing this repository? Start with [docs/showcase/README.md](docs/showcase/README.md).**
 
 ## Architecture
@@ -160,6 +179,10 @@ claude auth status            # the Claude Code CLI must be logged in
 | `npm run eval:rescore -- <evalId>`                                                     | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)   |
 | `npm run baseline:update -- --reason "…"`                                              | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
 | `npm run reopen-merge -- <runId>`                                                      | One-time: put a pre-merge-gate success run at the merge gate                           |
+| `npm run provider:check -- openai\|ollama`                                             | OpenAI key (one free request; clear message without a key), pinned local Ollama models |
+| `npm run smoke:pi`                                                                     | One live review by the Pi reviewer on the local model ($0)                             |
+| `npm run demo:reset [-- --owner <login>]`                                              | Fresh demo sandbox (own DB, workdir, runs, registry); never touches working data       |
+| `npm run demo -- <command>`                                                            | Run a factory command in the demo sandbox, e.g. `-- watch`, `-- dashboard`             |
 | `npm run db:import`                                                                    | Import Week 1 run reports from `runs/` into the database                               |
 
 ### Runtime configuration (`factory.config.ts`)

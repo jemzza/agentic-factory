@@ -52,6 +52,7 @@ export type CliCommand =
     }
   | { kind: "watch"; once: boolean; intervalSeconds: number | null; concurrency: number }
   | { kind: "dashboard"; port: number }
+  | { kind: "provider-check"; provider: "openai" | "ollama" }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -100,6 +101,9 @@ export const USAGE = `Usage:
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
   npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
+  npm run provider:check -- openai|ollama
+                                 Is a provider usable: OpenAI key (one free request, or a clear
+                                 message without a key), the pinned local Ollama models
   npm run dashboard [-- --port N]
                                  Read-only dashboard on http://127.0.0.1:N (default 4317)
   npm run runs [-- <limit>]      List recent runs from the database
@@ -312,6 +316,11 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
       }
       return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "provider-check": {
+      if (rest.length === 1 && (rest[0] === "openai" || rest[0] === "ollama"))
+        return { kind: "provider-check", provider: rest[0] };
+      return { kind: "invalid", message: "provider-check: expected openai or ollama" };
     }
     case "dashboard": {
       if (rest.length === 0) return { kind: "dashboard", port: 4317 };

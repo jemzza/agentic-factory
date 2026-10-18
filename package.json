@@ -25,6 +25,8 @@
     "memory": "tsx src/cli.ts memory",
     "smoke:claude": "tsx scripts/smoke-claude.ts",
     "smoke:pi": "tsx scripts/smoke-pi.ts",
+    "demo:reset": "tsx scripts/demo.ts reset",
+    "demo": "tsx scripts/demo.ts run",
     "runs": "tsx src/cli.ts runs",
     "resume": "tsx src/cli.ts resume",
     "approve": "tsx src/cli.ts approve",
@@ -36,6 +38,7 @@
     "eval:review": "tsx src/cli.ts eval-review",
     "eval:memory": "tsx src/cli.ts eval-memory",
     "dashboard": "tsx src/cli.ts dashboard",
+    "provider:check": "tsx src/cli.ts provider-check",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {

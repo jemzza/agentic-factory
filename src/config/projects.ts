@@ -14,7 +14,10 @@ import {
   type ProjectRegistry,
 } from "../schemas/project.js";
 
-export const REGISTRY_FILE = path.join(FACTORY_ROOT, "projects.yaml");
+/** The project registry; FACTORY_PROJECTS points to another one (the demo's, scripts/demo.ts). */
+export const REGISTRY_FILE = path.resolve(
+  process.env["FACTORY_PROJECTS"] ?? path.join(FACTORY_ROOT, "projects.yaml"),
+);
 export const EVAL_CONFIG_FILE = path.join(EVALS_DIR, "eval.config.yaml");
 /** Location of a project's factory settings inside its own repository. */
 export const PROJECT_CONFIG_PATH = ".factory/config.yaml";

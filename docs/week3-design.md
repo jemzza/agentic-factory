@@ -436,19 +436,37 @@ measurement has run.
 The final block runs after the code is committed. Runs go one after another and are scheduled
 around subscription limit resets, on AC power with the lid open:
 
-| #   | Measurement                                                                                           | From phase | Estimate |
-| --- | ----------------------------------------------------------------------------------------------------- | ---------- | -------- |
-| 1   | Equivalence: `npm run eval` (Opus in every role) vs the Week 3 baseline                               | 2          | ~$6      |
-| 2   | Candidate roles: `FACTORY_CONFIG=factory.sonnet-dev.config.ts npm run eval`                           | 2          | ~$5      |
-| 3   | Live GitHub cycle issue → `/approve` → PR → `/merge`, in two projects                                 | 3          | ~$2–3    |
-| 4   | `npm run eval -- --concurrency 2`                                                                     | 4          | ~$6      |
-| 5   | Memory A/B (`evals/memory/`, 20 task runs, design below)                                              | 5          | ~$12     |
-| 6   | Pi reviewer on Ollama: `eval:review` (Opus vs Pi); one `npm run eval` only if Pi recall ≥ 70% of Opus | 7          | ~$3–6    |
-| 7   | Owner decisions by the numbers: default roles, concurrency, `memory.enabled`, Pi role                 | —          | —        |
-| 8   | Final `npm run eval -- --repeat 3 --concurrency <chosen>`                                             | 8          | ~$18     |
+| #   | Measurement                                                                    | From phase | Estimate (list price) | Wall time  | Status (2026-10-18)                                         |
+| --- | ------------------------------------------------------------------------------ | ---------- | --------------------- | ---------- | ----------------------------------------------------------- |
+| 1   | Equivalence: `npm run eval` (Opus in every role) vs the Week 3 baseline        | 2          | ~$6                   | ~30 min    | pending                                                     |
+| 2   | Candidate roles: `FACTORY_CONFIG=factory.sonnet-dev.config.ts npm run eval`    | 2          | ~$3–5                 | ~30 min    | pending                                                     |
+| 3   | Live GitHub cycle issue → `/reject` → `/approve` → PR → `/merge`, two projects | 3          | ~$2–3                 | ~30 min    | pending; needs the owner's inputs below                     |
+| 4   | `npm run eval -- --concurrency 2`                                              | 4          | ~$6                   | ~15 min    | pending                                                     |
+| 5   | Memory A/B: `npm run eval:memory` (20 task runs)                               | 5          | ~$12                  | ~60 min    | pending                                                     |
+| 6   | Pi reviewer on Ollama: `eval:review` Opus vs Pi; `eval` only if gate passes    | 7          | ~$3–6                 | ~15 min    | **done**: $1.71 (Opus side), gate FAIL (20% < 70%), no eval |
+| 7   | Owner decisions by the numbers: default roles, concurrency, `memory.enabled`   | —          | —                     | —          | after 1–5                                                   |
+| 8   | Final `npm run eval -- --repeat 3 --concurrency <chosen>`                      | 8          | ~$18 (Opus roles)     | ~45–80 min | after 7                                                     |
 
-Total ≈ $57–58 (list price; the practical limit is the subscription). Order: items 1–2 first
-(they check the Phase 2 refactor), items 3–6 next, then the decisions, then item 8.
+**Remaining estimate: ≈ $47–50 at list price** (items 1–5 and 8), plus the $1.71 already spent
+on item 6. Wall time is about 4–5 hours of runs. The practical limit is the Claude
+subscription: runs are scheduled around limit resets, and every hit of the limit is reported.
+The estimates use the measured cost per repeat ($5.98 ± $0.38 for 10 TaskFlow tasks with Opus)
+and ≈ $0.6 per memory task run.
+
+**The owner's inputs needed before item 3 (and the GitHub part of the demo):**
+
+- The GitHub login for `allowed_users` and as the repositories' owner.
+- Two private repositories, `taskflow-demo` and `ledgerlite`, created by the owner:
+  - `taskflow-demo` seeded from the stand at `factory-baseline`;
+  - `ledgerlite` pushed from the local repository.
+- The fine-grained token in `.env` (`FACTORY_GITHUB_TOKEN`), scoped to exactly these two
+  repositories.
+- Branch protection: force-push and deletion blocked.
+
+**Note on the acceptance criteria.** The brief's criterion "an eval with Pi was run and
+compared with the baseline" is superseded by the owner's later rule: an eval runs only if Pi's
+recall is at least 70% of Opus's. The rule was applied: the gate failed, so no eval ran, and
+this is recorded in `docs/week3-results.md`.
 
 **Memory A/B with fewer runs** (owner: fewer runs in Phase 5). The brief's minimum still
 applies: 4 pairs "A → B", 2 repeats per condition.

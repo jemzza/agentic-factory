@@ -203,6 +203,18 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["dashboard", "--host", "0.0.0.0"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses provider-check openai|ollama", () => {
+    expect(parseCliArgs(["provider-check", "openai"])).toEqual({
+      kind: "provider-check",
+      provider: "openai",
+    });
+    expect(parseCliArgs(["provider-check", "ollama"])).toEqual({
+      kind: "provider-check",
+      provider: "ollama",
+    });
+    expect(parseCliArgs(["provider-check"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });
