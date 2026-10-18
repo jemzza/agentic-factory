@@ -11,6 +11,8 @@ export const STORED_RUN_STATUSES = [
   "awaiting_merge_approval",
   "merged",
   "closed",
+  /** The PR was merged on GitHub by hand, bypassing the factory's merge gate. */
+  "merged_externally",
   ...RUN_STATUSES,
 ] as const;
 export type StoredRunStatus = (typeof STORED_RUN_STATUSES)[number];
@@ -69,6 +71,9 @@ export const RunRowSchema = z.object({
     .transform((v) => (v === null ? null : v === 1)),
   /** Human spec rejections; NULL for runs without a spec approval stage (Week 1). */
   spec_revisions: z.number().int().nullable(),
+  /** GitHub issue / pull request of the run (NULL for CLI runs). */
+  issue_number: z.number().int().nullable(),
+  pr_number: z.number().int().nullable(),
 });
 export type RunRow = z.output<typeof RunRowSchema>;
 
@@ -120,6 +125,7 @@ export const ApprovalRowSchema = z.object({
   gate: z.enum(["spec", "merge"]),
   decision: z.enum(["approve", "reject", "merge", "close"]),
   actor: z.string(),
+  channel: z.enum(["cli", "github", "auto"]),
   comment: z.string().nullable(),
   decided_at: z.string(),
 });
@@ -154,10 +160,50 @@ export const EvalRowSchema = z.object({
 });
 export type EvalRow = z.output<typeof EvalRowSchema>;
 
+export const GITHUB_EVENT_OUTCOMES = [
+  "accepted",
+  "executed",
+  "invalid",
+  "ignored_unauthorized",
+  "ignored_stale",
+  "ignored_not_applicable",
+  "not_command",
+  "factory_comment",
+] as const;
+export type GithubEventOutcome = (typeof GITHUB_EVENT_OUTCOMES)[number];
+export type GithubEventKind = "issue" | "comment" | "pr";
+
+export const GithubEventRowSchema = z.object({
+  id: z.number().int(),
+  project_id: z.string(),
+  kind: z.enum(["issue", "comment", "pr"]),
+  github_id: z.number().int(),
+  number: z.number().int().nullable(),
+  author: z.string().nullable(),
+  outcome: z.enum(GITHUB_EVENT_OUTCOMES),
+  run_id: z.string().nullable(),
+  detail: z.string().nullable(),
+  applied: z.union([z.literal(0), z.literal(1)]).transform((v) => v === 1),
+  processed_at: z.string(),
+});
+export type GithubEventRow = z.output<typeof GithubEventRowSchema>;
+
+export const SpecVersionRowSchema = z.object({
+  run_id: z.string(),
+  version: z.number().int(),
+  hash: z.string(),
+  spec_commit: z.string(),
+  comment_id: z.number().int().nullable(),
+  published_at: z.string(),
+});
+export type SpecVersionRow = z.output<typeof SpecVersionRowSchema>;
+
 export interface NewRun {
   id: string;
   /** Project from projects.yaml. */
   projectId: string;
+  /** GitHub issue the run implements. */
+  issueNumber?: number;
   taskId: string;
   mode: "interactive" | "eval";
   budgetUsd: number;
@@ -189,9 +235,13 @@ export type RunPatch = Partial<{
   reviewCycles: number;
   firstPass: boolean | null;
   specRevisions: number;
+  issueNumber: number;
+  prNumber: number;
 }>;
 
 const RUN_PATCH_COLUMNS: Record<keyof RunPatch, string> = {
+  issueNumber: "issue_number",
+  prNumber: "pr_number",
   status: "status",
   statusMessage: "status_message",
   finishedAt: "finished_at",
@@ -266,15 +316,16 @@ export class Store {
     const now = run.startedAt ?? this.ts();
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, task_id, mode, eval_id, eval_repeat, status, spec_approval,
-           started_at, updated_at, budget_usd, roles_json, baseline_commit, gate_fix_cycles,
-           review_cycles, spec_revisions)
-         VALUES (@id, @projectId, @taskId, @mode, @evalId, @evalRepeat, @status, @specApproval, @now,
-           @now, @budgetUsd, @roles, @baselineCommit, 0, 0, @specRevisions)`,
+        `INSERT INTO runs (id, project_id, issue_number, task_id, mode, eval_id, eval_repeat, status,
+           spec_approval, started_at, updated_at, budget_usd, roles_json, baseline_commit,
+           gate_fix_cycles, review_cycles, spec_revisions)
+         VALUES (@id, @projectId, @issueNumber, @taskId, @mode, @evalId, @evalRepeat, @status,
+           @specApproval, @now, @now, @budgetUsd, @roles, @baselineCommit, 0, 0, @specRevisions)`,
       )
       .run({
         id: run.id,
         projectId: run.projectId,
+        issueNumber: run.issueNumber ?? null,
         taskId: run.taskId,
         mode: run.mode,
         evalId: run.evalId ?? null,
@@ -502,11 +553,14 @@ export class Store {
     decision: "approve" | "reject" | "merge" | "close";
     actor: string;
     comment?: string | null;
+    /** Where the decision was made; default: `auto` for the auto actor, else `cli`. */
+    channel?: "cli" | "github" | "auto";
   }): ApprovalRow {
     const info = this.db
       .prepare(
-        `INSERT INTO approvals (run_id, project_id, gate, decision, actor, comment, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO approvals (run_id, project_id, gate, decision, actor, channel, comment,
+           decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         a.runId,
@@ -514,6 +568,7 @@ export class Store {
         a.gate,
         a.decision,
         a.actor,
+        a.channel ?? (a.actor === "auto" ? "auto" : "cli"),
         a.comment ? this.redact(a.comment) : null,
         this.ts(),
       );
@@ -631,5 +686,189 @@ export class Store {
     const e = this.getEval(id);
     if (!e) throw new Error(`eval ${id} not found`);
     return e;
+  }
+
+  // ---- GitHub (factory:watch) ---------------------------------------------
+
+  /** The decision about a GitHub object, if it was already processed. */
+  getGithubEvent(
+    projectId: string,
+    kind: GithubEventKind,
+    githubId: number,
+  ): GithubEventRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM github_events WHERE project_id = ? AND kind = ? AND github_id = ?")
+      .get(projectId, kind, githubId);
+    return row === undefined ? null : GithubEventRowSchema.parse(row);
+  }
+
+  /**
+   * Records a decision about a GitHub object exactly once. Returns false if it was already
+   * recorded (then nothing changes). Call inside the same transaction as its effect.
+   */
+  recordGithubEvent(e: {
+    projectId: string;
+    kind: GithubEventKind;
+    githubId: number;
+    number?: number | null;
+    author?: string | null;
+    outcome: GithubEventOutcome;
+    runId?: string | null;
+    detail?: string | null;
+    applied?: boolean;
+  }): boolean {
+    const info = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO github_events (project_id, kind, github_id, number, author, outcome,
+           run_id, detail, applied, processed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        e.projectId,
+        e.kind,
+        e.githubId,
+        e.number ?? null,
+        e.author ?? null,
+        e.outcome,
+        e.runId ?? null,
+        e.detail === undefined || e.detail === null ? null : this.redact(e.detail),
+        e.applied === false ? 0 : 1,
+        this.ts(),
+      );
+    return info.changes === 1;
+  }
+
+  markGithubEventApplied(id: number): void {
+    this.db.prepare("UPDATE github_events SET applied = 1 WHERE id = ?").run(id);
+  }
+
+  /** Executed commands whose effect on the run was not completed (e.g. a crash). */
+  listUnappliedGithubEvents(projectId: string): GithubEventRow[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM github_events WHERE project_id = ? AND applied = 0 AND outcome IN ('executed', 'accepted') ORDER BY id",
+      )
+      .all(projectId)
+      .map((r) => GithubEventRowSchema.parse(r));
+  }
+
+  listGithubEvents(projectId: string): GithubEventRow[] {
+    return this.db
+      .prepare("SELECT * FROM github_events WHERE project_id = ? ORDER BY id")
+      .all(projectId)
+      .map((r) => GithubEventRowSchema.parse(r));
+  }
+
+  /** Records the next published spec version of a run (version = previous + 1). */
+  recordSpecVersion(v: {
+    runId: string;
+    hash: string;
+    specCommit: string;
+    commentId: number | null;
+    publishedAt: string;
+  }): SpecVersionRow {
+    const prev = this.db
+      .prepare("SELECT MAX(version) v FROM spec_versions WHERE run_id = ?")
+      .get(v.runId) as { v: number | null };
+    const version = (prev.v ?? 0) + 1;
+    this.db
+      .prepare(
+        `INSERT INTO spec_versions (run_id, version, hash, spec_commit, comment_id, published_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(v.runId, version, v.hash, v.specCommit, v.commentId, v.publishedAt);
+    return {
+      run_id: v.runId,
+      version,
+      hash: v.hash,
+      spec_commit: v.specCommit,
+      comment_id: v.commentId,
+      published_at: v.publishedAt,
+    };
+  }
+
+  setSpecVersionComment(runId: string, version: number, commentId: number): void {
+    this.db
+      .prepare("UPDATE spec_versions SET comment_id = ? WHERE run_id = ? AND version = ?")
+      .run(commentId, runId, version);
+  }
+
+  latestSpecVersion(runId: string): SpecVersionRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM spec_versions WHERE run_id = ? ORDER BY version DESC LIMIT 1")
+      .get(runId);
+    return row === undefined ? null : SpecVersionRowSchema.parse(row);
+  }
+
+  getCursor(projectId: string, stream: string): string | null {
+    const row = this.db
+      .prepare("SELECT since FROM gh_cursors WHERE project_id = ? AND stream = ?")
+      .get(projectId, stream) as { since: string } | undefined;
+    return row?.since ?? null;
+  }
+
+  setCursor(projectId: string, stream: string, since: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO gh_cursors (project_id, stream, since) VALUES (?, ?, ?)
+         ON CONFLICT (project_id, stream) DO UPDATE SET since = excluded.since`,
+      )
+      .run(projectId, stream, since);
+  }
+
+  /** The latest run of a GitHub issue (a /retry creates a new run for the same issue). */
+  latestRunForIssue(projectId: string, issue: number): RunRow | null {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM runs WHERE project_id = ? AND issue_number = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+      )
+      .get(projectId, issue);
+    return row === undefined ? null : RunRowSchema.parse(row);
+  }
+
+  runForPull(projectId: string, pr: number): RunRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM runs WHERE project_id = ? AND pr_number = ? ORDER BY id DESC LIMIT 1")
+      .get(projectId, pr);
+    return row === undefined ? null : RunRowSchema.parse(row);
+  }
+
+  /** Runs of GitHub issues in a project with one of `statuses`. */
+  listGithubRuns(projectId: string, statuses: readonly StoredRunStatus[]): RunRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM runs WHERE project_id = ? AND issue_number IS NOT NULL
+           AND status IN (${statuses.map(() => "?").join(", ")}) ORDER BY id`,
+      )
+      .all(projectId, ...statuses)
+      .map((r) => RunRowSchema.parse(r));
+  }
+
+  /**
+   * Takes a named process lock. A lock held by a dead local process is taken over; a live one
+   * makes this return its holder.
+   */
+  acquireNamedLock(
+    name: string,
+    holder: string = processLockId(),
+  ): { ok: true } | { ok: false; holder: string } {
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT holder FROM locks WHERE name = ?").get(name) as
+        { holder: string } | undefined;
+      if (row && row.holder !== holder && isProcessAlive(row.holder)) {
+        return { ok: false as const, holder: row.holder };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO locks (name, holder, acquired_at) VALUES (?, ?, ?)
+           ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, acquired_at = excluded.acquired_at`,
+        )
+        .run(name, holder, this.ts());
+      return { ok: true as const };
+    })();
+  }
+
+  releaseNamedLock(name: string, holder: string = processLockId()): void {
+    this.db.prepare("DELETE FROM locks WHERE name = ? AND holder = ?").run(name, holder);
   }
 }

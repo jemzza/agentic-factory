@@ -37,14 +37,14 @@ describe("config", () => {
         developer: { runtime: "claude-code", model: "opus" },
         reviewer: { runtime: "opencode", model: "openai/gpt-x-2026", keyEnv: ["OPENAI_API_KEY"] },
       },
-      secretEnv: ["OPENAI_API_KEY"],
+      secretEnv: ["OPENAI_API_KEY", "FACTORY_GITHUB_TOKEN"],
       stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
       maxDiffCharsForReview: 1000,
       evalCostCapUsd: 1,
     };
     expect(resolveConfig(base).models.reviewer).toBe("openai/gpt-x-2026");
     const withReviewer =
-      (reviewer: object, secretEnv = ["OPENAI_API_KEY"]) =>
+      (reviewer: object, secretEnv = ["OPENAI_API_KEY", "FACTORY_GITHUB_TOKEN"]) =>
       () =>
         resolveConfig({ ...base, secretEnv, roles: { ...base.roles, reviewer } });
     expect(

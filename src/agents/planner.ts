@@ -8,7 +8,7 @@ import { SpecChangeSchema, type OpenSpecIssue } from "../schemas/spec.js";
 import type { TaskContent } from "../schemas/task.js";
 import type { AgentRunResult } from "../runtimes/types.js";
 import { describeIssues } from "../spec/openspec.js";
-import { renderSpecForPrompt, renderTask } from "./prompts.js";
+import { renderSpecForPrompt, renderTask, untrustedBlock } from "./prompts.js";
 import { parseStructured, type StructuredOutcome } from "./structured.js";
 
 export const PLANNER_OUTPUT_SCHEMA = plannerJsonSchema;
@@ -17,10 +17,12 @@ export const SPEC_OUTPUT_SCHEMA = toAgentJsonSchema(SpecChangeSchema);
 export function plannerPrompt(task: TaskContent, rejections: readonly string[] = []): string {
   const parts = [renderTask(task)];
   if (rejections.length > 0) {
+    const feedback = rejections.map((c, i) => `${i + 1}. ${c || "(no comment)"}`).join("\n");
     parts.push(
       "## Human feedback on previous specification drafts",
       "A human rejected your previous specification. Address every point below in the new plan and spec:",
-      rejections.map((c, i) => `${i + 1}. ${c || "(no comment)"}`).join("\n"),
+      // Rejections written on GitHub are data like the issue itself.
+      task.origin?.kind === "github" ? untrustedBlock(feedback) : feedback,
     );
   }
   parts.push(

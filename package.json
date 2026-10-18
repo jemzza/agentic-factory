@@ -21,6 +21,7 @@
     "verify-hidden": "tsx src/cli.ts verify-hidden",
     "eval:rescore": "tsx src/cli.ts eval-rescore",
     "project:check": "tsx src/cli.ts project-check",
+    "factory:watch": "tsx src/cli.ts watch",
     "smoke:claude": "tsx scripts/smoke-claude.ts",
     "runs": "tsx src/cli.ts runs",
     "resume": "tsx src/cli.ts resume",

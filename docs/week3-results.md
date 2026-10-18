@@ -159,3 +159,76 @@ is used.
 Spend in Phase 2: live ledgerlite run $0.59, the interrupted evals $0.87 + $2.12, about $3.6 in
 total (list price). Subscription limits hit: 1, by the interactive session that builds the factory; no factory
 run was refused by the provider. Host sleep interrupted 1 eval.
+
+## Phase 3: GitHub as the main interface
+
+Implemented and tested on a fake `gh`. **Live measurement: in the final block** (design §11,
+item 3), together with creating the `taskflow-demo` and `ledgerlite` repositories.
+
+### What was built
+
+- **`gh` adapter** (`src/github/gh-cli.ts`). Every call is `gh api -i`, a format checked
+  with `gh` 2.102.0: `--help`, `gh help environment`, and one recorded 401 response from a
+  deliberately invalid token. Pagination is manual (`page=N`), and every REST object is
+  parsed with Zod (`src/github/api.ts`). Errors are values; rate limits are handled by
+  GitHub's documented rules (`retry-after`, then `x-ratelimit-reset`, then at least 60 s),
+  and polling slows down below 10 % of the remaining limit. The token reaches only `gh`,
+  as `GH_TOKEN` with an empty factory-owned `GH_CONFIG_DIR`, so `gh auth login` and the
+  keyring are never used. It is masked in every error.
+- **Remote git** (`src/github/remote.ts`): clone, fetch and push through
+  `gh auth git-credential`, with the user's own credential helpers reset. The token is never
+  written to `.git/config` or a URL.
+- **`/merge` with GitHub.** The factory first fast-forwards its clone from origin, then
+  builds the merge result in a temporary worktree, runs the gate on it, pushes it (never
+  forced), and only then moves the local branch. A gate failure, a conflict or a rejected
+  push blocks the merge with a comment on the PR.
+- **`npm run factory:watch`** (`src/github/watch.ts`, `daemon.ts`) runs a single instance
+  (a named lock with dead-process takeover). On start it resumes interrupted runs from their
+  checkpoints. The first Ctrl+C stops taking work while the current node finishes and writes
+  its checkpoint; a second Ctrl+C exits at once. The poll interval comes from config
+  (default 60 s).
+- **Trust rules.** Only `allowed_users` count. Factory comments carry `<!-- factory:bot -->`
+  and are never commands, and a command must start the first line. Each comment is decided
+  exactly once (`github_events` UNIQUE): the decision and its approval row are written in
+  one transaction, and a restart re-applies a decision that a crash cut short. Approvals are
+  bound to a spec version: each draft is a new version, even when its content is identical,
+  so an `/approve` written before a version was published, or for another hash, does not
+  count. Issue text and `/reject` reasons reach agents only inside `<untrusted_issue_data>`;
+  task files and eval prompts are unchanged.
+- **Migration 007** adds `github_events`, `spec_versions`, `gh_cursors`, `locks`,
+  `approvals.channel` (`cli`, `github` or `auto`), `runs.issue_number` and
+  `runs.pr_number`, and the status `merged_externally`.
+- **Labels.** The labels the owner decided on, plus `factory:failed` and `factory:paused`,
+  are created on the first poll. `/retry` restarts after `needs_clarification` or a failure;
+  the allowed users' answers in the thread are passed on as clarifications.
+- **CLI as the backup path.** CLI decisions get `channel = cli`, and their results are
+  published to GitHub (PR, labels, closed issue) exactly once. A CLI merge of a GitHub
+  project pushes like the watcher does.
+
+### Tests (fake `gh`, a bare git repository as "GitHub", fake agents; no network)
+
+`src/github/watch.test.ts` — the seven required scenarios and five more:
+
+| Test                                                                                       | Result |
+| ------------------------------------------------------------------------------------------ | ------ |
+| full cycle: issue → spec → `/reject` → spec v2 → `/approve` → PR → `/merge`                | pass   |
+| `/approve` from a user who is not allowed is ignored                                       | pass   |
+| `/approve` for an outdated version (another hash; written before publication)              | pass   |
+| a restart executes no command twice; a decision cut short by a crash is applied once       | pass   |
+| text of a user who is not allowed never reaches an agent (issue, `/reject`, plain comment) | pass   |
+| invalid issue → comment with the error, no run                                             | pass   |
+| gate fails on the merge result → no merge, comment on the PR                               | pass   |
+| the `/approve` hint in the factory's own spec comment never approves                       | pass   |
+| a PR merged by hand → `merged_externally`                                                  | pass   |
+| `needs_clarification` → answer → `/retry` (a stranger's comment is left out)               | pass   |
+| CLI decisions on a GitHub run are published once                                           | pass   |
+| a GitHub 502 is a poll error; nothing is lost                                              | pass   |
+
+Also tested: command parsing (line start, the marker anywhere, malformed commands), the
+issue-form parser, `gh -i` parsing on the recorded 401, the rate-limit rules, the child
+environment (only `PATH` from the host), token masking, pagination, the daemon lock, and
+migration 007. `npm run check`: exit 0.
+
+Not covered without a live run: real GitHub behavior that the fake can only imitate. That
+includes GitHub marking a PR as merged after a direct push of its head, ETag/304 handling
+(not used), and secondary limits.

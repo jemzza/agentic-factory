@@ -5,6 +5,10 @@ import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { rescoreEval } from "./eval/rescore.js";
 import { checkProject } from "./config/project-check.js";
+import { runDaemon } from "./github/daemon.js";
+import { GhCli } from "./github/gh-cli.js";
+import { ghRemote } from "./github/remote.js";
+import { Watcher } from "./github/watch.js";
 import { ensureSandboxImage, runInSandbox } from "./quality/sandbox.js";
 import { runEvalRepeated } from "./eval/repeat.js";
 import { listTaskIds, loadEvalMeta, loadTaskSpec } from "./eval/tasks.js";
@@ -113,6 +117,19 @@ async function projectSourceFor(
   return { id: p.id, source: p.source };
 }
 
+/**
+ * The authenticated remote for a project on GitHub (CLI decisions on GitHub runs push like the
+ * watcher does); undefined for local projects. Without the token a GitHub project cannot merge.
+ */
+async function remoteFor(config: ResolvedConfig, projectId: string, mode: "interactive" | "eval") {
+  if (mode === "eval") return undefined;
+  const p = findProject(await loadRegistry(), projectId);
+  if (p.github === null) return undefined;
+  const token = process.env[config.github.tokenEnv];
+  if (!token) throw new Error(`${projectId} is on GitHub: set ${config.github.tokenEnv} in .env`);
+  return ghRemote({ token });
+}
+
 /** A task to run: a YAML file (any project) or the id of an eval task (the eval stand). */
 async function loadRunnableTask(task: string): Promise<TaskFile> {
   if (!task.endsWith(".yaml") && !task.endsWith(".yml")) return loadTaskSpec(task);
@@ -209,9 +226,19 @@ async function decideGate(
     store.recordApproval({ runId, gate, decision, actor, comment });
     const { runtime, runtimes } = runtimeDeps(config);
     const project = await projectSourceFor(run.project_id, run.mode);
+    const remote = await remoteFor(config, run.project_id, run.mode);
     const res = await resumeRun(
       runId,
-      { config, runtime, runtimes, runsDir: RUNS_DIR, store, project, log: consoleLog },
+      {
+        config,
+        runtime,
+        runtimes,
+        runsDir: RUNS_DIR,
+        store,
+        project,
+        ...(remote ? { remote } : {}),
+        log: consoleLog,
+      },
       { answer: { decision, actor, ...(comment ? { comment } : {}) } },
     );
     if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
@@ -632,6 +659,79 @@ async function projectCheck(projectId: string): Promise<number> {
   return ok ? 0 : 1;
 }
 
+/** The GitHub daemon (`npm run factory:watch`). */
+async function watch(once: boolean, intervalOverride: number | null): Promise<number> {
+  const config = await loadConfig();
+  const token = process.env[config.github.tokenEnv];
+  if (!token) {
+    console.error(
+      `error: ${config.github.tokenEnv} is not set. Put a fine-grained token (only the repositories in projects.yaml; Issues, Pull requests, Contents: read/write) into .env — see .env.example.`,
+    );
+    return 2;
+  }
+  const registry = await loadRegistry();
+  const projects = registry.projects.filter((p) => p.github !== null);
+  if (projects.length === 0) {
+    console.error("error: no project in projects.yaml has a `github` repository");
+    return 2;
+  }
+  const api = new GhCli({ token });
+  const remote = ghRemote({ token });
+  const store = openStore(config);
+  let stop = false;
+  let interrupts = 0;
+  process.on("SIGINT", () => {
+    interrupts++;
+    if (interrupts > 1) {
+      console.log(
+        "\nSecond Ctrl+C: exiting now. Interrupted runs resume from their checkpoints on the next start.",
+      );
+      process.exit(130);
+    }
+    stop = true;
+    console.log(
+      "\nStopping: no new work is taken; the current step finishes and saves its checkpoint (Ctrl+C again to exit now).",
+    );
+  });
+  try {
+    const { runtime, runtimes } = runtimeDeps(config);
+    const watcher = new Watcher({
+      api,
+      remote,
+      store,
+      projects,
+      runDeps: () => ({ config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog }),
+      log: consoleLog,
+      shouldStop: () => stop,
+    });
+    console.log(
+      `factory:watch: ${projects.map((p) => `${p.id} (${p.github?.repo ?? ""})`).join(", ")}; every ${intervalOverride ?? config.github.pollIntervalSeconds}s${once ? ", once" : ""}`,
+    );
+    await runDaemon({
+      store,
+      watcher,
+      rate: () => api.rate(),
+      intervalSeconds: intervalOverride ?? config.github.pollIntervalSeconds,
+      once,
+      log: consoleLog,
+      stopRequested: () => stop,
+      sleep: (ms, stopped) =>
+        new Promise((resolve) => {
+          const until = Date.now() + ms;
+          const tick = setInterval(() => {
+            if (stopped() || Date.now() >= until) {
+              clearInterval(tick);
+              resolve();
+            }
+          }, 500);
+        }),
+    });
+    return 0;
+  } finally {
+    store.db.close();
+  }
+}
+
 async function resumeOne(runId: string): Promise<number> {
   const config = await loadConfig();
   const store = openStore(config);
@@ -710,6 +810,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return evalRescore(cmd.evalId);
     case "project-check":
       return projectCheck(cmd.projectId);
+    case "watch":
+      return watch(cmd.once, cmd.intervalSeconds);
     case "run":
       return runOne(cmd.projectId, cmd.task, cmd.autoApproveSpec);
     case "decide":

@@ -138,6 +138,18 @@ describe("ProjectRegistrySchema", () => {
         version: 1,
         projects: [p("a", { github: { repo: "owner/a" }, allowed_users: ["owner"] })],
       }).success,
+    ).toBe(false); // a GitHub project needs a git source
+    expect(
+      ProjectRegistrySchema.safeParse({
+        version: 1,
+        projects: [
+          p("a", {
+            source: { kind: "git", url: "https://github.com/owner/a.git", ref: "main" },
+            github: { repo: "owner/a" },
+            allowed_users: ["owner"],
+          }),
+        ],
+      }).success,
     ).toBe(true);
   });
 });

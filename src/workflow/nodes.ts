@@ -20,9 +20,11 @@ import {
   prepareMergeCandidate,
   removeTempWorktree,
 } from "../git/merge.js";
+import type { RemoteGit } from "../github/remote.js";
 import {
   BASELINE_TAG,
   ensureHostDeps,
+  fastForwardFromOrigin,
   type ProjectSource,
   type RepoRef,
 } from "../git/target-repo.js";
@@ -82,6 +84,11 @@ export interface NodeContext {
   /** The project this run belongs to (where its repository comes from). */
   project: ProjectSource;
   ensureRepo: (project: ProjectSource, workdir: string, from: RepoRef) => Promise<TargetRepo>;
+  /**
+   * GitHub projects: the merge first syncs the target branch from origin and, after the gate
+   * passes on the merge result, pushes it there (never forced) before moving the local branch.
+   */
+  remote?: RemoteGit | undefined;
   makeSandboxExec: (repoDir: string, profile: SandboxProfile) => Promise<SandboxExec>;
   now: () => Date;
   /**
@@ -822,6 +829,15 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         `Factory-Run: ${s.runId}`,
         `Factory-Task: ${s.task.id}`,
       ].join("\n");
+      if (ctx.remote) {
+        try {
+          await fastForwardFromOrigin(repoDir, targetBranch, ctx.remote);
+        } catch (err) {
+          return blocked(
+            `could not bring ${targetBranch} up to date with GitHub: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       ctx.log("→ merge: building the merge result from current main…");
       const candidate = await prepareMergeCandidate({
         repoDir,
@@ -878,6 +894,16 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           return blocked(
             `the quality gate failed on the merge result with current main:\n${describeGateFailures(gate)}`,
           );
+        }
+        if (ctx.remote) {
+          const pushed = await ctx.remote.push(repoDir, candidate.mergeCommit, targetBranch);
+          if (!pushed.ok) {
+            return blocked(
+              pushed.rejected
+                ? `${targetBranch} moved on GitHub while the merge was being checked; retry the merge`
+                : `pushing the merge to GitHub failed: ${pushed.message}`,
+            );
+          }
         }
         const ff = await fastForwardMain(
           repoDir,

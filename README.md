@@ -133,24 +133,25 @@ cp .env.example .env          # optional paths; OPENAI_API_KEY only if the OpenC
 claude auth status            # the Claude Code CLI must be logged in
 ```
 
-| Command                                                                                | What it does                                                                          |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `npm run run-task -- [--project <id>] <task.yaml \| evalTaskId> [--auto-approve-spec]` | Run one task in a project from its target branch; stops at spec approval              |
-| `npm run project:check -- <projectId>`                                                 | Config, sandbox image, host install, gate checks on a clean target branch (no agents) |
-| `npm run approve -- <runId> spec`                                                      | Approve the spec and continue to development                                          |
-| `npm run reject -- <runId> spec --comment "…"`                                         | Send the spec back to the planner with the comment (≤ 2 times)                        |
-| `npm run merge -- <runId>`                                                             | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff   |
-| `npm run close -- <runId> --comment "…"`                                               | Close a successful run without merging                                                |
-| `npm run resume -- <runId>`                                                            | Continue an interrupted run from its last checkpoint                                  |
-| `npm run runs [-- <limit>]`                                                            | List recent runs from the database                                                    |
-| `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]`                          | Eval suite from `factory-baseline`, N repeats, hidden-test verification               |
-| `npm run eval -- --resume <evalId> [--repeat N]`                                       | Continue an eval interrupted by a provider limit and/or add repeats up to N           |
-| `npm run eval:review [-- --only <runtime>]`                                            | Compare reviewers on `evals/review/` (recall, false positive rate)                    |
-| `npm run verify-hidden [-- <taskId>]`                                                  | Hidden tests fail on baseline and pass on reference patches                           |
-| `npm run eval:rescore -- <evalId>`                                                     | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)  |
-| `npm run baseline:update -- --reason "…"`                                              | Move the `factory-baseline` tag to `main` (recorded in the DB)                        |
-| `npm run reopen-merge -- <runId>`                                                      | One-time: put a pre-merge-gate success run at the merge gate                          |
-| `npm run db:import`                                                                    | Import Week 1 run reports from `runs/` into the database                              |
+| Command                                                                                | What it does                                                                           |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `npm run run-task -- [--project <id>] <task.yaml \| evalTaskId> [--auto-approve-spec]` | Run one task in a project from its target branch; stops at spec approval               |
+| `npm run factory:watch [-- --once] [-- --interval <s>]`                                | Poll GitHub: issues → runs, comments → commands, PRs; one instance; Ctrl+C is graceful |
+| `npm run project:check -- <projectId>`                                                 | Config, sandbox image, host install, gate checks on a clean target branch (no agents)  |
+| `npm run approve -- <runId> spec`                                                      | Approve the spec and continue to development                                           |
+| `npm run reject -- <runId> spec --comment "…"`                                         | Send the spec back to the planner with the comment (≤ 2 times)                         |
+| `npm run merge -- <runId>`                                                             | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
+| `npm run close -- <runId> --comment "…"`                                               | Close a successful run without merging                                                 |
+| `npm run resume -- <runId>`                                                            | Continue an interrupted run from its last checkpoint                                   |
+| `npm run runs [-- <limit>]`                                                            | List recent runs from the database                                                     |
+| `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]`                          | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
+| `npm run eval -- --resume <evalId> [--repeat N]`                                       | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
+| `npm run eval:review [-- --only <runtime>]`                                            | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
+| `npm run verify-hidden [-- <taskId>]`                                                  | Hidden tests fail on baseline and pass on reference patches                            |
+| `npm run eval:rescore -- <evalId>`                                                     | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)   |
+| `npm run baseline:update -- --reason "…"`                                              | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
+| `npm run reopen-merge -- <runId>`                                                      | One-time: put a pre-merge-gate success run at the merge gate                           |
+| `npm run db:import`                                                                    | Import Week 1 run reports from `runs/` into the database                               |
 
 ### Runtime configuration (`factory.config.ts`)
 
@@ -191,6 +192,63 @@ has only `api_retry` events and no model output. The measured code (`bb50b61`) c
 `timeout`; since `421b588` such a timeout is classified as `infra_error`. The metrics above
 were not recomputed. The review limit never engaged, so `max_review_cycles` stays 1. The
 Sol-vs-Opus reviewer comparison from Week 2 is in [docs/week2-results.md](docs/week2-results.md).
+
+## GitHub interface (`npm run factory:watch`)
+
+The main way to work with the factory: a task is an issue, decisions are comments, the result
+is a pull request. The factory only polls GitHub from the owner's computer: no webhooks, no
+public server.
+
+1. Create an issue from the **Factory task** template (`.github/ISSUE_TEMPLATE/factory-task.yml`
+   in the project), label `factory`.
+2. The factory posts the specification as a comment: version, hash, requirements with their
+   `source`, and the requirements outside the acceptance criteria. Reply `/approve` or
+   `/reject <reason>`. An approval counts only for the latest version and only if written
+   after it was published.
+3. The factory opens a PR (`Closes #N`) with the spec, the spec and code diffs, every gate
+   command and its result, the review verdict per cycle, cycles, cost and active time.
+4. On the PR, comment `/merge` (the gate runs again on the merge result with the current
+   target branch; only then is it pushed) or `/close <reason>`.
+5. After `needs_clarification` or a failure: answer in the issue or edit it, then `/retry`.
+
+| Label                         | Meaning                                                              |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `factory`                     | a task for the factory (from an allowed user)                        |
+| `factory:in-progress`         | planning or development is running                                   |
+| `factory:spec-review`         | a specification waits for `/approve` or `/reject`                    |
+| `factory:pr-open`             | the PR waits for `/merge` or `/close`                                |
+| `factory:needs-clarification` | the planner's questions are in the issue; answer, then `/retry`      |
+| `factory:failed`              | gate_failed, review_rejected, budget_exceeded, error, timeout        |
+| `factory:paused`              | infra_error (provider or host unavailable); `/retry` when it is back |
+| `factory:done`                | merged or closed                                                     |
+
+**Trust rules.** GitHub is untrusted input.
+
+- Issues and commands count only from `allowed_users` in `projects.yaml`. Everyone else is
+  ignored and logged without their text, and nothing they write reaches an agent.
+- Comments the factory writes carry `<!-- factory:bot -->` and are never commands. A command
+  must start the first line of a comment.
+- Every comment id is decided exactly once (`github_events`), so a restart, a crash or an edit
+  never executes a command twice.
+- Issue text and `/reject` reasons reach agents only inside a delimited
+  `<untrusted_issue_data>` block.
+- The CLI (`approve`, `reject`, `merge`, `close`) still works as the backup path: decisions are
+  recorded with `channel = cli`, and the watcher publishes their result on GitHub.
+
+**Setup.**
+
+- A fine-grained token with access to the project repositories only (Issues, Pull requests,
+  Contents: read and write), stored as `FACTORY_GITHUB_TOKEN` in `.env`. Only the factory's own
+  `gh` and `git` processes get it, as `GH_TOKEN` with an empty factory-owned `GH_CONFIG_DIR`
+  (no `gh auth login`, no keyring). Agents and the sandbox never see it, and it is masked
+  everywhere.
+- In `projects.yaml`, a project gets `github: { repo: owner/name }`, `allowed_users`, and a
+  git `source` whose `ref` is the target branch. The labels are created on the first poll.
+- **Protect the target branch.** Block force-pushes and deletion. The factory pushes the gated
+  merge result directly to the target branch, never forced. A rule "require a pull request
+  before merging" would reject that push unless the token's owner may bypass it. Either allow
+  that bypass, or protect only against force-push and deletion. A PR merged by hand on GitHub
+  is recorded as `merged_externally`, because no merge gate ran.
 
 ## Security model
 

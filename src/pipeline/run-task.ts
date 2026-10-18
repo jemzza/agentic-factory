@@ -5,6 +5,7 @@ import type { ResolvedConfig } from "../config/load-config.js";
 import { git } from "../git/git.js";
 import { readProjectConfig } from "../config/projects.js";
 import { hostSuspend } from "../process/host-suspend.js";
+import type { RemoteGit } from "../github/remote.js";
 import {
   ensureTargetRepo,
   type ProjectSource,
@@ -35,6 +36,8 @@ export interface RunTaskDeps {
   project: ProjectSource;
   /** Returns a sandbox executor for the project's profile. Default: Docker sandbox. */
   makeSandboxExec?: (repoDir: string, profile: SandboxProfile) => Promise<SandboxExec>;
+  /** GitHub projects: authenticated clone/fetch/push for the merge (see NodeContext.remote). */
+  remote?: RemoteGit;
   /** Materializes the project's repo. Default: ensureTargetRepo. */
   ensureRepo?: (project: ProjectSource, workdir: string, from: RepoRef) => Promise<TargetRepo>;
   now?: () => Date;
@@ -45,6 +48,8 @@ export interface RunTaskDeps {
   /** How this run was started (recorded in the DB). Default: interactive. */
   runContext?: {
     mode: "interactive" | "eval";
+    /** The GitHub issue this run implements (factory:watch). */
+    issueNumber?: number;
     evalId?: string;
     evalRepeat?: number;
     baselineCommit?: string;
@@ -75,7 +80,20 @@ export type RunOutcome =
       runId: string;
       noticePath: string;
       result?: RunTaskResult;
+      /** At the spec gate: the spec as committed (rendered files) and its structured form. */
+      spec?: {
+        files: Record<string, string>;
+        change: PersistedSpecChange | null;
+        commit: string | null;
+      };
+      /** At the merge gate after a blocked merge: why it was blocked. */
+      blockedReason?: string | null;
     };
+
+/** A run's result from its report.md path (as stored in runs.report_path). */
+export function loadRunResult(reportMdPath: string): Promise<RunTaskResult> {
+  return loadResult(path.dirname(reportMdPath));
+}
 
 /** Report written by an earlier process (e.g. before a merge decision). */
 async function loadResult(runDir: string): Promise<RunTaskResult> {
@@ -123,7 +141,9 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
     runtimeFor: (role) => deps.runtimes?.[role] ?? deps.runtime,
     store: deps.store,
     project: deps.project,
-    ensureRepo: deps.ensureRepo ?? ensureTargetRepo,
+    remote: deps.remote,
+    ensureRepo:
+      deps.ensureRepo ?? ((p, workdir, from) => ensureTargetRepo(p, workdir, from, deps.remote)),
     makeSandboxExec: deps.makeSandboxExec ?? defaultSandboxExec,
     now,
     deadlineNow: () => now().getTime() - pausedMs - hostSuspend.suspendedWithin(since, Date.now()),
@@ -233,7 +253,7 @@ async function settle(
       payload: { blocked: blockedReason },
     });
     deps.log?.(`⏸ waiting for a merge decision — see ${noticePath}`);
-    return { kind: "awaiting", gate: "merge", runId, noticePath, result };
+    return { kind: "awaiting", gate: "merge", runId, noticePath, result, blockedReason };
   }
 
   if (!snap.next.includes("spec_approval")) {
@@ -251,7 +271,13 @@ async function settle(
     payload: { specCommit: values.specCommit },
   });
   deps.log?.(`⏸ waiting for spec approval — see ${noticePath}`);
-  return { kind: "awaiting", gate: "spec", runId, noticePath };
+  return {
+    kind: "awaiting",
+    gate: "spec",
+    runId,
+    noticePath,
+    spec: { files: values.specFiles, change: values.spec, commit: values.specCommit },
+  };
 }
 
 function renderSpecApprovalNotice(
@@ -333,11 +359,9 @@ export async function runTask(
 
   // The project's rules come from its main clone as committed (eval: at the baseline tag),
   // read once here and frozen in the run state. Missing task scope/budget take its defaults.
-  const repo = await (deps.ensureRepo ?? ensureTargetRepo)(
-    deps.project,
-    config.workdirAbs,
-    repoRef,
-  );
+  const ensureRepo =
+    deps.ensureRepo ?? ((p, workdir, from) => ensureTargetRepo(p, workdir, from, deps.remote));
+  const repo = await ensureRepo(deps.project, config.workdirAbs, repoRef);
   const projectConfig = await readProjectConfig(repo.dir, repo.baseCommit);
   if (repoRef === "main") {
     const branch = (await git(repo.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
@@ -355,6 +379,9 @@ export async function runTask(
   store?.createRun({
     id: runId,
     projectId: deps.project.id,
+    ...(deps.runContext?.issueNumber !== undefined
+      ? { issueNumber: deps.runContext.issueNumber }
+      : {}),
     taskId: task.id,
     mode,
     budgetUsd: task.budget.max_cost_usd,

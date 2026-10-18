@@ -57,6 +57,18 @@ const taskFields = {
   scope: z.strictObject({
     allowed_paths: z.array(z.string().trim().min(1)).min(1),
   }),
+  /**
+   * Where the task text came from. A GitHub issue is untrusted input: its text reaches agents
+   * only inside a delimited data block (src/agents/prompts.ts). Absent for task files.
+   */
+  origin: z
+    .strictObject({
+      kind: z.literal("github"),
+      repo: z.string().min(1),
+      issue: z.number().int().positive(),
+      url: z.string().min(1),
+    })
+    .optional(),
 };
 
 /** Visible task definition: `evals/tasks/<id>/task.yaml`. This is what agents see. */

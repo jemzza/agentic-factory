@@ -123,6 +123,13 @@ export const ProjectRegistrySchema = z
         });
     });
     r.projects.forEach((p, i) => {
+      if (p.github && p.source.kind !== "git") {
+        ctx.addIssue({
+          code: "custom",
+          message: `project "${p.id}" has a GitHub repo, so its source must be a git URL with the target branch as ref`,
+          path: ["projects", i, "source"],
+        });
+      }
       if (p.github && p.allowed_users.length === 0) {
         ctx.addIssue({
           code: "custom",

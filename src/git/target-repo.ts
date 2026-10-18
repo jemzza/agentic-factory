@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { access, appendFile, cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { expandHome } from "../config/load-config.js";
+import type { RemoteGit } from "../github/remote.js";
 import { FACTORY_ROOT } from "../paths.js";
 import { runCommand } from "../process/run-command.js";
 import type { TargetSource } from "../schemas/config.js";
@@ -94,6 +95,8 @@ export async function ensureTargetRepo(
   project: ProjectSource,
   workdir: string,
   from: RepoRef = "main",
+  /** GitHub projects: clone/fetch through the factory's authenticated remote. */
+  remote?: RemoteGit,
 ): Promise<TargetRepo> {
   const reposDir = path.join(workdir, "repos");
   await mkdir(reposDir, { recursive: true });
@@ -117,10 +120,12 @@ export async function ensureTargetRepo(
     if (!(await exists(path.join(dir, ".git")))) {
       // A local path may be written as ~/...; git itself does not expand it.
       const url = expandHome(project.source.url);
-      await git(reposDir, ["clone", "-q", "--no-recurse-submodules", url, dir], 15 * 60_000);
+      if (remote) await remote.clone(url, dir);
+      else await git(reposDir, ["clone", "-q", "--no-recurse-submodules", url, dir], 15 * 60_000);
     }
     const current = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     if (current !== project.source.ref) await git(dir, ["checkout", "-q", project.source.ref]);
+    if (remote && from === "main") await fastForwardFromOrigin(dir, project.source.ref, remote);
   }
 
   let baselineCreated = false;
@@ -133,6 +138,30 @@ export async function ensureTargetRepo(
   const baseCommit =
     from === "baseline" ? baselineCommit : (await git(dir, ["rev-parse", "HEAD"])).trim();
   return { dir, baseCommit, baselineCommit, baselineCreated };
+}
+
+/**
+ * Brings the checked-out `branch` of a main clone up to origin (fetch + fast-forward only).
+ * A local branch with commits that origin does not have is an error: the factory never
+ * rewrites or silently diverges from the remote.
+ */
+export async function fastForwardFromOrigin(
+  dir: string,
+  branch: string,
+  remote: RemoteGit,
+): Promise<void> {
+  await remote.fetch(dir, branch);
+  const local = (await git(dir, ["rev-parse", `refs/heads/${branch}`])).trim();
+  const upstream = (await git(dir, ["rev-parse", `refs/remotes/origin/${branch}`])).trim();
+  if (local === upstream) return;
+  try {
+    await git(dir, ["merge-base", "--is-ancestor", local, upstream]);
+  } catch {
+    throw new Error(
+      `${dir}: local ${branch} (${local.slice(0, 10)}) has commits that origin/${branch} (${upstream.slice(0, 10)}) does not; resolve by hand`,
+    );
+  }
+  await git(dir, ["merge", "-q", "--ff-only", upstream]);
 }
 
 /**

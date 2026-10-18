@@ -221,6 +221,7 @@ export function fakeConfig(workdir: string): ResolvedConfig {
     stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
+    github: { tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 },
   };
 }
 

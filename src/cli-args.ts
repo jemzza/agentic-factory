@@ -34,6 +34,7 @@ export type CliCommand =
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "eval-rescore"; evalId: string }
   | { kind: "project-check"; projectId: string }
+  | { kind: "watch"; once: boolean; intervalSeconds: number | null }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -59,6 +60,9 @@ export const USAGE = `Usage:
                                  Run the eval suite (all tasks, or the given ones) N times and
                                  verify successes with hidden tests. --resume continues an eval
                                  interrupted by a provider limit and/or adds repeats up to N
+  npm run factory:watch [-- --once] [-- --interval <seconds>]
+                                 Poll GitHub for factory issues and commands in every project
+                                 of projects.yaml; one instance; Ctrl+C stops after the node
   npm run project:check -- <projectId>
                                  Check a project's .factory/config.yaml, sandbox image and that
                                  its checks pass on a clean target branch (no agents)
@@ -143,6 +147,22 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         }
       }
       return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd };
+    }
+    case "watch": {
+      let once = false;
+      let intervalSeconds: number | null = null;
+      for (let k = 0; k < rest.length; k++) {
+        const a = rest[k];
+        if (a === "--once") once = true;
+        else if (a === "--interval") {
+          const v = Number(rest[++k]);
+          if (!Number.isInteger(v) || v < 15 || v > 3600) {
+            return { kind: "invalid", message: "watch: --interval expects 15..3600 seconds" };
+          }
+          intervalSeconds = v;
+        } else return { kind: "invalid", message: `watch: unexpected argument ${a ?? ""}` };
+      }
+      return { kind: "watch", once, intervalSeconds };
     }
     case "project-check": {
       const [projectId, ...extra] = rest;

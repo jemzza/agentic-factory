@@ -20,7 +20,15 @@ const config: FactoryConfigInput = {
   reviewEval: {
     reviewers: [{ runtime: "claude-code", model: "opus" }],
   },
-  secretEnv: ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  // Masked in the DB, logs and reports; none of them is ever given to an agent or the sandbox.
+  secretEnv: [
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "FACTORY_GITHUB_TOKEN",
+  ],
+  // GitHub interface (npm run factory:watch); the token is FACTORY_GITHUB_TOKEN in .env.
+  github: { tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 },
   stepTimeoutsMinutes: { planner: 5, developer: 15, reviewer: 5, check: 5 },
   maxDiffCharsForReview: 150000,
   evalCostCapUsd: 10,

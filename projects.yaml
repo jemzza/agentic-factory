@@ -10,3 +10,9 @@ projects:
   # pushed to GitHub (Week 3 Phase 3).
   - id: ledgerlite
     source: { kind: git, url: ~/Documents/2026/ledgerlite, ref: main }
+
+# On GitHub (Week 3 Phase 3; filled in before the live check — the owner confirms the login):
+#  - id: taskflow-demo
+#    source: { kind: git, url: https://github.com/<owner>/taskflow-demo.git, ref: main }
+#    github: { repo: <owner>/taskflow-demo }
+#    allowed_users: [<owner>]

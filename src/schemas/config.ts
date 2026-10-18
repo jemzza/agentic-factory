@@ -57,6 +57,18 @@ export const FactoryConfigSchema = z.strictObject({
   maxDiffCharsForReview: z.number().int().positive(),
   /** Global spend cap for one `npm run eval` (USD); remaining tasks are skipped once reached. */
   evalCostCapUsd: z.number().positive(),
+  /** GitHub interface (`npm run factory:watch`). The token itself lives in .env only. */
+  github: z
+    .strictObject({
+      /** .env variable with the fine-grained token; must also be listed in secretEnv. */
+      tokenEnv: z
+        .string()
+        .regex(/^[A-Z][A-Z0-9_]*$/)
+        .default("FACTORY_GITHUB_TOKEN"),
+      /** Poll interval per cycle over all projects (GitHub's primary limit is 5,000 req/h). */
+      pollIntervalSeconds: z.number().int().min(15).default(60),
+    })
+    .default({ tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 }),
 });
 export type FactoryConfig = z.infer<typeof FactoryConfigSchema>;
 
@@ -95,6 +107,9 @@ export function roleBindingIssues(c: FactoryConfig): string[] {
         issues.push(`reviewEval.reviewers[${i}].keyEnv ${k} must also be listed in secretEnv`);
     }
   });
+  if (!c.secretEnv.includes(c.github.tokenEnv)) {
+    issues.push(`github.tokenEnv ${c.github.tokenEnv} must also be listed in secretEnv`);
+  }
   for (const role of ["planner", "developer", "reviewer"] as const) {
     for (const k of c.roles[role].keyEnv) {
       if (!c.secretEnv.includes(k))

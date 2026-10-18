@@ -173,3 +173,13 @@ merged automatically.
   `src/runtimes/` changed since the commit recorded for an earlier pass.
 - Not yet covered: OpenCode provider errors (their event shape has not been observed live, so
   they remain `process` errors), and interactive runs (an `infra_error` run is re-run, not resumed).
+
+## GitHub channel (Week 3)
+
+The graph is unchanged. `npm run factory:watch` (`src/github/watch.ts`) is a second channel for
+the two interrupts, next to the CLI: a GitHub `/approve`, `/reject`, `/merge` or `/close` from
+an allowed user is recorded in `approvals` with `channel = github` and resumes the run exactly
+like `npm run approve` / `merge`. Publishing is a side effect of the run's outcome: the spec
+comment at `spec_approval`, the PR at `merge_approval`, status labels and comments at the end.
+For GitHub projects, `merge` also fetches the target branch from origin before building the
+merge result and pushes the gated merge commit (never forced) before moving the local branch.
