@@ -60,6 +60,7 @@ import {
   writeMemoryManifest,
 } from "./eval/memory-ab.js";
 import { makeEvalId } from "./eval/run-eval.js";
+import { buildDashboard, DASHBOARD_HOST } from "./dashboard/server.js";
 import type { CommandResult } from "./process/run-command.js";
 import { openDb } from "./store/db.js";
 import { importRunReports } from "./store/import-runs.js";
@@ -874,6 +875,34 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
   }
 }
 
+/** Read-only dashboard on 127.0.0.1 (the DB connection is query_only). Ctrl+C stops it. */
+async function dashboard(port: number): Promise<number> {
+  const config = await loadConfig();
+  const registry = await loadRegistry();
+  const db = openDb(); // applies pending migrations, then the connection refuses writes
+  db.pragma("query_only = ON");
+  const secrets = secretsFromEnv(config.secretEnv);
+  const store = new Store(db, { secrets });
+  const githubRepos = Object.fromEntries(
+    registry.projects.flatMap((p) => (p.github ? [[p.id, p.github.repo]] : [])),
+  );
+  const app = buildDashboard(
+    { store, runsRoot: RUNS_DIR, githubRepos },
+    { redact: createRedactor(secrets), port },
+  );
+  await app.listen({ host: DASHBOARD_HOST, port });
+  console.log(
+    `Dashboard (read-only): http://${DASHBOARD_HOST}:${String(port)}/  — Ctrl+C stops it`,
+  );
+  await new Promise<void>((resolve) => {
+    process.once("SIGINT", resolve);
+    process.once("SIGTERM", resolve);
+  });
+  await app.close();
+  db.close();
+  return 0;
+}
+
 async function projectCheck(projectId: string): Promise<number> {
   const config = await loadConfig();
   const project = await projectSourceFor(projectId, "interactive");
@@ -1155,6 +1184,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return evalReview(cmd.only);
     case "eval":
       return evalSuite(cmd);
+    case "dashboard":
+      return dashboard(cmd.port);
     case "runs":
       return listRuns(cmd.limit);
     case "resume":

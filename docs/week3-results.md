@@ -355,9 +355,47 @@ pointed at 127.0.0.1:9, which is never called.
 
 ### Tests
 
-`npm run check`: exit 0, 387 tests. The memory tests use fakes and a stubbed `fetch`; none needs
+`npm run check` (at the Phase 5 commit): exit 0, 387 tests. The memory tests use fakes and a stubbed `fetch`; none needs
 Ollama or the network.
 
 Known weakness of the A/B set: TaskFlow's `CLAUDE.md` already says unknown body keys are 400,
 so the `strict-action-body` lesson may be applied without memory. That pair is weaker
 evidence than the other three (`evals/memory/README.md`).
+
+## Phase 6: read-only dashboard
+
+`npm run dashboard [-- --port N]` (default 4317): Fastify 5.12.5, server-rendered HTML,
+`127.0.0.1` only. No agent runs and no cost in this phase.
+
+### What was built
+
+- **Runs:** every project, filtered by project and status, with links to the GitHub issue and
+  PR (from `projects.yaml` → `github.repo`).
+- **A whole run:** status, roles, cycles, cost, memory used; approvals with their channel
+  (`github`, `cli`, `auto`) and spec versions; the spec (rendered OpenSpec files, human
+  rejections, or the spec waiting for approval); the diff; gate checks with the failing output;
+  the review verdict, issues and criteria; steps; the event feed.
+- **Evals:** metrics (mean ± stdev), outcome per task per repeat, the runs. Comparison of two
+  evals with deltas, refused unless both ran on the same baseline commit of the same project.
+  Summaries that are not a suite (memory A/B) are shown as their `summary.md`.
+- **Read-only:** GET routes only; the database connection is `query_only` (applying pending
+  migrations is the only write, as with every factory command); files are read only under
+  `runs/`, and `report.json` is validated with Zod.
+- **Safety:** every value HTML-escaped; no scripts (CSP `default-src 'none'`); configured
+  secret values and token/key shapes masked in every response; other `Host` headers refused
+  with 403.
+
+### Checks
+
+| Check                                                                                                   | Result |
+| ------------------------------------------------------------------------------------------------------- | ------ |
+| No POST, PUT, PATCH or DELETE route; each answers 404                                                   | pass   |
+| The dashboard's database connection refuses writes                                                      | pass   |
+| A run produced by the real pipeline (fake agents): all sections, approvals with channel `github`/`auto` | pass   |
+| `<script>` and `<img onerror>` from agent output are escaped; a token and a configured secret masked    | pass   |
+| Filters by project and status; issue and PR links                                                       | pass   |
+| Eval comparison: deltas on the same baseline; refused on different baselines                            | pass   |
+| Unknown run, eval, page; path traversal; report path outside `runs/` → 404 / not read                   | pass   |
+| Live, on a copy of `data/factory.db`: all pages 200, POST 404, foreign Host 403, listens on 127.0.0.1   | pass   |
+
+`npm run check`: exit 0, 404 tests.

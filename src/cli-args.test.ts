@@ -193,6 +193,16 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["eval-memory", "--repeat", "9"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses dashboard with an optional --port", () => {
+    expect(parseCliArgs(["dashboard"])).toEqual({ kind: "dashboard", port: 4317 });
+    expect(parseCliArgs(["dashboard", "--port", "8080"])).toEqual({
+      kind: "dashboard",
+      port: 8080,
+    });
+    expect(parseCliArgs(["dashboard", "--port", "80"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["dashboard", "--host", "0.0.0.0"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });

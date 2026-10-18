@@ -51,6 +51,7 @@ export type CliCommand =
       id: string | null;
     }
   | { kind: "watch"; once: boolean; intervalSeconds: number | null; concurrency: number }
+  | { kind: "dashboard"; port: number }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -99,6 +100,8 @@ export const USAGE = `Usage:
   npm run verify-hidden [-- <taskId>]
                                  Check hidden tests: fail on baseline, pass on the reference
   npm run resume -- <runId>      Continue an interrupted run from its last checkpoint
+  npm run dashboard [-- --port N]
+                                 Read-only dashboard on http://127.0.0.1:N (default 4317)
   npm run runs [-- <limit>]      List recent runs from the database
   npm run db:import              Import run reports from runs/ into the database`;
 
@@ -309,6 +312,15 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
       }
       return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "dashboard": {
+      if (rest.length === 0) return { kind: "dashboard", port: 4317 };
+      const v = rest[1];
+      if (rest.length === 2 && rest[0] === "--port" && v !== undefined && /^\d{4,5}$/.test(v)) {
+        const port = Number(v);
+        if (port >= 1024 && port <= 65535) return { kind: "dashboard", port };
+      }
+      return { kind: "invalid", message: "dashboard: only --port <1024..65535> is accepted" };
     }
     case "eval-memory": {
       if (rest.length === 1 && (rest[0] === "verify" || rest[0] === "freeze")) {

@@ -376,10 +376,20 @@ export class Store {
   }
 
   listRuns(
-    filter: { taskId?: string; status?: StoredRunStatus; evalId?: string; limit?: number } = {},
+    filter: {
+      taskId?: string;
+      status?: StoredRunStatus;
+      evalId?: string;
+      projectId?: string;
+      limit?: number;
+    } = {},
   ): RunRow[] {
     const where: string[] = [];
     const params: Record<string, unknown> = { limit: filter.limit ?? 100 };
+    if (filter.projectId) {
+      where.push("project_id = @projectId");
+      params["projectId"] = filter.projectId;
+    }
     if (filter.taskId) {
       where.push("task_id = @taskId");
       params["taskId"] = filter.taskId;
@@ -704,6 +714,14 @@ export class Store {
     return row === undefined ? null : EvalRowSchema.parse(row);
   }
 
+  /** Most recent first. */
+  listEvals(limit = 100): EvalRow[] {
+    return this.db
+      .prepare("SELECT * FROM evals ORDER BY started_at DESC, id DESC LIMIT ?")
+      .all(limit)
+      .map((r) => EvalRowSchema.parse(r));
+  }
+
   private requireEval(id: string): EvalRow {
     const e = this.getEval(id);
     if (!e) throw new Error(`eval ${id} not found`);
@@ -813,6 +831,20 @@ export class Store {
     this.db
       .prepare("UPDATE spec_versions SET comment_id = ? WHERE run_id = ? AND version = ?")
       .run(commentId, runId, version);
+  }
+
+  listSpecVersions(runId: string): SpecVersionRow[] {
+    return this.db
+      .prepare("SELECT * FROM spec_versions WHERE run_id = ? ORDER BY version")
+      .all(runId)
+      .map((r) => SpecVersionRowSchema.parse(r));
+  }
+
+  /** Project ids that have runs, sorted. */
+  listRunProjects(): string[] {
+    return (
+      this.db.prepare("SELECT DISTINCT project_id p FROM runs ORDER BY p").all() as { p: string }[]
+    ).map((r) => r.p);
   }
 
   latestSpecVersion(runId: string): SpecVersionRow | null {

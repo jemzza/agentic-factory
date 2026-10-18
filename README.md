@@ -77,6 +77,7 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
   repo under `FACTORY_WORKDIR`; eval starts from its immutable `factory-baseline` tag and
   never uses a remote. Second project: `ledgerlite` (Python 3.12, pytest, mypy, ruff), a
   separate repository.
+- `dashboard/` — read-only web view (Fastify, server-rendered HTML, 127.0.0.1 only).
 - `memory/` — optional project memory (Week 3): confirmed knowledge of a project, given to
   the planner of later runs of that project only. See [Project memory](#project-memory-optional).
 - `evals/tasks/` (visible) · `evals/hidden/` (hidden tests + eval metadata) ·
@@ -145,6 +146,7 @@ claude auth status            # the Claude Code CLI must be logged in
 | `npm run merge -- <runId>`                                                             | Merge a successful run: `--no-ff` + spec archive, gate on the merge result, then ff    |
 | `npm run close -- <runId> --comment "…"`                                               | Close a successful run without merging                                                 |
 | `npm run resume -- <runId>`                                                            | Continue an interrupted run from its last checkpoint                                   |
+| `npm run dashboard [-- --port N]`                                                      | Read-only dashboard on `http://127.0.0.1:N` (default 4317): runs, a whole run, evals   |
 | `npm run runs [-- <limit>]`                                                            | List recent runs from the database                                                     |
 | `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]`                          | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
 | `npm run eval -- --concurrency N [...]`                                                | Run N tasks in parallel (per-project git lock, shared cost cap, pause on infra_error)  |
@@ -255,6 +257,24 @@ public server.
   before merging" would reject that push unless the token's owner may bypass it. Either allow
   that bypass, or protect only against force-push and deletion. A PR merged by hand on GitHub
   is recorded as `merged_externally`, because no merge gate ran.
+
+## Dashboard (`npm run dashboard`)
+
+A read-only web view of the database, at `http://127.0.0.1:4317/` (`--port` to change). It
+listens on 127.0.0.1 only; there is no option for another address.
+
+- **Runs** of every project, most recent first, filtered by project and status, with links to
+  the GitHub issue and PR.
+- **A run**: spec (or the spec waiting for approval), diff, gate checks, review verdict and
+  issues, steps, the event feed, and approvals with their channel (`github`, `cli`, `auto`).
+- **Evals** with their metrics and tasks, and a comparison of two evals. Two evals are
+  compared only when they ran on the same baseline commit of the same project.
+
+Read-only by construction: GET routes only (a test checks there is no POST, PUT, PATCH or
+DELETE route), and the database connection is opened with `query_only`. Pages are rendered on
+the server without scripts (CSP `default-src 'none'`); every value is HTML-escaped. Each page
+passes the secret redactor (configured secret values, token and key shapes). Requests for
+another `Host` are refused (no DNS rebinding). Files are read only from `runs/`.
 
 ## Project memory (optional)
 

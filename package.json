@@ -34,6 +34,7 @@
     "reopen-merge": "tsx src/cli.ts reopen-merge",
     "eval:review": "tsx src/cli.ts eval-review",
     "eval:memory": "tsx src/cli.ts eval-memory",
+    "dashboard": "tsx src/cli.ts dashboard",
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
@@ -43,6 +44,7 @@
     "@langchain/langgraph-checkpoint-sqlite": "1.1.0",
     "better-sqlite3": "12.11.1",
     "execa": "^10.1.1",
+    "fastify": "5.12.5",
     "mem0ai": "3.3.1",
     "ollama": "0.5.18",
     "opencode-ai": "1.19.0",
