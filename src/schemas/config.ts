@@ -89,8 +89,26 @@ export const RoleBindingSchema = z.strictObject({
    * Pi may have none: a subscription signed in to in the factory's own Pi agent dir.
    */
   keyEnv: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).default([]),
+  /**
+   * Pi on a local Ollama model (src/runtimes/pi-ollama.ts): the base tag pinned by digest, the
+   * derived model (`model: "ollama/<name>"`) created from a Modelfile in ollama/ with num_ctx.
+   * Ollama only on 127.0.0.1.
+   */
+  ollama: z
+    .strictObject({
+      url: z
+        .string()
+        .regex(/^http:\/\/127\.0\.0\.1:\d{2,5}$/, "Ollama must be on http://127.0.0.1:<port>")
+        .default("http://127.0.0.1:11434"),
+      baseModel: z.string().regex(/^[a-z0-9._-]+(\/[a-z0-9._-]+)?:[A-Za-z0-9._-]+$/, "name:tag"),
+      digest: z.string().regex(/^[0-9a-f]{12}$/, "12 hex characters"),
+      numCtx: z.number().int().min(4096).max(262144),
+      modelfile: z.string().regex(/^ollama\/[A-Za-z0-9._-]+\.Modelfile$/),
+    })
+    .optional(),
 });
 export type RoleBinding = z.infer<typeof RoleBindingSchema>;
+export type RoleBindingInput = z.input<typeof RoleBindingSchema>;
 
 export const FactoryConfigSchema = z.strictObject({
   /** Where target repos and worktrees live. Must be outside this repository. `~` expands. */
@@ -181,6 +199,33 @@ export function roleBindingIssues(c: FactoryConfig): string[] {
   }
   if (!c.secretEnv.includes(c.github.tokenEnv)) {
     issues.push(`github.tokenEnv ${c.github.tokenEnv} must also be listed in secretEnv`);
+  }
+  const bindings = [
+    ...(["planner", "developer", "reviewer"] as const).map(
+      (r) => [`roles.${r}`, c.roles[r]] as const,
+    ),
+    ...c.reviewEval.reviewers.map((b, i) => [`reviewEval.reviewers[${String(i)}]`, b] as const),
+  ];
+  for (const [where, b] of bindings) {
+    const isOllamaModel = b.model.startsWith("ollama/");
+    if (b.ollama && b.runtime !== "pi") issues.push(`${where}.ollama is only for the pi runtime`);
+    if (b.runtime === "pi" && isOllamaModel !== (b.ollama !== undefined)) {
+      issues.push(
+        `${where}: an "ollama/<model>" needs the ollama pin, and the pin needs that model`,
+      );
+    }
+    if (b.ollama && /:latest$/.test(b.ollama.baseModel)) {
+      issues.push(`${where}.ollama.baseModel must be an exact tag, not "latest"`);
+    }
+    // Owner's decision: the Claude subscription is never connected to Pi, in any form.
+    if (
+      b.runtime === "pi" &&
+      (/^(anthropic|claude)/i.test(b.model) ||
+        /claude/i.test(b.model) ||
+        b.keyEnv.some((k) => /^(ANTHROPIC|CLAUDE)/.test(k)))
+    ) {
+      issues.push(`${where}: Pi must not use Anthropic/Claude models or credentials`);
+    }
   }
   for (const role of ["planner", "developer", "reviewer"] as const) {
     for (const k of c.roles[role].keyEnv) {

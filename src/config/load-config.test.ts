@@ -91,7 +91,7 @@ describe("config", () => {
       (r: object, secretEnv = base.secretEnv) =>
       () =>
         resolveConfig({ ...base, secretEnv, roles: { ...base.roles, reviewer: r } });
-    expect(reviewer({ runtime: "pi", model: "anthropic/claude-x-2026" })).not.toThrow();
+    expect(reviewer({ runtime: "pi", model: "github-copilot/gemini-3.8-flash" })).not.toThrow();
     expect(reviewer({ runtime: "pi", model: "gemini" })).toThrow(/"provider\/model-id" for pi/);
     expect(reviewer({ runtime: "pi", model: "google/latest" })).toThrow(/exact model id/);
     expect(
@@ -105,5 +105,53 @@ describe("config", () => {
         roles: { ...base.roles, developer: { runtime: "pi", model: "google/g" } },
       }),
     ).toThrow(/pi runtime is read-only and cannot be the developer/);
+  });
+
+  it("validates the Pi + Ollama reviewer pin and never lets Pi use Claude", () => {
+    const pin = {
+      baseModel: "qwen2.5-coder:7b-instruct-q4_K_M",
+      digest: "dae161e27b0e",
+      numCtx: 32768,
+      modelfile: "ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile",
+    };
+    const base = {
+      workdir: "/tmp/af-work",
+      roles: {
+        planner: { runtime: "claude-code", model: "opus" },
+        developer: { runtime: "claude-code", model: "opus" },
+        reviewer: { runtime: "pi", model: "ollama/factory-reviewer-qwen2.5-coder-7b", ollama: pin },
+      },
+      secretEnv: ["FACTORY_GITHUB_TOKEN"],
+      stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
+      maxDiffCharsForReview: 1000,
+      evalCostCapUsd: 1,
+    };
+    expect(resolveConfig(base).roles.reviewer.ollama?.url).toBe("http://127.0.0.1:11434");
+    const reviewer = (r: object) => () =>
+      resolveConfig({ ...base, roles: { ...base.roles, reviewer: r } });
+    expect(reviewer({ runtime: "pi", model: "ollama/x" })).toThrow(/needs the ollama pin/);
+    expect(
+      reviewer({
+        runtime: "pi",
+        model: "ollama/x",
+        ollama: { ...pin, url: "http://192.168.1.5:11434" },
+      }),
+    ).toThrow(/127\.0\.0\.1/);
+    expect(
+      reviewer({
+        runtime: "pi",
+        model: "ollama/x",
+        ollama: { ...pin, baseModel: "qwen2.5-coder:latest" },
+      }),
+    ).toThrow(/exact tag/);
+    expect(reviewer({ runtime: "claude-code", model: "opus", ollama: pin })).toThrow(
+      /only for the pi runtime/,
+    );
+    expect(reviewer({ runtime: "pi", model: "anthropic/claude-opus-5-5" })).toThrow(
+      /must not use Anthropic\/Claude/,
+    );
+    expect(reviewer({ runtime: "pi", model: "github-copilot/claude-sonnet-5.5" })).toThrow(
+      /must not use Anthropic\/Claude/,
+    );
   });
 });

@@ -35,6 +35,9 @@ export function runtimeForBinding(
         agentDir: piAgentDir(workdirAbs),
         keyEnv: binding.keyEnv,
         logDir,
+        ...(binding.ollama
+          ? { ollama: { ...binding.ollama, model: binding.model.slice("ollama/".length) } }
+          : {}),
       });
   }
 }

@@ -5,7 +5,8 @@ import { runCommand, type CommandResult } from "../process/run-command.js";
 import { createRedactor } from "../store/redact.js";
 import { extractLastJsonObject } from "./opencode.js";
 import { errorTextIsProviderUnavailable, hostSuspendedMessage } from "./provider-errors.js";
-import { BLOCK_PREFIX, PI_READ_ONLY_TOOLS } from "./pi-guard.js";
+import { BLOCK_PREFIX, PI_READ_ONLY_TOOLS, RESPONSE_SCHEMA_ENV } from "./pi-guard.js";
+import { checkOllamaModel, writeOllamaProvider, type OllamaModelPin } from "./pi-ollama.js";
 import { assertToolsAllowed } from "./tool-policy.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime, PermissionDenial } from "./types.js";
 
@@ -28,8 +29,10 @@ import type { AgentRunInput, AgentRunResult, AgentRuntime, PermissionDenial } fr
  * - Blocked tool calls come back as `tool_execution_end` {isError:true} with the guard's
  *   reason; tools outside `--tools` answer "Tool <name> not found".
  * - With `-p` the prompt is read from stdin when stdin is a pipe.
- * - No schema-constrained output: the structured answer is the last JSON object of the final
- *   text (as for OpenCode), validated by the caller with Zod.
+ * - Pi has no schema flag: the structured answer is the last JSON object of the final text (as
+ *   for OpenCode), validated by the caller with Zod. On a local Ollama model the factory's
+ *   extension adds `response_format: json_schema` to every request (constrained decoding) and
+ *   Pi runs with `--no-tools`; an invalid answer still gets the reviewers' one retry.
  * - No spend cap flag: the step timeout bounds a run; a cost above `maxBudgetUsd` is reported
  *   as a budget error after the fact.
  * Isolation: an explicit env (no inherited secrets), a factory-owned agent dir
@@ -201,6 +204,11 @@ export interface PiRuntimeOptions {
   /** Env var names with this runtime's provider keys (passed to Pi only, masked in logs). */
   keyEnv: readonly string[];
   logDir: string;
+  /**
+   * A local Ollama model (pi-ollama.ts): checked before each run, written into the agent dir's
+   * models.json, and asked for structured output (JSON Schema, no tools).
+   */
+  ollama?: OllamaModelPin;
 }
 
 export class PiRuntime implements AgentRuntime {
@@ -213,6 +221,11 @@ export class PiRuntime implements AgentRuntime {
       throw new Error("PiRuntime is read-only; it cannot run the developer");
     assertToolsAllowed(input.role, input.allowedTools);
     if (!input.model) throw new Error("PiRuntime needs an explicit provider/model");
+    const { ollama } = this.options;
+    if (ollama && input.model !== `ollama/${ollama.model}`)
+      throw new Error(`PiRuntime: model ${input.model} is not the pinned ollama/${ollama.model}`);
+    // Structured output only where the endpoint supports it (Ollama's /v1 response_format).
+    const structured = ollama !== undefined && input.outputSchema !== undefined;
 
     const systemPrompt = [
       input.systemPrompt ?? "",
@@ -236,8 +249,7 @@ export class PiRuntime implements AgentRuntime {
       "--no-themes",
       "--no-context-files",
       "--no-approve",
-      "--tools",
-      PI_READ_ONLY_TOOLS.join(","),
+      ...(structured ? ["--no-tools"] : ["--tools", PI_READ_ONLY_TOOLS.join(",")]),
       "--model",
       input.model,
       ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
@@ -245,6 +257,7 @@ export class PiRuntime implements AgentRuntime {
 
     await mkdir(path.join(this.options.agentDir, "home"), { recursive: true });
     const env = piEnv(this.options.agentDir, this.options.keyEnv);
+    if (structured) env[RESPONSE_SCHEMA_ENV] = JSON.stringify(input.outputSchema);
     const redact = createRedactor(this.options.keyEnv.map((k) => env[k]));
     const logPath =
       input.logPath ??
@@ -260,6 +273,23 @@ export class PiRuntime implements AgentRuntime {
         ),
       ),
     );
+
+    if (ollama) {
+      const started = Date.now();
+      const check = await checkOllamaModel(ollama);
+      if (!check.ok) {
+        await writeFile(logPath, `${JSON.stringify({ type: "factory_ollama_check", ...check })}\n`);
+        return {
+          ok: false,
+          output: "",
+          durationMs: Date.now() - started,
+          rawLogPath: logPath,
+          permissionDenials: [],
+          error: { kind: check.kind, message: check.message },
+        };
+      }
+      await writeOllamaProvider(this.options.agentDir, ollama);
+    }
 
     const proc = await runCommand(this.options.bin, [...(this.options.binArgs ?? []), ...args], {
       cwd: input.cwd,

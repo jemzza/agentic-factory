@@ -1,0 +1,7 @@
+# Alternative Pi reviewer (docs/pi-runtime.md). Base tag pinned by digest 56671c2ab938
+# (6.6 GB, Q4_K_M). num_ctx must match the config.
+#   ollama pull qwen3.5:9b-q4_K_M
+#   ollama create factory-reviewer-qwen3.5-9b -f ollama/factory-reviewer-qwen3.5-9b.Modelfile
+FROM qwen3.5:9b-q4_K_M
+PARAMETER num_ctx 32768
+PARAMETER temperature 0

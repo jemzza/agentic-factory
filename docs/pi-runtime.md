@@ -5,8 +5,12 @@ formerly `@mariozechner/pi-coding-agent`, deprecated at 0.73.1). The factory pin
 (exact, published 2026-10-04; 1.3.0 is the latest at the time of writing). Pi needs
 Node ≥ 22.19; the factory runs on 22.23.3.
 
-**The role and the model are the owner's decision.** This document lists the options; the
-default configuration does not use Pi.
+**Owner's decision (2026-10-18): Pi is a reviewer on a local model through Ollama
+(127.0.0.1:11434).** The Claude subscription is never connected to Pi, and the config refuses
+it (any `anthropic/` or Claude model, and any `ANTHROPIC_*` or `CLAUDE_*` key). The main
+reviewer for Phase 8 stays Opus. Switching is the owner's call, made by the numbers.
+`factory.config.ts` has the ready binding `PI_OLLAMA_REVIEWER`, so the switch is one line
+(a demo step).
 
 ## What was checked
 
@@ -68,7 +72,63 @@ OpenAI-compatible provider on 127.0.0.1. No real provider was called, and no mon
 Claude Code gets the first two from its own permission rules and subscription login. If the
 owner wants Pi as the developer, that is a separate step.
 
-## Options for the owner (OpenAI is disabled for now)
+## The local reviewer model
+
+The Mac is a MacBook Pro M1 Pro with 16 GB of unified memory (`sysctl hw.memsize` =
+17179869184). By default macOS gives the GPU about two thirds of that, roughly 10.7 GB. Claude
+Code, Docker and the Ollama embedder also need memory. So the model, plus its KV cache at a
+32K context, should stay under about 8 GB.
+
+| Model (Ollama tag, pinned)                                              | Size   | With a 32K KV cache | Expected speed on M1 Pro (estimate)                                             | Why                                                                                     |
+| ----------------------------------------------------------------------- | ------ | ------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **`qwen2.5-coder:7b-instruct-q4_K_M`**, digest `dae161e27b0e` (default) | 4.7 GB | ≈ 6.5 GB            | ~25–30 tokens/s output, a few hundred tokens/s prompt; ≈ 0.5–1.5 min per review | Code-specialised, no thinking phase (fast, predictable), good at JSON; fits with margin |
+| `qwen3.5:9b-q4_K_M`, digest `56671c2ab938` (alternative)                | 6.6 GB | ≈ 8–9 GB            | ~15–20 tokens/s, slower with its thinking phase; ≈ 1.5–3 min per review         | Newer general model with tools and thinking, 256K context; tighter on 16 GB             |
+
+The digests come from the ollama.com tag pages. After a pull, `ollama list` shows the real
+digest, and the factory refuses a mismatch. The speeds are estimates; the real time per review
+is measured in the final block. `qwen2.5-coder:14b` (9.0 GB) and larger models do not fit
+16 GB with a usable context.
+
+**Commands (the owner runs them):**
+
+```bash
+ollama pull qwen2.5-coder:7b-instruct-q4_K_M
+ollama create factory-reviewer-qwen2.5-coder-7b -f ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile
+```
+
+The derived model only sets `num_ctx 32768` and `temperature 0`. It exists because Ollama's
+OpenAI-compatible `/v1` cannot set the context size per request; without it, a review prompt
+would be cut off silently at the default context. For the alternative model, use
+`ollama/factory-reviewer-qwen3.5-9b.Modelfile` and its pin.
+
+**Before every review** the factory checks Ollama on 127.0.0.1 (`src/runtimes/pi-ollama.ts`):
+
+- the base tag is present with the pinned digest;
+- the derived model exists, is built from the same weights, and has the configured `num_ctx`.
+
+If Ollama is unreachable, the review fails as `infra_error`. If the model is missing or
+different, the step fails with the exact `ollama pull` / `ollama create` command. The factory
+writes the `ollama` provider into its own Pi agent dir (`models.json`, cost $0).
+
+**Structured output.** Pi has no schema flag. Ollama's `/v1` accepts
+`response_format: {type: "json_schema"}`, so the factory's Pi extension adds it to every
+request (constrained decoding to the reviewer's JSON Schema). Pi runs with `--no-tools`,
+because a constrained JSON answer and tool calls exclude each other. The local reviewer
+therefore judges the diff, spec and criteria in its prompt and does not open other files; the
+Opus reviewer can. An invalid answer gets the same single retry as every reviewer
+(`reviewWithRetry`); a second invalid answer is a step error. Checked with the real Pi binary
+against a fake Ollama: the request carries the schema and no tools, and a prose answer is
+retried once.
+
+**Order of measurement (final block):**
+
+1. `npm run eval:review` runs Opus and Pi on the frozen `evals/review/` set and reports recall,
+   false positive rate and average time per review. The summary prints the owner's rule:
+   `Pi gate: recall pi / opus = N% (threshold 70%) → PASS | FAIL`.
+2. Only on PASS: one `npm run eval` with `reviewer: PI_OLLAMA_REVIEWER`, against the Week 3
+   baseline. On FAIL there is no eval, and the result is recorded.
+
+## Options considered (OpenAI is disabled for now)
 
 Every option uses the same code; only `factory.config.ts` (and `.env` or a one-time login)
 changes. "Independence" means: does a Pi reviewer make the review more independent of the
@@ -76,7 +136,7 @@ developer (Claude Opus), or does it only show that the runtime can be swapped?
 
 | #   | Provider in Pi                                                                                                   | What it needs                                                 | Data goes to                    | Cost                                                 | Review independence                                                                                                                                                             |
 | --- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A   | Anthropic via the Claude Pro/Max subscription (Pi `/login`)                                                      | One OAuth login into the factory's Pi agent dir; `keyEnv: []` | Anthropic (as today)            | Subscription                                         | **No**: same vendor and model family as the developer. Only shows that the runtime can be swapped. Check Anthropic's terms for subscriptions used in third-party clients first. |
+| A   | ~~Anthropic via the Claude Pro/Max subscription~~ (**excluded by the owner**; the config refuses it)             | One OAuth login into the factory's Pi agent dir; `keyEnv: []` | Anthropic (as today)            | Subscription                                         | **No**: same vendor and model family as the developer. Only shows that the runtime can be swapped. Check Anthropic's terms for subscriptions used in third-party clients first. |
 | B   | Google Gemini API (e.g. `google/gemini-3.1-pro-preview`, `gemini-3.8-flash`)                                     | `GEMINI_API_KEY` in `.env` (already in `secretEnv`)           | Google                          | Billed per token; free tier has different data terms | **Yes**: another vendor and model family                                                                                                                                        |
 | C   | GitHub Copilot subscription (`github-copilot/<model>`)                                                           | Copilot plan; device-flow login or `COPILOT_GITHUB_TOKEN`     | GitHub/Microsoft + model vendor | Subscription                                         | **Yes** with a non-Anthropic model (Gemini, Grok, Kimi); **no** with a Claude model                                                                                             |
 | D   | Local model through Ollama (`models.json`, 127.0.0.1)                                                            | Pull a coding model (several GB); no key                      | Nothing leaves the machine      | $0                                                   | Yes in vendor terms, but a small local model is likely a weak reviewer; `eval:review` would show it                                                                             |
@@ -98,7 +158,7 @@ reviewEval: { reviewers: [{ runtime: "claude-code", model: "opus" },
                           { runtime: "pi", model: "google/gemini-3.1-pro-preview", keyEnv: ["GEMINI_API_KEY"] }] },
 ```
 
-A subscription login (options A, C, F) is done once in the factory's own agent dir, never in
+A subscription login (options C, F; never Claude) is done once in the factory's own agent dir, never in
 `~/.pi`:
 
 ```bash

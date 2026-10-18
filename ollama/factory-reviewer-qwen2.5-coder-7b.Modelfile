@@ -1,0 +1,7 @@
+# Pi reviewer on a local model (docs/pi-runtime.md). Base tag pinned in factory.config.ts by
+# digest dae161e27b0e (4.7 GB, Q4_K_M). num_ctx must match the config (Ollama's /v1 cannot set it).
+#   ollama pull qwen2.5-coder:7b-instruct-q4_K_M
+#   ollama create factory-reviewer-qwen2.5-coder-7b -f ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile
+FROM qwen2.5-coder:7b-instruct-q4_K_M
+PARAMETER num_ctx 32768
+PARAMETER temperature 0

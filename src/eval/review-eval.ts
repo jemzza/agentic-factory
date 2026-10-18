@@ -224,6 +224,33 @@ export async function runReviewEval(opts: {
   return results;
 }
 
+/** Owner's rule (Week 3 Phase 7): an eval with the Pi reviewer only if its recall ≥ 70% of Opus's. */
+export const PI_RECALL_GATE = 0.7;
+
+export type PiGate =
+  | { kind: "n/a"; reason: string }
+  | { kind: "decided"; pi: string; opus: string; ratio: number; pass: boolean };
+
+export function piReviewerGate(metrics: readonly ReviewerMetrics[]): PiGate {
+  const pi = metrics.find((m) => m.reviewer.startsWith("pi:"));
+  const opus = metrics.find((m) => m.reviewer === "claude-code:opus");
+  if (!pi || !opus) return { kind: "n/a", reason: "needs both a pi reviewer and claude-code:opus" };
+  if (opus.recall === 0) return { kind: "n/a", reason: "Opus recall is 0" };
+  const ratio = Math.round((pi.recall / opus.recall) * 1000) / 1000;
+  return {
+    kind: "decided",
+    pi: pi.reviewer,
+    opus: opus.reviewer,
+    ratio,
+    pass: ratio >= PI_RECALL_GATE,
+  };
+}
+
+export function renderPiGate(g: PiGate): string {
+  if (g.kind === "n/a") return `Pi gate: n/a (${g.reason})`;
+  return `Pi gate: recall ${g.pi} / ${g.opus} = ${(g.ratio * 100).toFixed(0)}% (threshold ${String(PI_RECALL_GATE * 100)}%) → ${g.pass ? "PASS: run one eval with the Pi reviewer" : "FAIL: no eval with the Pi reviewer; record the result"}`;
+}
+
 export function renderReviewEvalMarkdown(
   evalId: string,
   results: Record<string, CaseScore[]>,
@@ -242,6 +269,7 @@ export function renderReviewEvalMarkdown(
           `| ${m.reviewer} | **${pct(m.recall)}** (${m.found}/${m.defects}) | ${pct(m.recallLenient)} (${m.flaggedDefects}/${m.defects}) | **${pct(m.falsePositiveRate)}** (${m.falsePositives}/${m.clean}) | ${m.errors} | ${m.retries} | $${m.costUsd.toFixed(3)}${m.unknownCostCases ? ` (+${m.unknownCostCases} unknown)` : ""} | ${m.avgDurationSec}s |`,
       ),
     ].join("\n"),
+    `## Owner's rule\n\n${renderPiGate(piReviewerGate(metrics))}`,
     "## Per case",
     [
       `| Case | ${Object.keys(results).join(" | ")} |`,

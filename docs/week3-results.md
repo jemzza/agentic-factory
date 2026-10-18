@@ -432,4 +432,72 @@ That code is never called (memory uses Ollama). It is pinned to 5.11.2 with an n
 `overrides` entry. `npm audit --omit=dev` is back to the 4 high findings from `openspec` that
 were there before this phase.
 
-`npm run check`: exit 0, 437 tests.
+### Owner's decision: Pi reviewer on a local Ollama model
+
+The owner chose a **reviewer** on a **local model through Ollama** (127.0.0.1). The Claude
+subscription is never connected to Pi, and the config refuses it. Opus stays the main reviewer
+for Phase 8. `factory.config.ts` has `PI_OLLAMA_REVIEWER` ready, so switching is one line.
+
+Model: the Mac has 16 GB (M1 Pro). The default is `qwen2.5-coder:7b-instruct-q4_K_M` (4.7 GB,
+pinned digest `dae161e27b0e`), with `num_ctx 32768` through a derived model
+(`ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile`). The alternative is
+`qwen3.5:9b-q4_K_M` (6.6 GB). Sizes, expected speeds and the owner's commands are in
+[docs/pi-runtime.md](pi-runtime.md).
+
+Built for it:
+
+- a model check before every review (pinned digest, derived model, `num_ctx`; Ollama down
+  means `infra_error`);
+- structured output through Ollama's `response_format: json_schema`, with `--no-tools`;
+- the reviewers' single retry after an invalid answer;
+- the owner's rule in the `eval:review` summary (`Pi gate`: an eval only if Pi's recall is at
+  least 70% of Opus's).
+
+Tested with the real Pi binary against a fake Ollama.
+
+**What Pi + Ollama gives:**
+
+- Vendor independence: a different model family (Alibaba's Qwen) reviews what Claude wrote.
+- Nothing leaves the machine.
+- $0 per review.
+- No dependence on the subscription's limits.
+
+**What it does not give:**
+
+- The quality of a frontier reviewer. A 7B quantised model is much weaker than Opus at finding
+  real defects, and it is prone to approving or to inventing issues.
+- File access: with structured output it runs without tools and sees only the prompt (diff,
+  spec, criteria), while Opus can read the repository.
+- Speed: it runs on the laptop's GPU, and it shares memory with everything else.
+
+Independence is worth something only if recall holds, which is why the owner's 70% rule
+decides whether a full eval runs at all.
+
+| Measurement (final block)                     | Opus | Pi + qwen2.5-coder 7B |
+| --------------------------------------------- | ---- | --------------------- |
+| `eval:review` recall (strict)                 | —    | —                     |
+| `eval:review` false positive rate             | —    | —                     |
+| Average time per review                       | —    | —                     |
+| Pi gate (recall ≥ 70% of Opus) → eval with Pi | —    | —                     |
+
+### Next option, not implemented: Gemini API free tier
+
+Pi already supports Google Gemini (`google/<model>` with `GEMINI_API_KEY`). It would be a
+config change only:
+
+- `reviewer: { runtime: "pi", model: "google/<exact-id>", keyEnv: ["GEMINI_API_KEY"] }`;
+- the key is already in `secretEnv`.
+
+It would keep vendor independence with a much stronger model than a local 7B, and it supports
+tools.
+
+Trade-offs to check before using it:
+
+- The free tier has low rate limits, which would show up as `infra_error`.
+- Google's terms for unpaid use let Google use prompts to improve its products, so the private
+  repositories' diffs would leave the machine under those terms.
+- The free model list and quotas change often.
+
+Nothing was built or run for it.
+
+`npm run check` (Phase 7 commit): exit 0, 437 tests. With the Pi + Ollama reviewer: exit 0, 445 tests.

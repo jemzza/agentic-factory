@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { REVIEWER_OUTPUT_SCHEMA, reviewWithRetry } from "../agents/reviewer.js";
+import { FAKE_APPROVE, FAKE_TASK } from "../testing/fakes.js";
 import { PI_BIN, PI_GUARD } from "./registry.js";
 import { guardToolCall } from "./pi-guard.js";
 import { parsePiOutput, piEnv, PiRuntime } from "./pi.js";
@@ -313,4 +315,133 @@ describe("PiRuntime with the real pi binary (fake provider on 127.0.0.1)", () =>
     expect(all).not.toContain("outside\\n");
     expect(all).not.toContain("localhost"); // /etc/hosts never read
   }, 90_000);
+});
+
+/*
+ * Pi reviewer on a local model, end to end with the real Pi binary: a fake Ollama on 127.0.0.1
+ * (/api/tags, /api/show, /v1/chat/completions). Checks the pre-run model check, the generated
+ * models.json, structured output (response_format json_schema, no tools) and the reviewers'
+ * single retry after an invalid answer.
+ */
+describe("PiRuntime on a local Ollama model (real pi binary, fake Ollama)", () => {
+  const MODEL = "factory-reviewer-test";
+  const answers = ["I think it looks good.", JSON.stringify(FAKE_APPROVE)];
+  const chats: Record<string, unknown>[] = [];
+  let server: http.Server;
+  let url: string;
+
+  beforeAll(async () => {
+    let n = 0;
+    server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c: Buffer) => (body += c.toString()));
+      req.on("end", () => {
+        if (req.url === "/api/tags") {
+          res.end(
+            JSON.stringify({
+              models: [
+                { name: "base:7b-q4", digest: "abcdef123456" + "0".repeat(52) },
+                { name: `${MODEL}:latest`, digest: "1".repeat(64) },
+              ],
+            }),
+          );
+          return;
+        }
+        if (req.url === "/api/show") {
+          const derived = (JSON.parse(body) as { model: string }).model === MODEL;
+          res.end(
+            JSON.stringify({
+              modelfile: "FROM /blobs/sha256-weights\n",
+              parameters: derived ? "num_ctx 32768\ntemperature 0" : "",
+            }),
+          );
+          return;
+        }
+        chats.push(JSON.parse(body) as Record<string, unknown>);
+        const text = answers[Math.min(n++, answers.length - 1)] ?? "";
+        const chunk = (delta: unknown, finish: string | null) =>
+          `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: MODEL, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(chunk({ role: "assistant", content: text }, null));
+        res.write(chunk({}, "stop"));
+        res.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  });
+  afterAll(() => {
+    server.close();
+  });
+
+  it("asks for JSON-schema output without tools, retries an invalid answer once, returns the verdict", async () => {
+    const agentDir = path.join(tmp, "ollama-agent");
+    const pi = new PiRuntime({
+      bin: PI_BIN,
+      guardPath: PI_GUARD,
+      agentDir,
+      keyEnv: [],
+      logDir: path.join(tmp, "ollama-logs"),
+      ollama: {
+        url,
+        baseModel: "base:7b-q4",
+        digest: "abcdef123456",
+        model: MODEL,
+        numCtx: 32768,
+        modelfile: "ollama/test.Modelfile",
+      },
+    });
+    const { outcome, attempts } = await reviewWithRetry(
+      (prompt) =>
+        pi.run(
+          input({
+            prompt,
+            model: `ollama/${MODEL}`,
+            outputSchema: REVIEWER_OUTPUT_SCHEMA,
+            timeoutMs: 60_000,
+          }),
+        ),
+      "review this diff",
+      FAKE_TASK,
+    );
+    expect(attempts).toBe(2);
+    expect(outcome).toMatchObject({ ok: true, value: { verdict: "approve" } });
+    expect(chats).toHaveLength(2);
+    for (const c of chats) {
+      expect(c["response_format"]).toMatchObject({
+        type: "json_schema",
+        json_schema: { schema: { properties: { verdict: {} } } },
+      });
+      expect(c["tools"] ?? []).toEqual([]);
+    }
+    const models = JSON.parse(await readFile(path.join(agentDir, "models.json"), "utf8")) as {
+      providers: { ollama: { baseUrl: string } };
+    };
+    expect(models.providers.ollama.baseUrl).toBe(`${url}/v1`);
+  }, 120_000);
+
+  it("stops before Pi starts when the pinned model is missing (a process error with the fix)", async () => {
+    const pi = new PiRuntime({
+      bin: PI_BIN,
+      guardPath: PI_GUARD,
+      agentDir: path.join(tmp, "ollama-agent-2"),
+      keyEnv: [],
+      logDir: path.join(tmp, "ollama-logs-2"),
+      ollama: {
+        url,
+        baseModel: "not-pulled:1b",
+        digest: "abcdef123456",
+        model: MODEL,
+        numCtx: 32768,
+        modelfile: "ollama/test.Modelfile",
+      },
+    });
+    const before = chats.length;
+    const r = await pi.run(input({ model: `ollama/${MODEL}` }));
+    expect(r.error).toMatchObject({
+      kind: "process",
+      message: expect.stringContaining("ollama pull not-pulled:1b") as unknown,
+    });
+    expect(chats.length).toBe(before);
+  });
 });

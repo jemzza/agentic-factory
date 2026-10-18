@@ -5,6 +5,25 @@
 // Another file can be used for one command with FACTORY_CONFIG=<file>.
 import type { FactoryConfigInput } from "./src/config/load-config.js";
 
+import type { RoleBindingInput } from "./src/schemas/config.js";
+
+// Reviewers. The default stays Opus; switching to the Pi reviewer on a local Ollama model is the
+// one-line change marked below (demo step). The owner decides by the eval:review / eval numbers.
+const OPUS_REVIEWER: RoleBindingInput = { runtime: "claude-code", model: "opus" };
+// Pi + Ollama on 127.0.0.1 (docs/pi-runtime.md). The owner pulls the base tag and creates the
+// derived model from ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile; the factory checks the
+// pinned digest, the derived model and its num_ctx before every review. Never Claude in Pi.
+const PI_OLLAMA_REVIEWER: RoleBindingInput = {
+  runtime: "pi",
+  model: "ollama/factory-reviewer-qwen2.5-coder-7b",
+  ollama: {
+    baseModel: "qwen2.5-coder:7b-instruct-q4_K_M",
+    digest: "dae161e27b0e",
+    numCtx: 32768,
+    modelfile: "ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile",
+  },
+};
+
 const config: FactoryConfigInput = {
   workdir: "~/agentic-factory-work",
   roles: {
@@ -14,14 +33,13 @@ const config: FactoryConfigInput = {
     // project owner's decision. Review independence is therefore lower than the architecture
     // intends. The OpenCode runtime (src/runtimes/opencode.ts) stays available; to re-enable it:
     //   reviewer: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
-    // Pi (read-only roles; docs/pi-runtime.md) — role and model are the owner's decision:
-    //   reviewer: { runtime: "pi", model: "<provider>/<exact-model-id>", keyEnv: ["<PROVIDER>_API_KEY"] },
-    //   (keyEnv: [] when the owner signed in to a subscription in the factory's Pi agent dir)
-    reviewer: { runtime: "claude-code", model: "opus" },
+    // Demo / owner's switch — replace OPUS_REVIEWER with PI_OLLAMA_REVIEWER:
+    reviewer: OPUS_REVIEWER,
   },
-  // `npm run eval:review` compares these reviewers on evals/review/.
+  // `npm run eval:review` compares these reviewers on evals/review/
+  // (`-- --only pi` runs only the Pi reviewer).
   reviewEval: {
-    reviewers: [{ runtime: "claude-code", model: "opus" }],
+    reviewers: [OPUS_REVIEWER, PI_OLLAMA_REVIEWER],
   },
   // Masked in the DB, logs and reports; none of them is ever given to an agent or the sandbox.
   secretEnv: [

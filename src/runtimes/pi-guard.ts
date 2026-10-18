@@ -7,9 +7,14 @@
  *   file (.env*, *.pem, *.key), or starts with `~`;
  * - a grep `glob` or a find `pattern` could reach outside (`..`, absolute, `~`) or names a
  *   secret file.
- * A handler failure also blocks the call (Pi's fail-safe). Blocked calls come back to the model
- * as an error result whose text starts with BLOCK_PREFIX; the adapter reports them as
+ * A handler failure also blocks the call (Pi's fail-safe). Blocked calls come back to the
+ * model as an error result whose text starts with BLOCK_PREFIX; the adapter reports them as
  * permission denials.
+ *
+ * Structured output: when FACTORY_PI_RESPONSE_SCHEMA holds a JSON Schema, every request to the
+ * provider gets `response_format: {type: "json_schema", ...}` (OpenAI-compatible endpoints,
+ * e.g. Ollama's /v1). The adapter then runs Pi with `--no-tools`: a constrained JSON answer
+ * and tool calls exclude each other.
  *
  * Self-contained on purpose (Node built-ins only): Pi loads it with jiti, outside our build.
  */
@@ -91,6 +96,21 @@ interface MinimalPi {
     event: "tool_call",
     handler: (e: ToolCallEvent) => Promise<{ block: true; reason: string } | undefined>,
   ): unknown;
+  on(
+    event: "before_provider_request",
+    handler: (e: { payload: unknown }) => Promise<unknown>,
+  ): unknown;
+}
+
+export const RESPONSE_SCHEMA_ENV = "FACTORY_PI_RESPONSE_SCHEMA";
+
+/** The provider payload with a JSON Schema response format (non-objects pass unchanged). */
+export function withResponseFormat(payload: unknown, schema: Record<string, unknown>): unknown {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return payload;
+  return {
+    ...(payload as Record<string, unknown>),
+    response_format: { type: "json_schema", json_schema: { name: "answer", strict: true, schema } },
+  };
 }
 
 export default function factoryGuard(pi: MinimalPi): void {
@@ -99,4 +119,9 @@ export default function factoryGuard(pi: MinimalPi): void {
     const why = guardToolCall(root, e.toolName, e.input);
     return Promise.resolve(why ? { block: true, reason: `${BLOCK_PREFIX} ${why}` } : undefined);
   });
+  const raw = process.env[RESPONSE_SCHEMA_ENV];
+  if (raw) {
+    const schema = JSON.parse(raw) as Record<string, unknown>; // a bad value fails Pi's startup
+    pi.on("before_provider_request", (e) => Promise.resolve(withResponseFormat(e.payload, schema)));
+  }
 }

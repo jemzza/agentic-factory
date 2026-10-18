@@ -355,11 +355,23 @@ The image build itself needs network (base image pull, `npm ci`). Checks never d
 - Verified live (2026-10-16): write/bash tools are not offered, and a read outside the
   worktree is denied.
 
-### Pi runtime (`src/runtimes/pi.ts`) — implemented, not configured
+### Pi runtime (`src/runtimes/pi.ts`) — Pi reviewer on a local Ollama model, ready, not default
 
-Third runtime, for read-only roles (planner, reviewer); the role and model are the owner's
-decision ([docs/pi-runtime.md](docs/pi-runtime.md) lists the providers available without
-OpenAI and what each means for review independence).
+Third runtime, for read-only roles. Owner's decision: a **reviewer on a local model through
+Ollama** (127.0.0.1), never with the Claude subscription. Opus stays the default reviewer;
+`factory.config.ts` switches with one line (`reviewer: PI_OLLAMA_REVIEWER`). Setup (the model
+is pulled by hand), model choice for 16 GB, and the 70% recall rule before an eval:
+[docs/pi-runtime.md](docs/pi-runtime.md).
+
+```bash
+ollama pull qwen2.5-coder:7b-instruct-q4_K_M
+ollama create factory-reviewer-qwen2.5-coder-7b -f ollama/factory-reviewer-qwen2.5-coder-7b.Modelfile
+npm run eval:review        # Opus vs Pi: recall, false positive rate, time; prints the Pi gate
+```
+
+- Before every review the factory checks the pinned digest, the derived model and its
+  `num_ctx` on 127.0.0.1; the answer is constrained to the reviewer's JSON Schema
+  (`response_format`, no tools), with the reviewers' single retry.
 
 - Pi has no path confinement of its own: the factory's extension `pi-guard.ts` blocks every
   tool call except read/grep/find/ls inside the worktree, and secret files (`.env*`, `*.pem`,
@@ -419,7 +431,7 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - `OPENAI_API_KEY` in `.env` only if the OpenCode reviewer is re-enabled (OpenCode itself is an
   npm dependency)
 - Ollama with `nomic-embed-text:latest`, only if project memory is turned on (optional)
-- Node.js ≥ 22.19 and a provider (key or subscription login), only if a role uses Pi
+- Node.js ≥ 22.19 and Ollama with the pinned reviewer model, only if the Pi reviewer is used
 
 ## Development
 

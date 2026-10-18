@@ -436,16 +436,16 @@ measurement has run.
 The final block runs after the code is committed. Runs go one after another and are scheduled
 around subscription limit resets, on AC power with the lid open:
 
-| #   | Measurement                                                                           | From phase | Estimate |
-| --- | ------------------------------------------------------------------------------------- | ---------- | -------- |
-| 1   | Equivalence: `npm run eval` (Opus in every role) vs the Week 3 baseline               | 2          | ~$6      |
-| 2   | Candidate roles: `FACTORY_CONFIG=factory.sonnet-dev.config.ts npm run eval`           | 2          | ~$5      |
-| 3   | Live GitHub cycle issue → `/approve` → PR → `/merge`, in two projects                 | 3          | ~$2–3    |
-| 4   | `npm run eval -- --concurrency 2`                                                     | 4          | ~$6      |
-| 5   | Memory A/B (`evals/memory/`, 20 task runs, design below)                              | 5          | ~$12     |
-| 6   | Pi: `eval:review` (if Pi reviews) + one `npm run eval`                                | 7          | ~$8      |
-| 7   | Owner decisions by the numbers: default roles, concurrency, `memory.enabled`, Pi role | —          | —        |
-| 8   | Final `npm run eval -- --repeat 3 --concurrency <chosen>`                             | 8          | ~$18     |
+| #   | Measurement                                                                                           | From phase | Estimate |
+| --- | ----------------------------------------------------------------------------------------------------- | ---------- | -------- |
+| 1   | Equivalence: `npm run eval` (Opus in every role) vs the Week 3 baseline                               | 2          | ~$6      |
+| 2   | Candidate roles: `FACTORY_CONFIG=factory.sonnet-dev.config.ts npm run eval`                           | 2          | ~$5      |
+| 3   | Live GitHub cycle issue → `/approve` → PR → `/merge`, in two projects                                 | 3          | ~$2–3    |
+| 4   | `npm run eval -- --concurrency 2`                                                                     | 4          | ~$6      |
+| 5   | Memory A/B (`evals/memory/`, 20 task runs, design below)                                              | 5          | ~$12     |
+| 6   | Pi reviewer on Ollama: `eval:review` (Opus vs Pi); one `npm run eval` only if Pi recall ≥ 70% of Opus | 7          | ~$3–6    |
+| 7   | Owner decisions by the numbers: default roles, concurrency, `memory.enabled`, Pi role                 | —          | —        |
+| 8   | Final `npm run eval -- --repeat 3 --concurrency <chosen>`                                             | 8          | ~$18     |
 
 Total ≈ $57–58 (list price; the practical limit is the subscription). Order: items 1–2 first
 (they check the Phase 2 refactor), items 3–6 next, then the decisions, then item 8.

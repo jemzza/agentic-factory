@@ -6,6 +6,9 @@ import type { ReviewVerdict } from "../schemas/agents.js";
 import { FakeRuntime } from "../testing/fakes.js";
 import { loadReviewCases, type ReviewCase } from "./review-cases.js";
 import {
+  piReviewerGate,
+  renderPiGate,
+  type ReviewerMetrics,
   renderReviewEvalMarkdown,
   reviewerMetrics,
   runReviewEval,
@@ -166,4 +169,32 @@ describe("runReviewEval", () => {
     expect(md).toContain("| sharp | **100%** (2/2)");
     expect(md).toContain("❌ missed");
   }, 120_000);
+});
+
+describe("owner's gate for an eval with the Pi reviewer", () => {
+  const m = (reviewer: string, recall: number): ReviewerMetrics => ({
+    reviewer,
+    defects: 10,
+    clean: 5,
+    found: recall * 10,
+    flaggedDefects: recall * 10,
+    falsePositives: 0,
+    recall,
+    recallLenient: recall,
+    falsePositiveRate: 0,
+    errors: 0,
+    retries: 0,
+    costUsd: 0,
+    unknownCostCases: 0,
+    avgDurationSec: 1,
+  });
+
+  it("passes at 70% of Opus's recall and fails below", () => {
+    const opus = m("claude-code:opus", 1);
+    expect(piReviewerGate([opus, m("pi:ollama/r", 0.7)])).toMatchObject({ pass: true, ratio: 0.7 });
+    const fail = piReviewerGate([opus, m("pi:ollama/r", 0.6)]);
+    expect(fail).toMatchObject({ pass: false });
+    expect(renderPiGate(fail)).toMatch(/FAIL: no eval with the Pi reviewer/);
+    expect(piReviewerGate([m("pi:ollama/r", 0.6)]).kind).toBe("n/a");
+  });
 });
