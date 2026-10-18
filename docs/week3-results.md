@@ -609,3 +609,48 @@ the spread: the result is "not worse", not "better".
 
 On this one repeat Sonnet is cheaper but not as good. Keeping Opus or switching to the
 candidate is the owner's decision (design §11, item 7).
+
+## Final block, item 4: parallel runs (`--concurrency 2`)
+
+`eval-20261018-114105`: Opus in every role, 10 TaskFlow tasks, 2 at a time, factory `69e6438`.
+
+| Metric                 | Item 1: sequential (`eval-20261018-105434`) | **Item 4: `--concurrency 2`**     | Week 3 baseline  |
+| ---------------------- | ------------------------------------------- | --------------------------------- | ---------------- |
+| Verified rate          | 80.0% (8/10)¹                               | **80.0%** (8/10)                  | 66.7% ± 5.8%     |
+| False success rate     | 22.2% (2/9)                                 | **22.2%** (2/9)                   | 34.7% ± 2.4%     |
+| First-pass rate        | 77.8% (7/9)                                 | **77.8%** (7/9)                   | 63.0% ± 6.4%     |
+| Gate / review cycles   | 0 / 0                                       | 0 / 0                             | 0 / 0            |
+| Wall time for the pass | 20.8 min                                    | **≈ 13 min** (×1.6 faster)        | —                |
+| Active time per task   | 124.2 s                                     | 139.6 s (+12%, shared CPU)        | 156.7 s ± 27.4 s |
+| Cost per repeat        | $5.86                                       | $6.52²                            | $5.98 ± $0.38    |
+| infra_error            | 0                                           | 1 attempt, replaced by `--resume` | —                |
+
+¹ After the harness fix (see items 1–2). ² This includes $0.34 for the attempt the subscription
+limit interrupted; the decided tasks cost $6.18.
+
+**The same outcomes, task for task.** `complete-task` and `reopen-task` are false successes
+(the strict-body rule); everything else is correct, and `hard-delete` is `needs_clarification`.
+So parallelism changes time, not quality.
+
+- **The wall time does not count the ~4 h wait for the limit reset.** It is the pass before
+  the limit (≈ 1.4 min) plus the resumed part (15:57:46 → 16:09:22 UTC).
+- **Per-task "average time" in the summary (1,671 s) is wall time.** It includes that wait for
+  `complete-task` (15,449 s from its first start). The active times above come from the DB
+  (`runs.active_duration_ms`).
+
+**Subscription limit, hit once** (the first in the final block). The developer of
+`bulk-status` got "You've hit your session limit · resets 6pm (Europe/Moscow)". The factory
+did what Phase 4 designed:
+
+- `infra_error` for that attempt, and no new tasks started;
+- the other running task (`complete-task`) paused at its node boundary, with its checkpoint;
+- after the reset, `npm run eval -- --resume eval-20261018-114105 --concurrency 2` replaced
+  the infra attempt and resumed `complete-task` from its checkpoint, without planning it again.
+
+The resumed task ended exactly as in the sequential run.
+
+**Recommendation for the owner's decision (§11, item 7):** concurrency 2 for the final
+`--repeat 3`. It is about 1.6× faster for the same results and the same cost per task. Higher
+concurrency mostly brings the subscription limit closer.
+
+Final block spent so far: $10.42 + $6.52 = **$16.94**. Limit hits: **1**.

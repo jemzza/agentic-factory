@@ -502,7 +502,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
     });
   }
   console.log(
-    `Eval${cmd.resume ? ` ${cmd.resume} (resume)` : ""}: ${tasks.length} task(s) × ${repeat} repeat(s), sequential; cost cap $${costCapUsd}; factory ${commit}\n` +
+    `Eval${cmd.resume ? ` ${cmd.resume} (resume)` : ""}: ${tasks.length} task(s) × ${repeat} repeat(s), ${cmd.concurrency > 1 ? `${String(cmd.concurrency)} in parallel` : "sequential"}; cost cap $${costCapUsd}; factory ${commit}\n` +
       `roles: ${Object.entries(roles)
         .map(([k, v]) => `${k}=${v}`)
         .join(", ")}`,
