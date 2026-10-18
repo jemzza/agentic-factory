@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { FACTORY_ROOT } from "../paths.js";
 import { runCommand, type CommandResult } from "../process/run-command.js";
+import { hostSuspendedMessage } from "../runtimes/provider-errors.js";
 
 /** Sandbox profiles: `sandbox/<image>/{Dockerfile,bootstrap.sh}` (one per stack). */
 export const SANDBOX_DIR = path.join(FACTORY_ROOT, "sandbox");
@@ -35,6 +36,8 @@ export interface SandboxResult {
    * the command inside it failing. Callers must not treat this as a check result.
    */
   infraError?: string;
+  /** The check timed out while the host was suspended (sleep): infrastructure, not a result. */
+  hostSuspended?: boolean;
 }
 
 export interface SandboxLimits {
@@ -218,8 +221,10 @@ export async function runInSandbox(
     await runCommand("docker", ["kill", containerName], { cwd: worktreePath, timeoutMs: 30_000 });
   }
 
+  const suspended = result.timedOut ? hostSuspendedMessage(result) : null;
   const infraError =
     result.spawnError ??
+    suspended ??
     (result.exitCode === DOCKER_RUN_ERROR_EXIT
       ? `docker run failed: ${result.stderr.trim()}`
       : undefined);
@@ -231,5 +236,6 @@ export async function runInSandbox(
     durationMs: result.durationMs,
     timedOut: result.timedOut,
     ...(infraError !== undefined ? { infraError } : {}),
+    ...(suspended ? { hostSuspended: true } : {}),
   };
 }

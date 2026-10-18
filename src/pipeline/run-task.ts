@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { git } from "../git/git.js";
 import { readProjectConfig } from "../config/projects.js";
+import { hostSuspend } from "../process/host-suspend.js";
 import {
   ensureTargetRepo,
   type ProjectSource,
@@ -115,6 +116,8 @@ function rolesFor(config: ResolvedConfig, runtime: AgentRuntime, deps: RunTaskDe
  */
 function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
   const now = deps.now ?? (() => new Date());
+  // Time the host slept while this process drove the run does not count against its deadline.
+  const since = Date.now();
   const ctx: NodeContext = {
     config: deps.config,
     runtimeFor: (role) => deps.runtimes?.[role] ?? deps.runtime,
@@ -123,7 +126,7 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
     ensureRepo: deps.ensureRepo ?? ensureTargetRepo,
     makeSandboxExec: deps.makeSandboxExec ?? defaultSandboxExec,
     now,
-    deadlineNow: () => now().getTime() - pausedMs,
+    deadlineNow: () => now().getTime() - pausedMs - hostSuspend.suspendedWithin(since, Date.now()),
     log: deps.log ?? (() => undefined),
   };
   const checkpointer = deps.store ? new SqliteSaver(deps.store.db) : new MemorySaver();

@@ -6,6 +6,7 @@ import {
   exitIsProviderUnavailable,
   resultIsProviderUnavailable,
   timeoutIsProviderUnavailable,
+  hostSuspendedMessage,
 } from "./provider-errors.js";
 import { assertToolsAllowed, parseToolEntry, SECRET_PATH_PATTERNS } from "./tool-policy.js";
 import type {
@@ -246,6 +247,9 @@ export function interpretRun(
     error: { kind, message },
   });
 
+  // A step that did not succeed while the host slept is infrastructure, whatever else failed.
+  const suspended = hostSuspendedMessage(proc);
+  if (suspended && (proc.timedOut || !event || event.is_error)) return fail("infra", suspended);
   if (proc.timedOut) {
     // Only init + api_retry events before the kill: the API never answered (see provider-errors.ts).
     if (timeoutIsProviderUnavailable(proc.stdout)) {

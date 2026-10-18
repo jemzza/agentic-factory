@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { hostSuspend } from "../process/host-suspend.js";
 import { extractLastJsonObject, OpenCodeRuntime, parseOpenCodeOutput } from "./opencode.js";
 import type { AgentRunInput } from "./types.js";
 
@@ -130,6 +131,17 @@ describe("OpenCodeRuntime (fake process)", () => {
     const res = await runtime("error").run(input());
     expect(res).toMatchObject({ ok: false, error: { kind: "process" } });
     expect(res.error?.message).toMatch(/APIError: invalid model/);
+  });
+
+  it("reports a step that times out while the host is suspended as infra", async () => {
+    const now = Date.now();
+    hostSuspend.record({ fromMs: now, toMs: now + 60_000 });
+    try {
+      const res = await runtime("hang").run(input({ timeoutMs: 800 }));
+      expect(res).toMatchObject({ ok: false, error: { kind: "infra" } });
+    } finally {
+      hostSuspend.suspensions.length = 0;
+    }
   });
 
   it("times out and kills the process tree", async () => {

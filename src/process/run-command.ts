@@ -1,4 +1,5 @@
 import { execa } from "execa";
+import { hostSuspend } from "./host-suspend.js";
 
 export interface CommandResult {
   /** Process exit code; `null` if it was killed by a signal or never started. */
@@ -9,6 +10,8 @@ export interface CommandResult {
   timedOut: boolean;
   /** Set when the process could not be spawned (e.g. binary not found). */
   spawnError?: string;
+  /** Time the host was suspended (sleep) while the command ran; absent if none. */
+  suspendedMs?: number;
 }
 
 export interface RunCommandOptions {
@@ -46,6 +49,7 @@ export async function runCommand(
   options: RunCommandOptions,
 ): Promise<CommandResult> {
   const started = performance.now();
+  const startedWall = Date.now();
   const killTree = options.killTree === true;
   const subprocess = execa(file, args, {
     cwd: options.cwd,
@@ -84,6 +88,7 @@ export async function runCommand(
     result.failed && result.exitCode === undefined && !timedOut && !result.isTerminated
       ? result.shortMessage
       : undefined;
+  const suspendedMs = hostSuspend.suspendedWithin(startedWall, Date.now());
   return {
     exitCode: result.exitCode ?? null,
     stdout: typeof result.stdout === "string" ? result.stdout : "",
@@ -91,6 +96,7 @@ export async function runCommand(
     durationMs: Math.round(performance.now() - started),
     timedOut,
     ...(spawnError !== undefined ? { spawnError } : {}),
+    ...(suspendedMs > 0 ? { suspendedMs } : {}),
   };
 }
 

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { hostSuspend } from "../process/host-suspend.js";
 import {
   agentEnv,
   buildClaudeArgs,
@@ -279,6 +280,21 @@ describe("ClaudeCodeRuntime (fake process)", () => {
     if (pid === undefined) throw new Error("fake agent did not report its child pid");
     await new Promise((r) => setTimeout(r, 200));
     expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("reports a step that times out while the host is suspended as infra, not timeout", async () => {
+    const now = Date.now();
+    hostSuspend.record({ fromMs: now, toMs: now + 60_000 });
+    try {
+      const res = await runtime("hang").run(input({ timeoutMs: 800 }));
+      expect(res).toMatchObject({ ok: false, error: { kind: "infra" } });
+      expect(res.error?.message).toMatch(/host was suspended \(sleep\)/);
+      // A run that succeeds despite a sleep is still a success.
+      const ok = await runtime("success").run(input());
+      expect(ok.ok).toBe(true);
+    } finally {
+      hostSuspend.suspensions.length = 0;
+    }
   });
 
   it("reports a timeout with only api_retry events (API never answered) as infra", async () => {

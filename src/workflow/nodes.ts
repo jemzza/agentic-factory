@@ -140,7 +140,8 @@ function node(name: NodeName, body: (s: RunStateValue) => Promise<RunStateUpdate
       // interrupt() and other LangGraph control flow must propagate untouched.
       if (isGraphBubbleUp(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
-      const kind: StepError["kind"] = err instanceof SandboxInfraError ? "sandbox" : "exception";
+      const kind: StepError["kind"] =
+        err instanceof SandboxInfraError ? (err.hostSuspended ? "infra" : "sandbox") : "exception";
       return { lastNode: name, lastError: { node: name, kind, message } };
     }
   };

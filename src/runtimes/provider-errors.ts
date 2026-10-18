@@ -16,6 +16,17 @@
  * classes and by Node's network errno names; tests mark those samples as synthetic.
  */
 
+/**
+ * The host was suspended (sleep, lid closed) while a step ran: a timeout or failure across it
+ * is not an agent or factory result (detection: src/process/host-suspend.ts). Recorded
+ * 2026-10-18: a developer step's 15-minute timeout fired after 96 minutes of sleep, and the
+ * next planner call after wake saw only api_retry events (no network).
+ */
+export function hostSuspendedMessage(proc: { suspendedMs?: number | undefined }): string | null {
+  if (proc.suspendedMs === undefined || proc.suspendedMs <= 0) return null;
+  return `the host was suspended (sleep) for ${Math.round(proc.suspendedMs / 1000)} s during this step; not an agent result`;
+}
+
 /** HTTP statuses of an API error that mean "provider unavailable" (other 4xx are our bugs). */
 export function isUnavailableStatus(status: number): boolean {
   return status === 429 || status >= 500;

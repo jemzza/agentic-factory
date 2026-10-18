@@ -12,7 +12,11 @@ export type SandboxExec = (
 ) => Promise<SandboxResult>;
 
 export class SandboxInfraError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** The host slept during the check: the run ends as infra_error, not error. */
+    readonly hostSuspended = false,
+  ) {
     super(message);
     this.name = "SandboxInfraError";
   }
@@ -50,7 +54,9 @@ export async function runGate(opts: {
   const checks: CheckResult[] = [];
   for (const check of opts.checks) {
     const res = await opts.exec(opts.worktreePath, check.command, opts.checkTimeoutMs);
-    if (res.infraError !== undefined) throw new SandboxInfraError(res.infraError);
+    if (res.infraError !== undefined) {
+      throw new SandboxInfraError(res.infraError, res.hostSuspended === true);
+    }
     const output = `${res.stdout}${res.stderr ? `\n--- stderr ---\n${res.stderr}` : ""}`;
     const logPath = path.join(opts.logDir, `${opts.logPrefix}-${check.name}.log`);
     await writeFile(

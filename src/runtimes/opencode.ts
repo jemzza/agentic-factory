@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { runCommand, type CommandResult } from "../process/run-command.js";
 import { createRedactor } from "../store/redact.js";
+import { hostSuspendedMessage } from "./provider-errors.js";
 import { assertToolsAllowed } from "./tool-policy.js";
 import type { AgentRunInput, AgentRunResult, AgentRuntime } from "./types.js";
 
@@ -279,11 +280,19 @@ export function interpretOpenCodeRun(
     ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
     ...(parsed.tokens ? { tokens: parsed.tokens } : {}),
   };
-  const fail = (kind: "timeout" | "process" | "parse", message: string): AgentRunResult => ({
+  const fail = (
+    kind: "timeout" | "process" | "parse" | "infra",
+    message: string,
+  ): AgentRunResult => ({
     ...base,
     ok: false,
     error: { kind, message: redact(message) },
   });
+  // A step that did not succeed while the host slept is infrastructure (provider-errors.ts).
+  const suspended = hostSuspendedMessage(proc);
+  if (suspended && (proc.timedOut || proc.exitCode !== 0 || parsed.errors.length > 0)) {
+    return fail("infra", suspended);
+  }
   if (proc.timedOut) return fail("timeout", `agent did not finish within ${input.timeoutMs} ms`);
   if (proc.spawnError !== undefined)
     return fail("process", `failed to start opencode: ${proc.spawnError}`);
