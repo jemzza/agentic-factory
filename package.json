@@ -24,6 +24,7 @@
     "factory:watch": "tsx src/cli.ts watch",
     "memory": "tsx src/cli.ts memory",
     "smoke:claude": "tsx scripts/smoke-claude.ts",
+    "smoke:pi": "tsx scripts/smoke-pi.ts",
     "runs": "tsx src/cli.ts runs",
     "resume": "tsx src/cli.ts resume",
     "approve": "tsx src/cli.ts approve",

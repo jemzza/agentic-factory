@@ -72,6 +72,7 @@ Memory needs a local Ollama with the pinned embedding model:
 brew install ollama
 brew services start ollama      # 127.0.0.1:11434; leave OLLAMA_HOST unset
 ollama pull nomic-embed-text:latest
+ollama cp nomic-embed-text:latest nomic-embed-text:0a109f422b47   # pinned by ID (check `ollama list`)
 npm run memory -- check
 ```
 

@@ -193,18 +193,24 @@ describe("Mem0Index.check (Ollama on 127.0.0.1, pinned digest)", () => {
     vi.fn(() => Promise.resolve(new Response(JSON.stringify({ models }))));
 
   it("passes with the pinned model and digest", async () => {
-    vi.stubGlobal("fetch", tags([{ name: "nomic-embed-text:latest", digest: "0a109f422b47ffff" }]));
+    vi.stubGlobal(
+      "fetch",
+      tags([{ name: "nomic-embed-text:0a109f422b47", digest: "0a109f422b47ffff" }]),
+    );
     await expect(new Mem0Index(DEFAULT_MEMORY_CONFIG).check()).resolves.toBeUndefined();
   });
 
   it("explains a moved tag (another digest), a missing model and a stopped Ollama", async () => {
-    vi.stubGlobal("fetch", tags([{ name: "nomic-embed-text:latest", digest: "ffffffffffff0000" }]));
+    vi.stubGlobal(
+      "fetch",
+      tags([{ name: "nomic-embed-text:0a109f422b47", digest: "ffffffffffff0000" }]),
+    );
     await expect(new Mem0Index(DEFAULT_MEMORY_CONFIG).check()).rejects.toThrow(
       /tag moved[\s\S]*reindex/,
     );
     vi.stubGlobal("fetch", tags([]));
     await expect(new Mem0Index(DEFAULT_MEMORY_CONFIG).check()).rejects.toThrow(
-      /ollama pull nomic-embed-text:latest/,
+      /ollama pull nomic-embed-text:latest`, check that `ollama list` shows ID 0a109f422b47, then `ollama cp nomic-embed-text:latest nomic-embed-text:0a109f422b47/,
     );
     vi.stubGlobal(
       "fetch",

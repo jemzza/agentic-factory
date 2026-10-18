@@ -59,7 +59,7 @@ const config: FactoryConfigInput = {
     embedder: {
       provider: "ollama",
       url: "http://127.0.0.1:11434",
-      model: "nomic-embed-text:latest",
+      model: "nomic-embed-text:0a109f422b47", // ollama cp nomic-embed-text:latest <this>
       digest: "0a109f422b47",
       dims: 768,
     },

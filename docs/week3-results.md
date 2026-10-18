@@ -295,14 +295,16 @@ runs). `memory.enabled` stays `false` until the owner decides by those numbers.
 
 ### Versions (checked 2026-10-18)
 
-| Component       | Version                                                               |
-| --------------- | --------------------------------------------------------------------- |
-| Ollama          | 0.40.6 (Homebrew service, 127.0.0.1:11434, `OLLAMA_HOST` not changed) |
-| Embedding model | `nomic-embed-text:latest`, digest `0a109f422b47`, 137M F16, 768 dims  |
-| `mem0ai`        | 3.3.1 (`mem0ai/oss`), exact pin                                       |
-| `ollama` (npm)  | 0.5.18 (Mem0's Ollama client), exact pin                              |
+| Component       | Version                                                                                                   |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| Ollama          | 0.40.6 (Homebrew service, 127.0.0.1:11434, `OLLAMA_HOST` not changed)                                     |
+| Embedding model | `nomic-embed-text`, ID `0a109f422b47` (pinned as tag `nomic-embed-text:0a109f422b47`), 137M F16, 768 dims |
+| `mem0ai`        | 3.3.1 (`mem0ai/oss`), exact pin                                                                           |
+| `ollama` (npm)  | 0.5.18 (Mem0's Ollama client), exact pin                                                                  |
 
-Records name their embedder as `ollama/nomic-embed-text:latest@0a109f422b47`.
+Records name their embedder as `ollama/nomic-embed-text:0a109f422b47@0a109f422b47`. Owner, after
+Phase 7: the config pins the model by its ID, not by the `latest` tag. The tag was created with
+`ollama cp`, `:latest` is refused, and `npm run memory -- check` passed live with the ID tag.
 
 ### What was built
 

@@ -306,12 +306,15 @@ embedder. No key, nothing leaves the machine.
 brew install ollama
 brew services start ollama      # listens on 127.0.0.1:11434; do not change OLLAMA_HOST
 ollama pull nomic-embed-text:latest
+ollama list                     # the ID must be 0a109f422b47
+ollama cp nomic-embed-text:latest nomic-embed-text:0a109f422b47
 npm run memory -- check         # live round trip: embed, store, search, delete
 ```
 
-The config pins the model with its tag and digest (`nomic-embed-text:latest`, `0a109f422b47`)
-and every record names it (`ollama/nomic-embed-text:latest@0a109f422b47`). The URL must be
-`http://127.0.0.1:<port>`. If the tag moves to another digest, or the config names another
+The config pins the model by its ID, never by `latest`. The model is `nomic-embed-text:0a109f422b47`,
+a local tag named after the ID, and the config also holds the digest `0a109f422b47`. The config
+refuses `:latest`. Every record names the model (`ollama/nomic-embed-text:0a109f422b47@0a109f422b47`).
+The URL must be `http://127.0.0.1:<port>`. If the digest differs or the config names another
 model, the factory refuses to start on the old index and says to run
 `npm run memory -- reindex`, which rebuilds it from the canonical records.
 
@@ -430,7 +433,8 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - Claude Code CLI (`claude`), authenticated
 - `OPENAI_API_KEY` in `.env` only if the OpenCode reviewer is re-enabled (OpenCode itself is an
   npm dependency)
-- Ollama with `nomic-embed-text:latest`, only if project memory is turned on (optional)
+- Ollama with `nomic-embed-text` pinned by ID (`nomic-embed-text:0a109f422b47`), only if project
+  memory is turned on (optional)
 - Node.js ≥ 22.19 and Ollama with the pinned reviewer model, only if the Pi reviewer is used
 
 ## Development

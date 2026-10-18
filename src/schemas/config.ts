@@ -30,8 +30,14 @@ export const EmbedderConfigSchema = z.discriminatedUnion("provider", [
     url: z
       .string()
       .regex(/^http:\/\/127\.0\.0\.1:\d{2,5}$/, "Ollama must be http://127.0.0.1:<port>"),
-    /** Model with an explicit tag, e.g. "nomic-embed-text:latest". */
-    model: z.string().regex(/^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+$/, "model must have a tag"),
+    /**
+     * Model with an explicit, non-moving tag. Convention: the tag is the model ID, created with
+     * `ollama cp nomic-embed-text:latest nomic-embed-text:0a109f422b47` (never `latest`).
+     */
+    model: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+$/, "model must have a tag")
+      .refine((m) => !m.endsWith(":latest"), "pin the model by its ID tag, not latest"),
     /** First 12 hex chars of the model digest (`ollama list`); `latest` moves, the digest does not. */
     digest: z.string().regex(/^[0-9a-f]{12}$/),
     dims: z.number().int().positive(),
@@ -68,7 +74,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   embedder: {
     provider: "ollama",
     url: "http://127.0.0.1:11434",
-    model: "nomic-embed-text:latest",
+    model: "nomic-embed-text:0a109f422b47",
     digest: "0a109f422b47",
     dims: 768,
   },

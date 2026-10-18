@@ -47,6 +47,13 @@ const SearchResultSchema = z.looseObject({
   ),
 });
 
+/** How to get a pinned model: pull the moving tag, check its ID, copy it to the pinned tag. */
+export function pullHint(model: string, digest: string): string {
+  const [name, tag] = model.split(":");
+  if (tag !== digest) return `run \`ollama pull ${model}\``;
+  return `run \`ollama pull ${name ?? model}:latest\`, check that \`ollama list\` shows ID ${digest}, then \`ollama cp ${name ?? model}:latest ${model}\``;
+}
+
 export class Mem0Index implements VectorIndex {
   readonly embedModel: string;
   readonly dims: number;
@@ -82,7 +89,7 @@ export class Mem0Index implements VectorIndex {
     const model = tags.data.models.find((m) => m.name === e.model);
     if (!model) {
       throw new MemoryUnavailableError(
-        `Ollama has no model ${e.model}; run \`ollama pull ${e.model}\``,
+        `Ollama has no model ${e.model}; ${pullHint(e.model, e.digest)}`,
       );
     }
     if (!model.digest.startsWith(e.digest)) {
