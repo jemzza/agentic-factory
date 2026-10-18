@@ -61,7 +61,8 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
   committed head (path-guarded to managed worktrees), so a node re-run after a crash never
   works on top of partial changes.
 - `runtimes/` — `AgentRuntime` contract; `claude-code.ts` (headless `claude -p`),
-  `opencode.ts` (`opencode run --format json`, read-only roles only), per-role tool policy.
+  `opencode.ts` (`opencode run --format json`, read-only roles only), `pi.ts` (`pi --mode json
+-p`, read-only roles only, with the `pi-guard.ts` extension), per-role tool policy.
 - `schemas/` — Zod at every boundary: tasks, specs, config, agent answers, steps, reports,
   eval summaries. An answer that does not match its schema is a step error, never repaired.
 - `spec/openspec.ts` — renders the planner's spec JSON into `openspec/changes/<taskId>/`,
@@ -354,6 +355,22 @@ The image build itself needs network (base image pull, `npm ci`). Checks never d
 - Verified live (2026-10-16): write/bash tools are not offered, and a read outside the
   worktree is denied.
 
+### Pi runtime (`src/runtimes/pi.ts`) — implemented, not configured
+
+Third runtime, for read-only roles (planner, reviewer); the role and model are the owner's
+decision ([docs/pi-runtime.md](docs/pi-runtime.md) lists the providers available without
+OpenAI and what each means for review independence).
+
+- Pi has no path confinement of its own: the factory's extension `pi-guard.ts` blocks every
+  tool call except read/grep/find/ls inside the worktree, and secret files (`.env*`, `*.pem`,
+  `*.key`). A test runs the real Pi binary against a fake provider on 127.0.0.1 and checks
+  that reads outside the worktree, of `.env`, through a symlink, and `bash` never run.
+- Isolation: explicit env (base variables + the role's `keyEnv`), a factory-owned agent dir
+  (`<FACTORY_WORKDIR>/pi-agent`, with `HOME` inside it), no sessions, extensions, skills,
+  context files or project trust, `PI_OFFLINE=1`, `PI_TELEMETRY=0`.
+- Pi exits 0 even when the provider refused the call; the outcome is read from its events,
+  and provider refusals are `infra_error` by the shared patterns.
+
 ### Known limitation: the agent runs on the host (Weeks 1–2)
 
 Claude Code needs access to the Anthropic API, so the agent process runs on
@@ -402,6 +419,7 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - `OPENAI_API_KEY` in `.env` only if the OpenCode reviewer is re-enabled (OpenCode itself is an
   npm dependency)
 - Ollama with `nomic-embed-text:latest`, only if project memory is turned on (optional)
+- Node.js ≥ 22.19 and a provider (key or subscription login), only if a role uses Pi
 
 ## Development
 

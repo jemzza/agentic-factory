@@ -53,6 +53,24 @@ export const UNAVAILABLE_STDERR: readonly RegExp[] = [
   /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT)\b/,
 ];
 
+/**
+ * Error text of a runtime that reports provider errors as messages (Pi: an assistant message's
+ * `errorMessage` / `auto_retry_end.finalError`). Seen live with Pi 1.0.2 against a fake
+ * server: "429: {\"message\":\"Rate limit reached…\",\"type\":\"rate_limit_error\"}" and, with
+ * the server down, "Connection error.". The 5xx, overload and usage-limit forms are synthetic.
+ */
+export const UNAVAILABLE_ERROR_TEXT: readonly RegExp[] = [
+  /^(429|5\d\d)\b/,
+  /\b(rate[_ ]limit|overloaded|usage[_ ]limit)/i,
+  /^Connection error\b/i,
+  ...UNAVAILABLE_RESULT_TEXT,
+  ...UNAVAILABLE_STDERR,
+];
+
+export function errorTextIsProviderUnavailable(text: string): boolean {
+  return UNAVAILABLE_ERROR_TEXT.some((re) => re.test(text.trim()));
+}
+
 export interface ResultErrorFields {
   is_error?: boolean | undefined;
   api_error_status?: number | null | undefined;

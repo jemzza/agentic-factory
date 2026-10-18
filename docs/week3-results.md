@@ -399,3 +399,37 @@ evidence than the other three (`evals/memory/README.md`).
 | Live, on a copy of `data/factory.db`: all pages 200, POST 404, foreign Host 403, listens on 127.0.0.1   | pass   |
 
 `npm run check`: exit 0, 404 tests.
+
+## Phase 7: Pi as the third runtime
+
+Implemented for read-only roles and tested. **No live provider call:** the role and the model
+are the owner's decision ([docs/pi-runtime.md](pi-runtime.md)), and `eval:review` / `eval`
+with Pi run in the final block.
+
+### Facts about Pi (1.0.2, pinned)
+
+- `pi --mode json -p` writes JSONL events; the prompt can come on stdin. Every assistant
+  message carries `usage` with tokens and USD cost.
+- `--tools` is an allowlist, but **no path confinement**: `read` reads any file the process
+  can. The factory's `pi-guard.ts` extension (a `tool_call` handler) is the boundary.
+- On a provider error Pi retries 3 times and then **exits 0**. The adapter reads the outcome
+  from the events (`stopReason: error`, `auto_retry_end {success:false}`).
+- No spend cap flag; the step timeout bounds a run.
+
+### Checks
+
+| Check                                                                                                                                                                                                | Result |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Real Pi binary, fake provider on 127.0.0.1: reads of `/etc/hosts`, `.env`, a symlink to a file outside, and `bash` are refused; the read inside the worktree runs; answer, cost and denials returned | pass   |
+| Recorded streams: cost and tokens summed per message; 3 denials; 429 retries → error although exit 0                                                                                                 | pass   |
+| Fake process: timeout, timeout with only retries (`infra`), crash, garbage, missing JSON, cut-off answer, overspend (`budget`), 4xx (`process`), recovered retry (ok)                                | pass   |
+| Explicit env: only the role's key; isolated agent dir and HOME; key masked in the logs                                                                                                               | pass   |
+| Config: Pi refused as developer; `provider/model`, no `latest`, keys in `secretEnv`; subscription without a key allowed                                                                              | pass   |
+
+Dependency note: installing Pi let npm add `mem0ai`'s optional peer
+`@aws-sdk/client-bedrock-runtime`, which pulled `fast-xml-parser` 5.2.5 (critical advisories).
+That code is never called (memory uses Ollama). It is pinned to 5.11.2 with an npm
+`overrides` entry. `npm audit --omit=dev` is back to the 4 high findings from `openspec` that
+were there before this phase.
+
+`npm run check`: exit 0, 437 tests.

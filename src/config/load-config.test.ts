@@ -72,4 +72,38 @@ describe("config", () => {
       }),
     ).toThrow(/cannot be the developer/);
   });
+
+  it("validates Pi bindings: read-only, provider/model, keys in secretEnv; a subscription needs none", () => {
+    const base = {
+      workdir: "/tmp/af-work",
+      roles: {
+        planner: { runtime: "claude-code", model: "opus" },
+        developer: { runtime: "claude-code", model: "opus" },
+        reviewer: { runtime: "pi", model: "google/gemini-x-2026", keyEnv: ["GEMINI_API_KEY"] },
+      },
+      secretEnv: ["GEMINI_API_KEY", "FACTORY_GITHUB_TOKEN"],
+      stepTimeoutsMinutes: { planner: 1, developer: 1, reviewer: 1, check: 1 },
+      maxDiffCharsForReview: 1000,
+      evalCostCapUsd: 1,
+    };
+    expect(resolveConfig(base).roles.reviewer.runtime).toBe("pi");
+    const reviewer =
+      (r: object, secretEnv = base.secretEnv) =>
+      () =>
+        resolveConfig({ ...base, secretEnv, roles: { ...base.roles, reviewer: r } });
+    expect(reviewer({ runtime: "pi", model: "anthropic/claude-x-2026" })).not.toThrow();
+    expect(reviewer({ runtime: "pi", model: "gemini" })).toThrow(/"provider\/model-id" for pi/);
+    expect(reviewer({ runtime: "pi", model: "google/latest" })).toThrow(/exact model id/);
+    expect(
+      reviewer({ runtime: "pi", model: "google/g", keyEnv: ["GEMINI_API_KEY"] }, [
+        "FACTORY_GITHUB_TOKEN",
+      ]),
+    ).toThrow(/must also be listed in secretEnv/);
+    expect(() =>
+      resolveConfig({
+        ...base,
+        roles: { ...base.roles, developer: { runtime: "pi", model: "google/g" } },
+      }),
+    ).toThrow(/pi runtime is read-only and cannot be the developer/);
+  });
 });

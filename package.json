@@ -2,7 +2,7 @@
   "name": "agentic-factory",
   "version": "0.1.0",
   "private": true,
-  "description": "Agentic Software Factory: plan → implement → verify → review, with a human merging the result.",
+  "description": "Agentic Software Factory: plan \u2192 implement \u2192 verify \u2192 review, with a human merging the result.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -38,6 +38,7 @@
     "db:import": "tsx src/cli.ts db-import"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.2",
     "@fission-ai/openspec": "1.14.2",
     "@langchain/core": "1.2.17",
     "@langchain/langgraph": "1.5.0",
@@ -63,5 +64,8 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^5.0.4"
+  },
+  "overrides": {
+    "fast-xml-parser": "5.11.2"
   }
 }

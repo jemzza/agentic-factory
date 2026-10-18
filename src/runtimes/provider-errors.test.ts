@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseStreamJson } from "./claude-code.js";
 import {
+  errorTextIsProviderUnavailable,
   exitIsProviderUnavailable,
   resultIsProviderUnavailable,
   timeoutIsProviderUnavailable,
@@ -104,5 +105,16 @@ describe("provider unavailable: synthetic samples (no live recording yet)", () =
     expect(exitIsProviderUnavailable(1, "getaddrinfo ENOTFOUND api.anthropic.com")).toBe(true);
     expect(exitIsProviderUnavailable(0, "ECONNRESET")).toBe(false);
     expect(exitIsProviderUnavailable(3, "Error: something exploded")).toBe(false);
+  });
+
+  it("reads error texts of runtimes that report provider errors as messages (Pi)", () => {
+    // Live (Pi 1.0.2 against a fake server): a 429 and an unreachable server.
+    expect(errorTextIsProviderUnavailable('429: {"message":"Rate limit reached"}')).toBe(true);
+    expect(errorTextIsProviderUnavailable("Connection error.")).toBe(true);
+    // Synthetic.
+    expect(errorTextIsProviderUnavailable("529 overloaded")).toBe(true);
+    expect(errorTextIsProviderUnavailable("503: Service Unavailable")).toBe(true);
+    expect(errorTextIsProviderUnavailable('400: {"message":"Unknown model"}')).toBe(false);
+    expect(errorTextIsProviderUnavailable("invalid tool arguments")).toBe(false);
   });
 });

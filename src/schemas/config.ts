@@ -75,13 +75,19 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   indexDir: "data/memory",
 };
 
-export const RUNTIME_NAMES = ["claude-code", "opencode"] as const;
+export const RUNTIME_NAMES = ["claude-code", "opencode", "pi"] as const;
+
+/** Runtimes that only read (no file edits, no commands): planner and reviewer only. */
+export const READ_ONLY_RUNTIMES: readonly string[] = ["opencode", "pi"];
 
 export const RoleBindingSchema = z.strictObject({
   runtime: z.enum(RUNTIME_NAMES),
   /** Exact model id (no moving aliases for OpenCode, e.g. "openai/<model-id>"). */
   model: z.string().min(1),
-  /** Env var names passed to this runtime's process (e.g. its provider key). OpenCode only. */
+  /**
+   * Env var names passed to this runtime's process (its provider key). OpenCode and Pi only.
+   * Pi may have none: a subscription signed in to in the factory's own Pi agent dir.
+   */
   keyEnv: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).default([]),
 });
 export type RoleBinding = z.infer<typeof RoleBindingSchema>;
@@ -134,14 +140,16 @@ export type FactoryConfig = z.infer<typeof FactoryConfigSchema>;
 /** Cross-field rules for role bindings (applied after the schema). */
 export function roleBindingIssues(c: FactoryConfig): string[] {
   const issues: string[] = [];
-  if (c.roles.developer.runtime === "opencode") {
-    issues.push("roles.developer: the OpenCode runtime is read-only and cannot be the developer");
+  if (READ_ONLY_RUNTIMES.includes(c.roles.developer.runtime)) {
+    issues.push(
+      `roles.developer: the ${c.roles.developer.runtime} runtime is read-only and cannot be the developer`,
+    );
   }
   for (const role of ["planner", "reviewer"] as const) {
     const b = c.roles[role];
-    if (b.runtime !== "opencode") continue;
+    if (!READ_ONLY_RUNTIMES.includes(b.runtime)) continue;
     if (!/^[a-z0-9-]+\/[A-Za-z0-9._:-]+$/.test(b.model)) {
-      issues.push(`roles.${role}.model must be "provider/model-id" for OpenCode`);
+      issues.push(`roles.${role}.model must be "provider/model-id" for ${b.runtime}`);
     }
     if (/latest/i.test(b.model)) {
       issues.push(`roles.${role}.model must be an exact model id, not an alias like "latest"`);
@@ -151,15 +159,15 @@ export function roleBindingIssues(c: FactoryConfig): string[] {
         `roles.${role}.model must differ from the developer's model for an independent review`,
       );
     }
-    if (b.keyEnv.length === 0)
+    if (b.runtime === "opencode" && b.keyEnv.length === 0)
       issues.push(`roles.${role}.keyEnv must name the provider key variable`);
   }
   c.reviewEval.reviewers.forEach((b, i) => {
-    if (b.runtime !== "opencode") return;
+    if (!READ_ONLY_RUNTIMES.includes(b.runtime)) return;
     if (!/^[a-z0-9-]+\/[A-Za-z0-9._:-]+$/.test(b.model) || /latest/i.test(b.model)) {
       issues.push(`reviewEval.reviewers[${i}].model must be an exact "provider/model-id"`);
     }
-    if (b.keyEnv.length === 0)
+    if (b.runtime === "opencode" && b.keyEnv.length === 0)
       issues.push(`reviewEval.reviewers[${i}].keyEnv must name the provider key variable`);
     for (const k of b.keyEnv) {
       if (!c.secretEnv.includes(k))

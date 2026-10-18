@@ -319,7 +319,7 @@ async function evalReview(only: string | null): Promise<number> {
     .map((b) => ({
       label: `${b.runtime}:${b.model}`,
       model: b.model,
-      runtime: runtimeForBinding(b, outDir, claude),
+      runtime: runtimeForBinding(b, outDir, claude, config.workdirAbs),
     }));
   console.log(`Reviewer eval: ${cases.length} cases × ${reviewers.map((r) => r.label).join(", ")}`);
   const results = await runReviewEval({

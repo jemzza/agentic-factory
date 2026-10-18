@@ -14,6 +14,9 @@ const config: FactoryConfigInput = {
     // project owner's decision. Review independence is therefore lower than the architecture
     // intends. The OpenCode runtime (src/runtimes/opencode.ts) stays available; to re-enable it:
     //   reviewer: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] },
+    // Pi (read-only roles; docs/pi-runtime.md) — role and model are the owner's decision:
+    //   reviewer: { runtime: "pi", model: "<provider>/<exact-model-id>", keyEnv: ["<PROVIDER>_API_KEY"] },
+    //   (keyEnv: [] when the owner signed in to a subscription in the factory's Pi agent dir)
     reviewer: { runtime: "claude-code", model: "opus" },
   },
   // `npm run eval:review` compares these reviewers on evals/review/.

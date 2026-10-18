@@ -68,7 +68,7 @@ export const USAGE = `Usage:
   npm run merge -- <runId>       Merge a successful run into main (gate re-runs on the merge result)
   npm run close -- <runId> --comment "..."
                                  Close a successful run without merging
-  npm run eval:review [-- --only <claude-code|opencode>]
+  npm run eval:review [-- --only <claude-code|opencode|pi>]
                                  Compare reviewers on evals/review/ (recall, false positive rate)
   npm run eval:memory [-- --repeat N] [-- --cost-cap USD]
   npm run eval:memory -- verify | freeze
@@ -351,13 +351,13 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       if (
         rest[0] === "--only" &&
         rest.length === 2 &&
-        (rest[1] === "claude-code" || rest[1] === "opencode")
+        (rest[1] === "claude-code" || rest[1] === "opencode" || rest[1] === "pi")
       ) {
         return { kind: "eval-review", only: rest[1] };
       }
       return {
         kind: "invalid",
-        message: "eval-review: only --only <claude-code|opencode> is accepted",
+        message: "eval-review: only --only <claude-code|opencode|pi> is accepted",
       };
     }
     case "reopen-merge": {
