@@ -40,6 +40,7 @@ function result(status: RunReport["status"], memory?: RunReport["memory"]): RunT
     reviewCycles: 0,
     cost: { totalUsd: 1 },
     worktree: { path: "/wt" },
+    spec: { rejections: ["recorded comment"] },
     ...(memory ? { memory } : {}),
   } as unknown as RunReport;
   return { report, reportJsonPath: "", reportMdPath: "" };
@@ -212,6 +213,17 @@ describe("runMemoryAb", () => {
     expect(namespaces).toEqual([PAIR.lesson]); // the redo wrote into p2's second namespace
     expect(resumed.results.filter((r) => r.pair === "p2")).toHaveLength(4);
     expect(resumed.totalCostUsd).toBeGreaterThan(stopped.totalCostUsd);
+  });
+
+  it("fails loudly when A ran without the recorded rejection (the harness, not memory, is broken)", async () => {
+    const { d } = deps(new InMemoryMemory(), {
+      runA: () => {
+        const r = result("success");
+        (r.report as { spec: unknown }).spec = { rejections: [] };
+        return Promise.resolve(r);
+      },
+    });
+    await expect(runMemoryAb(d)).rejects.toThrow(/ran without the recorded rejection/);
   });
 
   it("namespaces never share records", async () => {

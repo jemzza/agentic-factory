@@ -389,7 +389,10 @@ export async function runTask(
   const runDir = path.join(deps.runsDir, runId);
   await mkdir(runDir, { recursive: true });
   const mode = deps.runContext?.mode ?? "interactive";
-  const specApprovalMode = mode === "eval" ? "auto" : (deps.specApprovalMode ?? "manual");
+  // An eval approves specs automatically unless its caller asks for manual approval explicitly
+  // (memory A/B: task A gets a recorded human rejection). Plain evals never pass it.
+  const specApprovalMode =
+    mode === "eval" ? (deps.specApprovalMode ?? "auto") : (deps.specApprovalMode ?? "manual");
   const repoRef: RepoRef = mode === "eval" ? "baseline" : "main";
 
   // The project's rules come from its main clone as committed (eval: at the baseline tag),

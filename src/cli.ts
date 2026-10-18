@@ -868,8 +868,19 @@ async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Pr
       },
       runA: async (task, rejectComment, memory) => {
         const first = await runTask(task, deps(memory, "manual"));
-        if (first.kind !== "awaiting" || first.gate !== "spec")
-          return finished(first, `A ${task.id}`);
+        if (first.kind !== "awaiting" || first.gate !== "spec") {
+          const result = finished(first, `A ${task.id}`);
+          // Questions instead of a spec are a legitimate A outcome; anything else means the
+          // recorded rejection could not be applied, and the pair would measure nothing.
+          if (
+            result.report.status === "needs_clarification" ||
+            result.report.status === "infra_error"
+          )
+            return result;
+          throw new Error(
+            `A ${task.id} did not stop at the spec gate (${result.report.status}); the recorded rejection was not applied`,
+          );
+        }
         const revised = await decideSpec(first.runId, memory, "reject", rejectComment);
         if (revised.kind !== "awaiting" || revised.gate !== "spec")
           return finished(revised, `A ${task.id}`);

@@ -336,6 +336,16 @@ export async function runMemoryAb(deps: MemoryAbDeps): Promise<MemoryAbSummary> 
     const ra = await deps.runA(a, pair.reject_comment, { ...access, memory: ns, required: true });
     spent += ra.report.cost.totalUsd;
     if (ra.report.status === "infra_error") return stop("infra_error", ra.report.message);
+    // The pair measures nothing unless A's spec was really rejected by the recorded comment.
+    if (
+      ra.report.status !== "needs_clarification" &&
+      (ra.report.spec?.rejections.length ?? 0) === 0
+    ) {
+      await save();
+      throw new Error(
+        `A ${pair.a} of ${pair.id} ran without the recorded rejection: the A/B harness is broken`,
+      );
+    }
     const lessons = (await ns.list(ra.report.projectId ?? "")).filter(
       (m) => m.source === "spec_rejection_comment",
     ).length;

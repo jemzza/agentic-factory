@@ -200,4 +200,31 @@ describe("project memory in runs", () => {
     expect(report.message).toMatch(/project memory unavailable/);
     expect(t.runtime.calls).toEqual([]); // not even the planner ran
   });
+
+  it("an eval run auto-approves specs, unless its caller asks for manual approval (memory A/B task A)", async () => {
+    const script = {
+      planner: () => Promise.resolve({ structured: FAKE_PLAN }),
+      developer: appendingDeveloper(),
+      reviewer: fakeReviewer(FAKE_APPROVE),
+    };
+    const evalContext = (store: Store) => {
+      store.createEval({
+        id: "eval-x",
+        repeatCount: 1,
+        baselineCommit: "b",
+        costCapUsd: 1,
+        projectId: "t",
+      });
+      return { mode: "eval" as const, evalId: "eval-x", evalRepeat: 1, baselineCommit: "b" };
+    };
+    const plain = await setup(script, undefined);
+    const auto = await runTask(FAKE_TASK, { ...plain.deps, runContext: evalContext(plain.store) });
+    expect(auto.kind === "awaiting" ? auto.gate : auto.kind).toBe("merge");
+    const manual = await setup(script, undefined, "manual");
+    const stopped = await runTask(FAKE_TASK, {
+      ...manual.deps,
+      runContext: evalContext(manual.store),
+    });
+    expect(stopped.kind === "awaiting" ? stopped.gate : stopped.kind).toBe("spec");
+  });
 });
