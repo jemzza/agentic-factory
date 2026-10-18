@@ -6,6 +6,8 @@ import {
   type RunOutcome,
   type RunTaskDeps,
 } from "../pipeline/run-task.js";
+import { withRepoLock } from "../git/repo-lock.js";
+import type { CostPool } from "../pipeline/cost-pool.js";
 import type { ProjectEntry } from "../schemas/project.js";
 import type { TaskFile } from "../schemas/task.js";
 import type { RunRow, Store, StoredRunStatus } from "../store/store.js";
@@ -61,6 +63,12 @@ export interface WatchDeps {
   log?: (m: string) => void;
   /** Set to stop between events (Ctrl+C): nothing new starts. */
   shouldStop?: () => boolean;
+  /** Runs driven at the same time (default 1: each run to its next pause before polling on). */
+  concurrency?: number;
+  /** Spending cap shared by all runs of this process (default: none). */
+  costPool?: CostPool;
+  /** First pause after an infra_error, doubled each time up to 8x (default 15 min). */
+  infraPauseMinutes?: number;
 }
 
 export interface PollSummary {
@@ -101,6 +109,12 @@ export class Watcher {
   private readonly log: (m: string) => void;
   private readonly now: () => Date;
   private labelsEnsured = new Set<string>();
+  /** Runs in flight (concurrency > 1), and the issues they belong to. */
+  private readonly inFlight = new Set<Promise<void>>();
+  private readonly busyIssues = new Set<string>();
+  /** After an infra_error: nothing new starts and running runs pause until then. */
+  private pausedUntil = 0;
+  private pauses = 0;
 
   constructor(private readonly deps: WatchDeps) {
     this.label = deps.label ?? LABELS.trigger;
@@ -110,6 +124,58 @@ export class Watcher {
 
   private stopping(): boolean {
     return this.deps.shouldStop?.() ?? false;
+  }
+
+  /** Why runs should stop at their next node, if they should (Ctrl+C or an infra pause). */
+  pauseReason(): string | null {
+    if (this.stopping()) return "factory:watch is stopping (Ctrl+C)";
+    if (this.infraPaused()) {
+      return `infrastructure unavailable; paused until ${new Date(this.pausedUntil).toISOString()}`;
+    }
+    return null;
+  }
+
+  private infraPaused(): boolean {
+    return this.now().getTime() < this.pausedUntil;
+  }
+
+  /** Starts work on an issue now (concurrency 1) or in the pool, waiting for a free slot. */
+  private async schedule(projectId: string, issue: number, fn: () => Promise<void>): Promise<void> {
+    const key = `${projectId}#${issue}`;
+    const concurrency = Math.max(1, this.deps.concurrency ?? 1);
+    if (concurrency === 1) return fn();
+    while (this.inFlight.size >= concurrency) await Promise.race(this.inFlight);
+    this.busyIssues.add(key);
+    const p: Promise<void> = fn()
+      .catch((err: unknown) => {
+        this.log(
+          `[${projectId}] issue #${issue}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        this.inFlight.delete(p);
+        this.busyIssues.delete(key);
+      });
+    this.inFlight.add(p);
+  }
+
+  private busy(projectId: string, n: number): boolean {
+    if (this.busyIssues.has(`${projectId}#${n}`)) return true;
+    const run = this.deps.store.runForPull(projectId, n);
+    return run?.issue_number != null && this.busyIssues.has(`${projectId}#${run.issue_number}`);
+  }
+
+  /** Waits for every run in flight to finish or pause (Ctrl+C, end of a test). */
+  async drain(): Promise<void> {
+    while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  }
+
+  /** After an infra_error: pause (15 min, doubling up to 8x) and retry the task afterwards. */
+  private startInfraPause(): Date {
+    const minutes = (this.deps.infraPauseMinutes ?? 15) * 2 ** Math.min(this.pauses, 3);
+    this.pauses++;
+    this.pausedUntil = Math.max(this.pausedUntil, this.now().getTime() + minutes * 60_000);
+    return new Date(this.pausedUntil);
   }
 
   private githubProjects(): (ProjectEntry & { github: { repo: string } })[] {
@@ -123,6 +189,8 @@ export class Watcher {
       ...this.deps.runDeps(project),
       project: { id: project.id, source: project.source },
       remote: this.deps.remote,
+      pauseReason: () => this.pauseReason(),
+      ...(this.deps.costPool ? { costPool: this.deps.costPool } : {}),
       ...(issueNumber !== undefined
         ? { runContext: { mode: "interactive" as const, issueNumber } }
         : {}),
@@ -179,6 +247,12 @@ export class Watcher {
     const { store, api } = this.deps;
     const repo = project.github.repo;
     await this.ensureLabels(repo);
+    if (this.infraPaused()) {
+      // Nothing new starts during an infra pause; issues and comments wait (cursors unchanged).
+      await this.checkExternalMerges(project);
+      return;
+    }
+    await this.continueAfterPause(project);
     await this.applyPending(project);
 
     // Issues. `since` is inclusive; already decided issues are skipped by github_events.
@@ -201,6 +275,15 @@ export class Watcher {
     let commentCursor = commentSince;
     for (const c of comments) {
       if (this.stopping()) return;
+      // A command for a run that is still working waits for the next poll (cursor stays here).
+      const target = commentTarget(c);
+      if (
+        target !== null &&
+        this.busy(project.id, target) &&
+        !store.getGithubEvent(project.id, "comment", c.id)
+      ) {
+        break;
+      }
       summary.comments++;
       await this.onComment(project, c, summary);
       commentCursor = c.updated_at;
@@ -361,6 +444,16 @@ export class Watcher {
     await this.setStatusLabel(repo, issue.number, LABELS.inProgress);
     const runId = makeRunId(this.now());
     this.log(`[${project.id}] issue #${issue.number} → run ${runId}`);
+    await this.schedule(project.id, issue.number, () => this.drive(project, issue, task, runId));
+  }
+
+  private async drive(
+    project: ProjectEntry & { github: { repo: string } },
+    issue: Issue,
+    task: TaskFile,
+    runId: string,
+  ): Promise<void> {
+    const repo = project.github.repo;
     let outcome: RunOutcome;
     try {
       outcome = await runTask(
@@ -498,6 +591,8 @@ export class Watcher {
           }
         : parsed.task;
       record("executed", { detail: JSON.stringify({ decision: "retry" }), applied: false });
+      // A manual retry replaces the automatic one after an infra pause.
+      if (last) store.deleteWatchRetry(last.id);
       await this.startRun(project, issue, task);
       this.markApplied(project.id, c.id);
       return true;
@@ -592,8 +687,48 @@ export class Watcher {
     if (run.issue_number !== null && answer.decision === "approve") {
       await this.setStatusLabel(project.github.repo, run.issue_number, LABELS.inProgress);
     }
-    const res = await resumeRun(run.id, this.runDeps(project), { answer });
-    if (res.kind === "resumed") await this.publish(project, run.id, res.outcome);
+    await this.schedule(project.id, run.issue_number ?? -1, async () => {
+      const res = await resumeRun(run.id, this.runDeps(project), { answer });
+      if (res.kind === "resumed") await this.publish(project, run.id, res.outcome);
+    });
+  }
+
+  /**
+   * After an infra pause: runs that paused at a node boundary go on from their checkpoints, and
+   * tasks whose run ended infra_error are retried (the intent is in watch_retries).
+   */
+  private async continueAfterPause(
+    project: ProjectEntry & { github: { repo: string } },
+  ): Promise<void> {
+    const { store } = this.deps;
+    for (const run of store.listGithubRuns(project.id, ["running"])) {
+      if (!run.status_message.startsWith("paused:") || run.issue_number === null) continue;
+      if (this.busy(project.id, run.issue_number) || run.locked_by !== null) continue;
+      this.log(`[${project.id}] continuing paused run ${run.id}`);
+      await this.schedule(project.id, run.issue_number, async () => {
+        const res = await resumeRun(run.id, this.runDeps(project));
+        if (res.kind === "resumed") await this.publish(project, run.id, res.outcome);
+      });
+    }
+    for (const r of store.dueWatchRetries(project.id, this.now().toISOString())) {
+      if (this.busy(project.id, r.issue_number)) continue;
+      store.deleteWatchRetry(r.run_id);
+      const issue = unwrap(
+        await this.deps.api.getIssue(project.github.repo, r.issue_number),
+        "get issue",
+      );
+      const parsed = taskFromIssue(issue);
+      if (!parsed.ok) {
+        await this.comment(
+          project.github.repo,
+          r.issue_number,
+          invalidIssueComment(r.issue_number, parsed.errors),
+        );
+        continue;
+      }
+      this.log(`[${project.id}] retrying issue #${r.issue_number} after the infra pause`);
+      await this.startRun(project, issue, parsed.task);
+    }
   }
 
   /** Allowed users' plain comments on the issue after the run ended (answers to questions). */
@@ -676,6 +811,8 @@ export class Watcher {
     const run = store.requireRun(runId);
     const issue = run.issue_number;
     if (issue === null) return;
+    // Paused at a node boundary: the run goes on later from its checkpoint; nothing to show yet.
+    if (outcome.kind === "paused") return;
 
     if (outcome.kind === "awaiting" && outcome.gate === "spec") {
       const files = outcome.spec?.files ?? {};
@@ -718,7 +855,9 @@ export class Watcher {
         if (!head) throw new Error(`run ${runId} has no head commit to push`);
         const repoDir = report.target?.repoDir;
         if (!repoDir) throw new Error(`run ${runId} has no repository`);
-        const pushed = await this.deps.remote.push(repoDir, head, branch);
+        const pushed = await withRepoLock(repoDir, () =>
+          this.deps.remote.push(repoDir, head, branch),
+        );
         if (!pushed.ok) throw new Error(`push ${branch} failed: ${pushed.message}`);
         const existing = unwrap(await api.findPull(repo, branch), "find pull");
         const pr =
@@ -825,7 +964,16 @@ export class Watcher {
       await this.setStatusLabel(repo, issue, LABELS.needsClarification);
       return;
     }
+    if (status !== "infra_error") this.pauses = 0;
     if (status === "infra_error") {
+      // Not a result of the task: pause everything, then retry it automatically.
+      const until = this.startInfraPause();
+      store.scheduleWatchRetry({
+        runId,
+        projectId: project.id,
+        issueNumber: issue,
+        notBefore: until.toISOString(),
+      });
       await this.comment(
         repo,
         issue,
@@ -833,7 +981,7 @@ export class Watcher {
           runId,
           "paused",
           "Paused: infrastructure unavailable",
-          `${report?.message ?? ""}\n\nThis is not a result of the task. Comment \`/retry\` to run it again.`,
+          `${report?.message ?? ""}\n\nThis is not a result of the task. The factory pauses and retries this task automatically after ${until.toISOString()} (UTC); runs that paused meanwhile continue from their checkpoints then. You can also comment \`/retry\` later.`,
         ),
       );
       await this.setStatusLabel(repo, issue, LABELS.paused);

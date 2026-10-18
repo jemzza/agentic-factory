@@ -284,7 +284,14 @@ export async function runEvalRepeated(
       deps.log?.(`\n=== repeat ${i}/${repeatsPlanned}: complete, kept ===`);
       continue;
     }
-    const spent = repeats.reduce((s, r) => s + r.metrics.totalCostUsd + r.replacedCostUsd, 0);
+    const spent = repeats.reduce(
+      (s, r) =>
+        s +
+        r.metrics.totalCostUsd +
+        r.replacedCostUsd +
+        r.pausedRuns.reduce((p, x) => p + x.spentUsd, 0),
+      0,
+    );
     const remaining = deps.costCapUsd === undefined ? undefined : deps.costCapUsd - spent;
     if (remaining !== undefined && remaining <= 0) {
       capReached = true;

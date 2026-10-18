@@ -15,6 +15,9 @@ const GIT_CONFIG = [
   "commit.gpgsign=false",
   "-c",
   "core.autocrlf=false",
+  // Runs of one project work in parallel worktrees; no automatic gc in the middle of them.
+  "-c",
+  "gc.auto=0",
 ];
 
 export class GitError extends Error {

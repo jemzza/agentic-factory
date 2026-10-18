@@ -71,6 +71,7 @@ describe("migrations", () => {
       { version: 5, name: "eval_rescore" },
       { version: 6, name: "project_id" },
       { version: 7, name: "github" },
+      { version: 8, name: "watch_retries" },
     ]);
   });
 
@@ -88,7 +89,7 @@ describe("migrations", () => {
 
   it("applies migrations in order on a fresh database and rejects gaps in numbering", () => {
     const fresh = new Database(":memory:");
-    expect(migrate(fresh)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(migrate(fresh)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     fresh.close();
     const badDir = mkdtempSync(path.join(dir, "bad-"));
     writeFileSync(path.join(badDir, "001_a.sql"), "SELECT 1;");
@@ -128,7 +129,7 @@ describe("migrations", () => {
          VALUES ('eval-old', '2026-10-17T00:00:00Z', 'completed', 3, 'c3e', 17.93)`,
       )
       .run();
-    expect(migrate(old)).toEqual([5, 6, 7]);
+    expect(migrate(old)).toEqual([5, 6, 7, 8]);
     const s = new Store(old);
     expect(s.getEval("eval-old")).toMatchObject({ kind: "run", source_eval_id: null });
     s.createEval({
@@ -168,7 +169,7 @@ describe("migrations", () => {
          VALUES ('taskflow', 'factory-baseline', 'c3e', 'factory', 'x')`,
       )
       .run();
-    expect(migrate(old)).toEqual([6, 7]);
+    expect(migrate(old)).toEqual([6, 7, 8]);
     const s = new Store(old);
     expect(s.requireRun("old").project_id).toBe("taskflow");
     expect(s.listApprovals("old")[0]?.project_id).toBe("taskflow");
@@ -204,7 +205,7 @@ describe("migrations", () => {
          VALUES ('r', 'spec', 'approve', 'auto', 'x'), ('r', 'merge', 'merge', 'alice', 'x')`,
       )
       .run();
-    expect(migrate(old)).toEqual([7]);
+    expect(migrate(old)).toEqual([7, 8]);
     const s = new Store(old);
     expect(s.listApprovals("r").map((a) => a.channel)).toEqual(["auto", "cli"]);
     const e = {
@@ -307,7 +308,7 @@ describe("migrations", () => {
       )
       .run();
 
-    expect(migrate(old)).toEqual([4, 5, 6, 7]);
+    expect(migrate(old)).toEqual([4, 5, 6, 7, 8]);
     const s = new Store(old);
     const pick = (id: string) => {
       const r = s.requireRun(id);

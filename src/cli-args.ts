@@ -30,11 +30,13 @@ export type CliCommand =
       resume: string | null;
       /** Override of the config's evalCostCapUsd for this eval (USD, all repeats). */
       costCapUsd: number | null;
+      /** Tasks run in parallel (default 1). */
+      concurrency: number;
     }
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "eval-rescore"; evalId: string }
   | { kind: "project-check"; projectId: string }
-  | { kind: "watch"; once: boolean; intervalSeconds: number | null }
+  | { kind: "watch"; once: boolean; intervalSeconds: number | null; concurrency: number }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
   | { kind: "db-import" }
@@ -56,11 +58,11 @@ export const USAGE = `Usage:
   npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
-  npm run eval [-- [--repeat N] [--cost-cap USD] [--resume <evalId>] <taskId>...]
+  npm run eval [-- [--repeat N] [--concurrency N] [--cost-cap USD] [--resume <evalId>] <taskId>...]
                                  Run the eval suite (all tasks, or the given ones) N times and
                                  verify successes with hidden tests. --resume continues an eval
                                  interrupted by a provider limit and/or adds repeats up to N
-  npm run factory:watch [-- --once] [-- --interval <seconds>]
+  npm run factory:watch [-- --once] [-- --interval <seconds>] [-- --concurrency N]
                                  Poll GitHub for factory issues and commands in every project
                                  of projects.yaml; one instance; Ctrl+C stops after the node
   npm run project:check -- <projectId>
@@ -116,6 +118,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       let repeat = 1;
       let resume: string | null = null;
       let costCapUsd: number | null = null;
+      let concurrency = 1;
       const ids: string[] = [];
       for (let k = 0; k < rest.length; k++) {
         const a = rest[k] ?? "";
@@ -134,6 +137,12 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
             };
           }
           resume = id;
+        } else if (a === "--concurrency") {
+          const v = rest[++k];
+          if (v === undefined || !/^[1-8]$/.test(v)) {
+            return { kind: "invalid", message: "eval: --concurrency expects 1 to 8" };
+          }
+          concurrency = Number(v);
         } else if (a === "--cost-cap") {
           const v = Number(rest[++k]);
           if (!Number.isFinite(v) || v <= 0 || v > 100) {
@@ -146,11 +155,12 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
           return { kind: "invalid", message: `eval: invalid taskId(s): ${a}` };
         }
       }
-      return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd };
+      return { kind: "eval", taskIds: ids, repeat, resume, costCapUsd, concurrency };
     }
     case "watch": {
       let once = false;
       let intervalSeconds: number | null = null;
+      let concurrency = 1;
       for (let k = 0; k < rest.length; k++) {
         const a = rest[k];
         if (a === "--once") once = true;
@@ -160,9 +170,15 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
             return { kind: "invalid", message: "watch: --interval expects 15..3600 seconds" };
           }
           intervalSeconds = v;
+        } else if (a === "--concurrency") {
+          const v = rest[++k];
+          if (v === undefined || !/^[1-8]$/.test(v)) {
+            return { kind: "invalid", message: "watch: --concurrency expects 1 to 8" };
+          }
+          concurrency = Number(v);
         } else return { kind: "invalid", message: `watch: unexpected argument ${a ?? ""}` };
       }
-      return { kind: "watch", once, intervalSeconds };
+      return { kind: "watch", once, intervalSeconds, concurrency };
     }
     case "project-check": {
       const [projectId, ...extra] = rest;

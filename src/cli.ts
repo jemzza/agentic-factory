@@ -4,6 +4,8 @@ import { parseCliArgs, USAGE, type CliCommand } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { rescoreEval } from "./eval/rescore.js";
+import type { EvalRunOutcome, PoolStatus, RunControl } from "./eval/run-eval.js";
+import type { RunTaskResult } from "./pipeline/run-task.js";
 import { checkProject } from "./config/project-check.js";
 import { runDaemon } from "./github/daemon.js";
 import { GhCli } from "./github/gh-cli.js";
@@ -37,6 +39,7 @@ import { buildRuntimes, runtimeForBinding } from "./runtimes/registry.js";
 import { ClaudeCodeRuntime } from "./runtimes/claude-code.js";
 import { loadReviewCases, verifyManifest } from "./eval/review-cases.js";
 import { renderReviewEvalMarkdown, runReviewEval } from "./eval/review-eval.js";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { git } from "./git/git.js";
@@ -139,6 +142,10 @@ async function loadRunnableTask(task: string): Promise<TaskFile> {
 }
 
 function printOutcome(outcome: RunOutcome): number {
+  if (outcome.kind === "paused") {
+    console.log(`\nPAUSED: ${outcome.reason}\nContinue with: npm run resume -- ${outcome.runId}`);
+    return 3;
+  }
   if (outcome.kind === "awaiting") {
     const next =
       outcome.gate === "spec"
@@ -161,6 +168,14 @@ function printOutcome(outcome: RunOutcome): number {
 const consoleLog = (m: string) => {
   console.log(m);
 };
+
+/** A run's own log file (parallel runs would interleave on the console). */
+function fileLog(file: string): (m: string) => void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  return (m) => {
+    appendFileSync(file, `${new Date().toISOString()} ${m}\n`);
+  };
+}
 
 async function runOne(
   projectId: string | null,
@@ -468,7 +483,46 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
       });
     evalIds.add(cmd.resume);
   }
+  // With several tasks in parallel each run logs to its own file; the console gets a status line.
+  const parallel = cmd.concurrency > 1;
+  const evalRunDeps = (runsDir: string, ctl: RunControl) => ({
+    config,
+    runtime,
+    runtimes,
+    runsDir,
+    store,
+    project: stand.project,
+    makeSandboxExec: () => Promise.resolve(exec),
+    pauseReason: ctl.pauseReason,
+    costPool: ctl.costPool,
+    log: parallel ? fileLog(path.join(runsDir, ctl.runId, "run.log")) : consoleLog,
+  });
+  // Eval approves specs automatically and never merges: a successful run stops at the merge
+  // gate with its report written.
+  const evalOutcome = (outcome: RunOutcome): RunTaskResult | EvalRunOutcome => {
+    if (outcome.kind === "finished") return outcome;
+    if (outcome.kind === "paused") {
+      return {
+        kind: "paused",
+        runId: outcome.runId,
+        reason: outcome.reason,
+        spentUsd: store.requireRun(outcome.runId).cost_usd,
+      };
+    }
+    if (outcome.result) return outcome.result;
+    throw new Error(`eval run stopped at the ${outcome.gate} approval`);
+  };
   const { summary, summaryMdPath } = await runEvalRepeated(tasks, {
+    concurrency: cmd.concurrency,
+    ...(parallel
+      ? {
+          onStatus: (p: PoolStatus) => {
+            console.log(
+              `[pool] running ${p.running}/${cmd.concurrency} · done ${p.done} · pending ${p.pending} · spent $${p.spentUsd.toFixed(2)}`,
+            );
+          },
+        }
+      : {}),
     repeat,
     roles,
     baselineCommit: repo.baseCommit,
@@ -479,7 +533,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
     models: roles,
     costCapUsd,
     log: consoleLog,
-    runTask: async (task, runsDir) => {
+    runTask: async (task, runsDir, ctl) => {
       // runs/eval-<ts>/r<N>/: the eval id is the parent directory, N the repeat.
       const evalId = path.basename(path.dirname(runsDir));
       const evalRepeat = Number(path.basename(runsDir).slice(1));
@@ -493,22 +547,21 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
           projectId: stand.project.id,
         });
       }
-      const outcome = await runTask(task, {
-        config,
-        runtime,
-        runtimes,
-        runsDir,
-        store,
-        project: stand.project,
-        runContext: { mode: "eval", evalId, evalRepeat, baselineCommit: repo.baseCommit },
-        makeSandboxExec: () => Promise.resolve(exec),
-        log: consoleLog,
-      });
-      // Eval approves specs automatically and never merges: a successful run stops at the
-      // merge gate with its report written.
-      if (outcome.kind === "finished") return outcome;
-      if (outcome.result) return outcome.result;
-      throw new Error(`eval run paused at ${outcome.gate} approval`);
+      const outcome = await runTask(
+        task,
+        {
+          ...evalRunDeps(runsDir, ctl),
+          runContext: { mode: "eval", evalId, evalRepeat, baselineCommit: repo.baseCommit },
+        },
+        { runId: ctl.runId },
+      );
+      return evalOutcome(outcome);
+    },
+    resumeTask: async (runId, runsDir, ctl) => {
+      const res = await resumeRun(runId, evalRunDeps(runsDir, ctl));
+      if (res.kind !== "resumed")
+        throw new Error(`eval run ${runId} could not be resumed (${res.kind})`);
+      return evalOutcome(res.outcome);
     },
     recordFirstPass: async (run, firstPass) => {
       // The database is the source of truth; the report files are refreshed to match.
@@ -660,7 +713,11 @@ async function projectCheck(projectId: string): Promise<number> {
 }
 
 /** The GitHub daemon (`npm run factory:watch`). */
-async function watch(once: boolean, intervalOverride: number | null): Promise<number> {
+async function watch(
+  once: boolean,
+  intervalOverride: number | null,
+  concurrency: number,
+): Promise<number> {
   const config = await loadConfig();
   const token = process.env[config.github.tokenEnv];
   if (!token) {
@@ -703,6 +760,7 @@ async function watch(once: boolean, intervalOverride: number | null): Promise<nu
       runDeps: () => ({ config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog }),
       log: consoleLog,
       shouldStop: () => stop,
+      concurrency,
     });
     console.log(
       `factory:watch: ${projects.map((p) => `${p.id} (${p.github?.repo ?? ""})`).join(", ")}; every ${intervalOverride ?? config.github.pollIntervalSeconds}s${once ? ", once" : ""}`,
@@ -811,7 +869,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "project-check":
       return projectCheck(cmd.projectId);
     case "watch":
-      return watch(cmd.once, cmd.intervalSeconds);
+      return watch(cmd.once, cmd.intervalSeconds, cmd.concurrency);
     case "run":
       return runOne(cmd.projectId, cmd.task, cmd.autoApproveSpec);
     case "decide":

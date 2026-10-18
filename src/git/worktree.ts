@@ -1,6 +1,7 @@
 import { access, mkdir, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
+import { withRepoLock } from "./repo-lock.js";
 
 export interface Worktree {
   path: string;
@@ -31,19 +32,22 @@ export async function createWorktree(opts: {
   const wtPath = path.join(opts.worktreesDir, name);
   const wt: Worktree = { path: wtPath, branch, baseCommit: opts.baseCommit };
   await mkdir(opts.worktreesDir, { recursive: true });
+  await withRepoLock(opts.repoDir, () => addOrReuse(opts.repoDir, wt, opts.worktreesDir));
+  if (opts.hostDepsDir !== null) await linkHostDeps(opts.repoDir, wtPath, opts.hostDepsDir);
+  return wt;
+}
 
+async function addOrReuse(repoDir: string, wt: Worktree, worktreesDir: string): Promise<void> {
+  const { path: wtPath, branch } = wt;
   if (await exists(wtPath)) {
     const current = (await git(wtPath, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     if (current !== branch) {
       throw new Error(`${wtPath} exists but is on branch "${current}", expected "${branch}"`);
     }
-    await resetWorktree(wt, opts.baseCommit, opts.worktreesDir);
+    await resetWorktree(wt, wt.baseCommit, worktreesDir);
   } else {
-    await git(opts.repoDir, ["worktree", "add", "-q", "-b", branch, wtPath, opts.baseCommit]);
+    await git(repoDir, ["worktree", "add", "-q", "-b", branch, wtPath, wt.baseCommit]);
   }
-
-  if (opts.hostDepsDir !== null) await linkHostDeps(opts.repoDir, wtPath, opts.hostDepsDir);
-  return wt;
 }
 
 /** Symlinks `<repoDir>/<depsDir>` into `<wtPath>/<depsDir>` if the source exists. */

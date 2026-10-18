@@ -871,4 +871,41 @@ export class Store {
   releaseNamedLock(name: string, holder: string = processLockId()): void {
     this.db.prepare("DELETE FROM locks WHERE name = ? AND holder = ?").run(name, holder);
   }
+
+  /** factory:watch retries the issue of an infra_error run once `notBefore` has passed. */
+  scheduleWatchRetry(r: {
+    runId: string;
+    projectId: string;
+    issueNumber: number;
+    notBefore: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO watch_retries (run_id, project_id, issue_number, not_before) VALUES (?, ?, ?, ?)
+         ON CONFLICT (run_id) DO UPDATE SET not_before = excluded.not_before`,
+      )
+      .run(r.runId, r.projectId, r.issueNumber, r.notBefore);
+  }
+
+  dueWatchRetries(projectId: string, now: string): { run_id: string; issue_number: number }[] {
+    return this.db
+      .prepare(
+        "SELECT run_id, issue_number FROM watch_retries WHERE project_id = ? AND not_before <= ? ORDER BY not_before",
+      )
+      .all(projectId, now) as { run_id: string; issue_number: number }[];
+  }
+
+  pendingWatchRetries(projectId: string): number {
+    return (
+      this.db
+        .prepare("SELECT COUNT(*) n FROM watch_retries WHERE project_id = ?")
+        .get(projectId) as {
+        n: number;
+      }
+    ).n;
+  }
+
+  deleteWatchRetry(runId: string): void {
+    this.db.prepare("DELETE FROM watch_retries WHERE run_id = ?").run(runId);
+  }
 }

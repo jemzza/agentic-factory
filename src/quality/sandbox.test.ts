@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDockerRunArgs, runInSandbox } from "./sandbox.js";
+import { buildDockerRunArgs, containerNameFor, runInSandbox } from "./sandbox.js";
 
 function args(command: string[] = ["npm", "test"]) {
   return buildDockerRunArgs({
@@ -53,6 +53,26 @@ describe("buildDockerRunArgs", () => {
     expect(argv.slice(-3)).toEqual(["npm", "run", "check; rm -rf /"]);
     const imageIndex = argv.indexOf("agentic-factory-sandbox:abc");
     expect(argv.slice(imageIndex + 1, imageIndex + 3)).toEqual(["sh", "/opt/factory/bootstrap.sh"]);
+  });
+});
+
+describe("container names", () => {
+  it("are per run step, valid for Docker, and labelled with the run", () => {
+    expect(containerNameFor("20261018-010150-2b00", "c0-test")).toBe(
+      "factory-20261018-010150-2b00-c0-test",
+    );
+    expect(containerNameFor("r/1", "merge test")).toBe("factory-r-1-merge-test");
+    const argv = buildDockerRunArgs({
+      image: "img",
+      containerName: "factory-r1-c0-test",
+      worktreePath: "/abs/wt",
+      command: ["npm", "test"],
+      runId: "r1",
+    });
+    expect(flagValues(argv, "--label")).toEqual([
+      "agentic-factory=check",
+      "agentic-factory.run=r1",
+    ]);
   });
 });
 

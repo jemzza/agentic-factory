@@ -166,6 +166,7 @@ describe("runDaemon", () => {
         calls.push("poll");
         return Promise.resolve({ issues: 0, comments: 0, executed: 0, ignored: 0, errors: [] });
       },
+      drain: () => Promise.resolve(),
     } as unknown as Watcher;
     const opts = {
       store,

@@ -7,6 +7,7 @@ import { FACTORY_ROOT } from "../paths.js";
 import { runCommand } from "../process/run-command.js";
 import type { TargetSource } from "../schemas/config.js";
 import { git } from "./git.js";
+import { withRepoLock } from "./repo-lock.js";
 
 /** Build and dependency directories never copied from a fixture (any stack). */
 const SKIP = new Set([
@@ -98,6 +99,18 @@ export async function ensureTargetRepo(
   /** GitHub projects: clone/fetch through the factory's authenticated remote. */
   remote?: RemoteGit,
 ): Promise<TargetRepo> {
+  // Parallel runs of one project materialize, tag and fetch its clone one at a time.
+  return withRepoLock(path.join(workdir, "repos", project.id), () =>
+    materialize(project, workdir, from, remote),
+  );
+}
+
+async function materialize(
+  project: ProjectSource,
+  workdir: string,
+  from: RepoRef,
+  remote: RemoteGit | undefined,
+): Promise<TargetRepo> {
   const reposDir = path.join(workdir, "repos");
   await mkdir(reposDir, { recursive: true });
 
@@ -174,6 +187,13 @@ export async function ensureHostDeps(
   dir: string,
   profile: { install: readonly string[]; hostDepsDir: string },
 ): Promise<void> {
+  await withRepoLock(dir, () => installOnce(dir, profile));
+}
+
+async function installOnce(
+  dir: string,
+  profile: { install: readonly string[]; hostDepsDir: string },
+): Promise<void> {
   const exclude = path.join(dir, ".git", "info", "exclude");
   const current = (await exists(exclude)) ? await readFile(exclude, "utf8") : "";
   if (!current.split("\n").includes(profile.hostDepsDir)) {
@@ -198,10 +218,12 @@ export async function moveBaselineTag(
   repoDir: string,
   targetBranch: string,
 ): Promise<{ previous: string; current: string }> {
-  const previous = (await git(repoDir, ["rev-parse", `${BASELINE_TAG}^{commit}`])).trim();
-  const current = (await git(repoDir, ["rev-parse", `${targetBranch}^{commit}`])).trim();
-  if (previous !== current) await git(repoDir, ["tag", "-f", BASELINE_TAG, current]);
-  return { previous, current };
+  return withRepoLock(repoDir, async () => {
+    const previous = (await git(repoDir, ["rev-parse", `${BASELINE_TAG}^{commit}`])).trim();
+    const current = (await git(repoDir, ["rev-parse", `${targetBranch}^{commit}`])).trim();
+    if (previous !== current) await git(repoDir, ["tag", "-f", BASELINE_TAG, current]);
+    return { previous, current };
+  });
 }
 
 /**

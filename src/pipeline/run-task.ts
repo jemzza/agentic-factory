@@ -13,7 +13,12 @@ import {
   type TargetRepo,
 } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
-import { ensureSandboxImage, runInSandbox, type SandboxProfile } from "../quality/sandbox.js";
+import {
+  ensureSandboxImage,
+  removeRunContainers,
+  runInSandbox,
+  type SandboxProfile,
+} from "../quality/sandbox.js";
 import type { AgentRole, AgentRuntime } from "../runtimes/types.js";
 import { RunReportSchema, type RunReport } from "../schemas/report.js";
 import type { PersistedSpecChange } from "../schemas/spec.js";
@@ -22,7 +27,8 @@ import type { RunRow, Store } from "../store/store.js";
 import { Command, MemorySaver } from "@langchain/langgraph";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { buildGraph } from "../workflow/graph.js";
-import { makeNodes, type NodeContext } from "../workflow/nodes.js";
+import { makeNodes, RunPaused, type NodeContext } from "../workflow/nodes.js";
+import type { CostPool } from "./cost-pool.js";
 
 export interface RunTaskDeps {
   config: ResolvedConfig;
@@ -38,6 +44,12 @@ export interface RunTaskDeps {
   makeSandboxExec?: (repoDir: string, profile: SandboxProfile) => Promise<SandboxExec>;
   /** GitHub projects: authenticated clone/fetch/push for the merge (see NodeContext.remote). */
   remote?: RemoteGit;
+  /** Non-null: the run stops before its next node with this reason (resumable). */
+  pauseReason?: () => string | null;
+  /** Spending cap shared with other runs (eval cost cap, factory:watch). */
+  costPool?: CostPool;
+  /** Removes containers a crashed attempt left; default: by run label, with the real sandbox. */
+  cleanupContainers?: (runId: string) => Promise<unknown>;
   /** Materializes the project's repo. Default: ensureTargetRepo. */
   ensureRepo?: (project: ProjectSource, workdir: string, from: RepoRef) => Promise<TargetRepo>;
   now?: () => Date;
@@ -74,6 +86,8 @@ export interface RunTaskResult {
  */
 export type RunOutcome =
   | ({ kind: "finished" } & RunTaskResult)
+  /** Stopped at a node boundary on request (pool stop, cost cap, Ctrl+C): `resumeRun` goes on. */
+  | { kind: "paused"; runId: string; reason: string }
   | {
       kind: "awaiting";
       gate: "spec" | "merge";
@@ -112,8 +126,8 @@ export const defaultSandboxExec = async (
   profile: SandboxProfile,
 ): Promise<SandboxExec> => {
   const image = await ensureSandboxImage(repoDir, profile);
-  return (worktreePath, command, timeoutMs) =>
-    runInSandbox(worktreePath, command, timeoutMs, { image });
+  return (worktreePath, command, timeoutMs, tag) =>
+    runInSandbox(worktreePath, command, timeoutMs, { image, ...(tag ? { tag } : {}) });
 };
 
 /** Upper bound on graph steps; the longest path (3 dev/gate/review cycles) is ~14. */
@@ -148,6 +162,8 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
     now,
     deadlineNow: () => now().getTime() - pausedMs - hostSuspend.suspendedWithin(since, Date.now()),
     log: deps.log ?? (() => undefined),
+    pauseReason: deps.pauseReason,
+    costPool: deps.costPool,
   };
   const checkpointer = deps.store ? new SqliteSaver(deps.store.db) : new MemorySaver();
   const graph = buildGraph(makeNodes(ctx), { deadlineNow: ctx.deadlineNow, checkpointer });
@@ -166,35 +182,50 @@ async function drive(
   runId: string,
   input: Record<string, unknown> | Command | null,
   fromNode: string,
-): Promise<void> {
+): Promise<string | null> {
   const store = deps.store;
   let prev: { node: string; update: unknown } = { node: fromNode, update: null };
-  let interrupted = false;
-  const stream = await graph.stream(input as Parameters<typeof graph.stream>[0], {
-    ...threadConfig(runId),
-    streamMode: "updates",
-    recursionLimit: RECURSION_LIMIT,
-  });
-  for await (const chunk of stream) {
-    for (const [nodeName, update] of Object.entries(chunk as Record<string, unknown>)) {
-      // A pause is reported as a pseudo-node; the transition goes to the waiting node below.
-      if (nodeName === "__interrupt__") {
-        interrupted = true;
-        continue;
-      }
-      store?.appendEvent(runId, {
-        kind: "transition",
-        node: prev.node,
-        next: nodeName,
-        payload: prev.update,
-      });
-      prev = { node: nodeName, update };
-    }
+  // Set inside consume(); an object so the flag is visible after the closure ran.
+  const seen = { interrupted: false };
+  try {
+    await consume();
+  } catch (err) {
+    if (!(err instanceof RunPaused)) throw err;
+    // The node that was about to run did not start; its checkpoint is the previous node's.
+    store?.appendEvent(runId, { kind: "status", node: prev.node, payload: { paused: err.reason } });
+    store?.updateRun(runId, { status: "running", statusMessage: `paused: ${err.reason}` });
+    deps.log?.(`⏸ paused after ${prev.node}: ${err.reason}`);
+    return err.reason;
   }
-  const next = interrupted
+  const next = seen.interrupted
     ? ((await graph.getState(threadConfig(runId))).next[0] ?? "__interrupt__")
     : "__end__";
   store?.appendEvent(runId, { kind: "transition", node: prev.node, next, payload: prev.update });
+  return null;
+
+  async function consume(): Promise<void> {
+    const stream = await graph.stream(input as Parameters<typeof graph.stream>[0], {
+      ...threadConfig(runId),
+      streamMode: "updates",
+      recursionLimit: RECURSION_LIMIT,
+    });
+    for await (const chunk of stream) {
+      for (const [nodeName, update] of Object.entries(chunk as Record<string, unknown>)) {
+        // A pause is reported as a pseudo-node; the transition goes to the waiting node below.
+        if (nodeName === "__interrupt__") {
+          seen.interrupted = true;
+          continue;
+        }
+        store?.appendEvent(runId, {
+          kind: "transition",
+          node: prev.node,
+          next: nodeName,
+          payload: prev.update,
+        });
+        prev = { node: nodeName, update };
+      }
+    }
+  }
 }
 
 /** After the stream ends: either the run finished (report written) or it waits for a human. */
@@ -410,7 +441,8 @@ export async function runTask(
       startedAtMs: started.getTime(),
       deadlineMs: started.getTime() + task.budget.timeout_minutes * 60_000,
     };
-    await drive(deps, graph, runId, input, "__start__");
+    const paused = await drive(deps, graph, runId, input, "__start__");
+    if (paused) return { kind: "paused", runId, reason: paused };
     return await settle(deps, graph, ctx, runId);
   } finally {
     store?.releaseLock(runId);
@@ -475,6 +507,10 @@ export async function resumeRun(
         return sum + (typeof p.pausedMs === "number" ? p.pausedMs : 0);
       }, 0);
     const abandoned = store.abandonRunningSteps(runId);
+    // Containers a dead process left (with the real sandbox only; tests inject their own exec).
+    const cleanup =
+      deps.cleanupContainers ?? (deps.makeSandboxExec ? undefined : removeRunContainers);
+    if (cleanup) await cleanup(runId);
     store.appendEvent(runId, {
       kind: "resume",
       node: snapshot.next.join(","),
@@ -488,7 +524,8 @@ export async function resumeRun(
     deps.log?.(`resuming ${runId} at ${snapshot.next.join(", ")} (abandoned steps: ${abandoned})`);
     const { ctx, graph } = prepareGraph(deps, pausedBefore + downtimeMs);
     const input = opts.answer === undefined ? null : new Command({ resume: opts.answer });
-    await drive(deps, graph, runId, input, values.lastNode ?? "__start__");
+    const paused = await drive(deps, graph, runId, input, values.lastNode ?? "__start__");
+    if (paused) return { kind: "resumed", outcome: { kind: "paused", runId, reason: paused } };
     return { kind: "resumed", outcome: await settle(deps, graph, ctx, runId) };
   } finally {
     store.releaseLock(runId);

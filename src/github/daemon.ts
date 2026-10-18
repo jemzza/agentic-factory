@@ -23,7 +23,7 @@ export function nextPollDelaySeconds(
 
 export interface DaemonOptions {
   store: Store;
-  watcher: Watcher;
+  watcher: Pick<Watcher, "resumeInterrupted" | "pollOnce" | "drain">;
   rate: () => RateInfo;
   intervalSeconds: number;
   /** One poll, then exit (`--once`). */
@@ -62,6 +62,8 @@ export async function runDaemon(
       );
       await o.sleep(delay * 1000, o.stopRequested);
     }
+    // Ctrl+C or --once: runs in flight finish their current node (or the run) first.
+    await o.watcher.drain();
   } finally {
     o.store.releaseNamedLock(WATCH_LOCK);
   }

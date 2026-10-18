@@ -2,11 +2,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { RunTaskResult } from "../pipeline/run-task.js";
-import { RUN_STATUSES, type RunReport, type RunStatus } from "../schemas/report.js";
+import { RUN_STATUSES, type RunStatus } from "../schemas/report.js";
 import { cycleLimits, EXPECTED_OUTCOMES, type EvalMeta, type TaskSpec } from "../schemas/task.js";
 import { findHiddenArtifacts } from "./hidden-guard.js";
 import type { HiddenTestResult } from "./hidden-tests.js";
 import { renderEvalSummaryMarkdown } from "./summary-markdown.js";
+import { CostPool } from "../pipeline/cost-pool.js";
+import { makeRunId } from "../pipeline/run-task.js";
 
 export const EVAL_OUTCOMES = [
   "verified",
@@ -206,6 +208,20 @@ export const EvalSummarySchema = z.strictObject({
   replacedCostUsd: z.number().nonnegative().default(0),
   /** Tasks whose attempt ended in infra_error and was replaced by a resume (one per attempt). */
   replacedInfraTasks: z.array(z.string()).default([]),
+  /**
+   * Runs stopped at a node boundary when the pass stopped (another task hit infra_error, or the
+   * cost cap): `--resume` continues each from its checkpoint instead of starting over.
+   */
+  pausedRuns: z
+    .array(
+      z.strictObject({
+        taskId: z.string(),
+        runId: z.string(),
+        spentUsd: z.number().nonnegative(),
+        reason: z.string(),
+      }),
+    )
+    .default([]),
   /** Factory git commit that ran this pass (`-dirty` with uncommitted changes); null before it was recorded. */
   factoryCommit: z.string().nullable().default(null),
   /** Set when this summary was produced by `eval:rescore` (no agent calls) from another eval. */
@@ -277,6 +293,24 @@ export function computeMetrics(all: readonly EvalTaskResult[]): EvalMetrics {
   };
 }
 
+/** What a pass gives each run: when to stop, and the shared cost cap. */
+export interface RunControl {
+  runId: string;
+  pauseReason: () => string | null;
+  costPool: CostPool;
+}
+
+export type EvalRunOutcome =
+  | { kind: "done"; result: RunTaskResult }
+  | { kind: "paused"; runId: string; reason: string; spentUsd: number };
+
+export interface PoolStatus {
+  running: number;
+  done: number;
+  pending: number;
+  spentUsd: number;
+}
+
 export interface EvalTaskInput {
   task: TaskSpec;
   meta: EvalMeta;
@@ -286,8 +320,25 @@ export interface RunEvalDeps {
   /** Write this pass into `evalDir` with this id instead of a new runs/eval-<ts>/ (repeats). */
   evalId?: string;
   evalDir?: string;
-  /** Runs one task through the pipeline, writing its run under `runsDir`. */
-  runTask: (task: TaskSpec, runsDir: string) => Promise<RunTaskResult>;
+  /**
+   * Runs one task through the pipeline, writing its run under `runsDir`. `ctl` lets the pass
+   * stop it at a node boundary and share the cost cap; a stopped run comes back `paused`.
+   */
+  runTask: (
+    task: TaskSpec,
+    runsDir: string,
+    ctl: RunControl,
+  ) => Promise<RunTaskResult | EvalRunOutcome>;
+  /** Continues a run paused by an earlier pass (from its checkpoint). */
+  resumeTask?: (
+    runId: string,
+    runsDir: string,
+    ctl: RunControl,
+  ) => Promise<RunTaskResult | EvalRunOutcome>;
+  /** Tasks run in parallel (default 1: one after another). */
+  concurrency?: number;
+  /** Pool status after every start and finish (parallel passes). */
+  onStatus?: (status: PoolStatus) => void;
   /** Runs a task's hidden tests against a finished worktree (on a copy, in the sandbox). */
   runHidden: (worktreePath: string, taskId: string) => Promise<HiddenTestResult>;
   runsDir: string;
@@ -332,7 +383,6 @@ export async function runEval(
   await mkdir(evalDir, { recursive: true });
   const factoryCommit = prev?.factoryCommit ?? deps.factoryCommit ?? null;
 
-  const results: EvalTaskResult[] = [];
   const kept = new Map(
     (prev?.tasks ?? []).filter((t) => t.outcome !== "infra_error").map((t) => [t.taskId, t]),
   );
@@ -348,54 +398,56 @@ export async function runEval(
   ];
   const cap = { capUsd: deps.costCapUsd, reached: false, skippedTasks: [] as string[] };
   let interrupted: EvalSummary["interrupted"] = null;
+  const paused: EvalSummary["pausedRuns"] = [];
+  const pausedBefore = new Map((prev?.pausedRuns ?? []).map((p) => [p.taskId, p]));
+  // The cap is shared by every run of this pass: kept results, replaced attempts and the
+  // spend of runs paused earlier are already spent.
+  const pool = new CostPool(
+    deps.costCapUsd ?? null,
+    [...kept.values()].reduce((sum, t) => sum + t.costUsd, 0) +
+      replacedCostUsd +
+      [...pausedBefore.values()].reduce((sum, p) => sum + p.spentUsd, 0),
+  );
+  // Why the pass stopped taking work (set by a worker; read by every run's pauseReason).
+  const stop: { reason: string | null } = { reason: null };
+  // Read through a function: workers set it while another one awaits.
+  const stopped = (): string | null => stop.reason;
+  const slots: (EvalTaskResult | null)[] = tasks.map(() => null);
+  const results = (): EvalTaskResult[] => slots.filter((r): r is EvalTaskResult => r !== null);
   const summarize = () =>
-    buildSummary(evalId, started, now(), deps, results, cap, {
+    buildSummary(evalId, started, now(), deps, results(), cap, {
       interrupted,
+      pausedRuns: paused,
       replacedCostUsd,
       replacedInfraTasks,
       factoryCommit,
     });
-  for (const [i, { task, meta }] of tasks.entries()) {
-    const done = kept.get(task.id);
-    if (done) {
-      results.push(done);
-      log(
-        `\n[${i + 1}/${tasks.length}] ${task.id}: kept from the interrupted pass (${done.outcome})`,
-      );
-      continue;
-    }
-    const spent = results.reduce((sum, r) => sum + r.costUsd, 0) + replacedCostUsd;
-    if (cap.capUsd !== undefined && spent >= cap.capUsd) {
-      cap.reached = true;
-      cap.skippedTasks = tasks.slice(i).map((t) => t.task.id);
-      log(
-        `\nEval cost cap $${cap.capUsd} reached ($${spent.toFixed(3)} spent): skipping ${cap.skippedTasks.length} task(s)`,
-      );
-      break;
-    }
-    log(
-      `\n[${i + 1}/${tasks.length}] ${task.id} (${meta.difficulty}, expected: ${meta.expected_outcome})`,
-    );
-    const taskStarted = now();
-    let report: RunReport | null = null;
-    let finished: RunTaskResult | null = null;
-    let reportPath: string | null = null;
-    let crash: string | null = null;
-    try {
-      const res = await deps.runTask(task, evalDir);
-      finished = res;
-      report = res.report;
-      reportPath = path.relative(evalDir, res.reportMdPath);
-    } catch (err) {
-      crash = err instanceof Error ? err.message : String(err);
-    }
+  const concurrency = Math.max(1, deps.concurrency ?? 1);
+  let running = 0;
+  let finished = 0;
+  const status = () =>
+    deps.onStatus?.({
+      running,
+      done: finished,
+      pending: tasks.length - finished - running,
+      spentUsd: pool.spentUsd(),
+    });
 
+  /** Hidden tests decide a success claim; every other status is the outcome as-is. */
+  const judge = async (
+    task: TaskSpec,
+    meta: EvalMeta,
+    run: RunTaskResult | null,
+    crash: string | null,
+    taskStarted: Date,
+  ): Promise<EvalTaskResult> => {
+    const report = run?.report ?? null;
     const status: RunStatus = report?.status ?? "error";
     let hidden: HiddenTestResult | null = null;
     let leaks: string[] = [];
     if (report?.worktree) {
       if (status === "success") {
-        log("  running hidden tests…");
+        log(`  ${task.id}: running hidden tests…`);
         try {
           hidden = await deps.runHidden(report.worktree.path, task.id);
         } catch (err) {
@@ -414,10 +466,9 @@ export async function runEval(
       // The hidden tests ran on a copy; the agent's worktree must still be free of them.
       leaks = await findHiddenArtifacts(report.worktree.path);
     }
-
     const { outcome, correct } = classify(status, meta.expected_outcome, hidden);
     const agentRoles = new Set(
-      (report?.steps ?? []).flatMap((s) => (s.kind === "agent" ? [s.role] : [])),
+      (report?.steps ?? []).flatMap((st) => (st.kind === "agent" ? [st.role] : [])),
     );
     const limits = cycleLimits(task.budget);
     const counters = {
@@ -425,8 +476,7 @@ export async function runEval(
       gateFixCycles: report?.gateFixCycles ?? null,
       reviewCycles: report?.reviewCycles ?? null,
     };
-    const firstPass = firstPassOf({ expected: meta.expected_outcome, outcome, ...counters });
-    const result = EvalTaskResultSchema.parse({
+    return EvalTaskResultSchema.parse({
       taskId: task.id,
       title: task.title,
       difficulty: meta.difficulty,
@@ -438,7 +488,7 @@ export async function runEval(
       ...counters,
       maxReviewCycles: limits?.review ?? null,
       specRevisions: report?.specRevisions ?? null,
-      firstPass,
+      firstPass: firstPassOf({ expected: meta.expected_outcome, outcome, ...counters }),
       reachedDeveloper: agentRoles.has("developer"),
       reachedReview: agentRoles.has("reviewer"),
       durationMs: report?.durationMs ?? now().getTime() - taskStarted.getTime(),
@@ -454,34 +504,122 @@ export async function runEval(
         ...(hidden.infraError !== undefined ? { infraError: hidden.infraError } : {}),
       },
       hiddenLeaks: leaks,
-      reportPath,
+      reportPath: run ? path.relative(evalDir, run.reportMdPath) : null,
     });
-    results.push(result);
-    if (finished && deps.recordFirstPass) await deps.recordFirstPass(finished, firstPass);
+  };
+
+  const decide = async (i: number): Promise<void> => {
+    const item = tasks[i];
+    if (!item) return;
+    const { task, meta } = item;
+    const done = kept.get(task.id);
+    if (done) {
+      slots[i] = done;
+      log(
+        `\n[${i + 1}/${tasks.length}] ${task.id}: kept from the interrupted pass (${done.outcome})`,
+      );
+      return;
+    }
+    if (stop.reason !== null || pool.exhausted()) {
+      if (stop.reason === null) cap.reached = true;
+      cap.skippedTasks.push(task.id);
+      return;
+    }
+    const before = pausedBefore.get(task.id);
     log(
-      `  → ${outcome}${correct ? " ✓" : " ✗"}` +
-        (hidden
-          ? ` (hidden ${hidden.total === null ? "?" : hidden.total - (hidden.failed ?? 0)}/${hidden.total ?? "?"})`
+      `\n[${i + 1}/${tasks.length}] ${task.id} (${meta.difficulty}, expected: ${meta.expected_outcome})${before ? " — resumed from its checkpoint" : ""}`,
+    );
+    const ctl: RunControl = {
+      runId: before?.runId ?? makeRunId(now()),
+      pauseReason: () => stop.reason,
+      costPool: pool,
+    };
+    const taskStarted = now();
+    let finishedRun: RunTaskResult | null = null;
+    let crash: string | null = null;
+    try {
+      const raw =
+        before && deps.resumeTask
+          ? await deps.resumeTask(before.runId, evalDir, ctl)
+          : await deps.runTask(task, evalDir, ctl);
+      const out: EvalRunOutcome = "kind" in raw ? raw : { kind: "done", result: raw };
+      if (out.kind === "paused") {
+        pool.charge(out.spentUsd - pool.spentBy(ctl.runId) - (before?.spentUsd ?? 0), ctl.runId);
+        paused.push({
+          taskId: task.id,
+          runId: out.runId,
+          spentUsd: out.spentUsd,
+          reason: out.reason,
+        });
+        if (out.reason.includes("cost cap")) cap.reached = true;
+        log(`  ⏸ ${task.id} paused (${out.reason}); --resume continues it from its checkpoint`);
+        return;
+      }
+      finishedRun = out.result;
+      // Whatever the run spent outside the pool's reservations still counts against the cap.
+      pool.charge(
+        out.result.report.cost.totalUsd - pool.spentBy(ctl.runId) - (before?.spentUsd ?? 0),
+        ctl.runId,
+      );
+    } catch (err) {
+      crash = err instanceof Error ? err.message : String(err);
+    }
+    const result = await judge(task, meta, finishedRun, crash, taskStarted);
+    slots[i] = result;
+    if (finishedRun && deps.recordFirstPass)
+      await deps.recordFirstPass(finishedRun, result.firstPass);
+    log(
+      `  → ${task.id}: ${result.outcome}${result.correct ? " ✓" : " ✗"}` +
+        (result.hidden
+          ? ` (hidden ${result.hidden.total === null ? "?" : result.hidden.total - (result.hidden.failed ?? 0)}/${result.hidden.total ?? "?"})`
           : "") +
         `, $${result.costUsd.toFixed(3)}, ${Math.round(result.durationMs / 1000)}s`,
     );
-    if (outcome === "infra_error") {
-      // Every later task would fail the same way: stop and leave the pass resumable.
-      interrupted = {
-        reason: result.message,
-        pendingTasks: tasks.slice(i).map((t) => t.task.id),
-      };
+    if (result.outcome === "infra_error" && stopped() === null) {
+      // Every later task would fail the same way: start nothing new, stop the running ones at
+      // their next node boundary (checkpointed), and leave the pass resumable.
+      stop.reason = `another task hit infra_error (${task.id})`;
+      interrupted = { reason: result.message, pendingTasks: [] };
       log(
-        `\nProvider unavailable — pass stopped; ${interrupted.pendingTasks.length} task(s) pending. ` +
-          `Resume later with: npm run eval -- --resume <evalId>`,
+        `\nProvider unavailable — no new tasks; running ones pause at their next node. Resume later with: npm run eval -- --resume <evalId>`,
       );
-      await writeSummary(evalDir, summarize());
-      break;
     }
     // Write progress after every task so a long eval leaves partial results.
     await writeSummary(evalDir, summarize());
-  }
+  };
 
+  // A simple pool: `concurrency` workers take the next task index in order.
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const i = next++;
+      running++;
+      status();
+      try {
+        await decide(i);
+      } finally {
+        running--;
+        finished++;
+        status();
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+
+  // Assigned inside the workers; TypeScript cannot see that through the closures.
+  const stoppedBy = interrupted as EvalSummary["interrupted"];
+  if (stoppedBy !== null) {
+    const decided = new Set(results().map((r) => r.taskId));
+    interrupted = {
+      reason: stoppedBy.reason,
+      pendingTasks: tasks
+        .map((t) => t.task.id)
+        .filter(
+          (id) =>
+            !decided.has(id) || results().find((r) => r.taskId === id)?.outcome === "infra_error",
+        ),
+    };
+  }
   const summary = summarize();
   const paths = await writeSummary(evalDir, summary);
   return { summary, ...paths };
@@ -496,7 +634,7 @@ function buildSummary(
   cap: { capUsd: number | undefined; reached: boolean; skippedTasks: string[] },
   extra: Pick<
     EvalSummary,
-    "interrupted" | "replacedCostUsd" | "replacedInfraTasks" | "factoryCommit"
+    "interrupted" | "pausedRuns" | "replacedCostUsd" | "replacedInfraTasks" | "factoryCommit"
   >,
 ): EvalSummary {
   return EvalSummarySchema.parse({

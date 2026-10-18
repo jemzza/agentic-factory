@@ -232,3 +232,57 @@ migration 007. `npm run check`: exit 0.
 Not covered without a live run: real GitHub behavior that the fake can only imitate. That
 includes GitHub marking a PR as merged after a direct push of its head, ETag/304 handling
 (not used), and secondary limits.
+
+## Phase 4: parallel runs
+
+Implemented and tested on fake runtimes. **Live measurement: in the final block** (design §11,
+item 4: `npm run eval -- --concurrency 2` against the Week 3 baseline; the default
+concurrency is decided by those numbers and the subscription limit).
+
+### What was built
+
+- **`--concurrency N`** for `npm run eval` and `npm run factory:watch`, 1 to 8, default 1.
+  Eval keeps results in task order. Each run writes its own `run.log`; the console shows a pool
+  status line (`running k/N · done · pending · spent`).
+- **Per-project git mutex** (`src/git/repo-lock.ts`), held around materializing and tagging
+  the clone, the host install, `git worktree add`, the whole merge (sync from origin, merge
+  result, gate, push, fast-forward) and pushing a PR branch. Runs of different projects never
+  wait for each other. Edits and snapshots inside a run's own worktree need no lock. Factory
+  git calls run with `gc.auto=0`.
+- **Containers.** Each is named `factory-<runId>-<step>` (for example `…-c0-test` or
+  `…-merge-test`) and labelled `agentic-factory.run=<runId>`. A leftover with the same name is
+  removed before reuse, and a resumed run removes everything with its label.
+- **SQLite.** WAL and `busy_timeout = 5000` were already set. All runs of one process share a
+  single connection, and better-sqlite3 calls are synchronous, so writes never interleave.
+  LangGraph's `SqliteSaver` is checked under parallel graphs by the tests below.
+- **Shared cost cap** (`src/pipeline/cost-pool.ts`). Before each agent step the run reserves
+  what it may spend, and that reservation becomes the agent's `--max-budget-usd`. Afterwards it
+  is settled with the actual cost, and anything a run spent outside its reservations is
+  charged too. When the cap is short while other reservations are open, a step waits; when
+  nothing is open, it is refused and the run pauses. The cap holds at reservation time. As
+  before, Claude Code checks its budget between turns, so a step can overshoot its own
+  reservation slightly.
+- **Pause at a node boundary** (`RunPaused`). On the first `infra_error` the pool starts
+  nothing new, and running runs stop before their next node, keeping their checkpoints. The
+  same happens on Ctrl+C in `factory:watch` and when the cap is reached. The eval summary lists
+  these runs (`pausedRuns`), and `npm run eval -- --resume` continues each one from its
+  checkpoint instead of starting it over. `factory:watch` pauses for 15 minutes (doubling up to
+  2 hours), comments on the issue with the time, then continues the paused runs and retries
+  the task automatically (`watch_retries`, migration 008). A manual `/retry` replaces the
+  automatic one.
+
+### Tests (fake agents; real pipeline, git, SQLite, checkpoints)
+
+| Test                                                                                                                                                                                                    | Result |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `factory:watch --concurrency 4`: 10 issues in 2 projects → specs → `/approve` → PRs → `/merge`; developers overlapped (2–4 at once), 5 merge commits per remote, `git fsck` clean, no step left running | pass   |
+| eval `--concurrency 4`, 8 tasks on one project: all verified, task order kept, at most 4 at once, 8 branches, `git fsck` clean                                                                          | pass   |
+| shared cost cap $2 with 4 parallel runs spending their full reservations: spent ≤ cap; every task decided, paused or skipped                                                                            | pass   |
+| `infra_error` in one of 3 parallel tasks: nothing new starts, the 2 running pause with checkpoints; `--resume` resumes those 2 without planning them again and decides all 8                            | pass   |
+| a process with 4 runs mid-`develop` is killed (SIGKILL); all 4 resumed at once: success, each change exactly once, no new planning, `git fsck` clean                                                    | pass   |
+| CostPool: atomic reservations, waiting while reservations are open, refusal once spent                                                                                                                  | pass   |
+
+`npm run check`: exit 0, 356 tests.
+
+Not covered without a live run: the effect of real parallel load on the subscription limits
+(the reason the default stays 1 until the final block).

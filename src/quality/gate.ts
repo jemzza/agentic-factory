@@ -5,10 +5,17 @@ import type { CheckResult, GateResult } from "../schemas/report.js";
 import { checkScope } from "./scope.js";
 import type { SandboxResult } from "./sandbox.js";
 
+/** Who runs a sandboxed command: names the container `factory-<runId>-<step>`. */
+export interface ContainerTag {
+  runId: string;
+  step: string;
+}
+
 export type SandboxExec = (
   worktreePath: string,
   command: readonly string[],
   timeoutMs: number,
+  tag?: ContainerTag,
 ) => Promise<SandboxResult>;
 
 export class SandboxInfraError extends Error {
@@ -47,13 +54,20 @@ export async function runGate(opts: {
   exec: SandboxExec;
   logDir: string;
   logPrefix: string;
+  /** The run, for container names (`factory-<runId>-<logPrefix>-<check>`). */
+  runId?: string;
 }): Promise<GateResult> {
   const scope = checkScope(opts.changedFiles, opts.allowedPaths);
   await mkdir(opts.logDir, { recursive: true });
 
   const checks: CheckResult[] = [];
   for (const check of opts.checks) {
-    const res = await opts.exec(opts.worktreePath, check.command, opts.checkTimeoutMs);
+    const res = await opts.exec(
+      opts.worktreePath,
+      check.command,
+      opts.checkTimeoutMs,
+      opts.runId ? { runId: opts.runId, step: `${opts.logPrefix}-${check.name}` } : undefined,
+    );
     if (res.infraError !== undefined) {
       throw new SandboxInfraError(res.infraError, res.hostSuspended === true);
     }

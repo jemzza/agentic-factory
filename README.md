@@ -145,6 +145,7 @@ claude auth status            # the Claude Code CLI must be logged in
 | `npm run resume -- <runId>`                                                            | Continue an interrupted run from its last checkpoint                                   |
 | `npm run runs [-- <limit>]`                                                            | List recent runs from the database                                                     |
 | `npm run eval [-- [--repeat N] [--cost-cap USD] <taskId>...]`                          | Eval suite from `factory-baseline`, N repeats, hidden-test verification                |
+| `npm run eval -- --concurrency N [...]`                                                | Run N tasks in parallel (per-project git lock, shared cost cap, pause on infra_error)  |
 | `npm run eval -- --resume <evalId> [--repeat N]`                                       | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
 | `npm run eval:review [-- --only <runtime>]`                                            | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
 | `npm run verify-hidden [-- <taskId>]`                                                  | Hidden tests fail on baseline and pass on reference patches                            |

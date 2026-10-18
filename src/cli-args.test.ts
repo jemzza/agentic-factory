@@ -42,8 +42,22 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["run", "a", "b"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses --concurrency for eval and watch (1 to 8)", () => {
+    expect(parseCliArgs(["eval", "--concurrency", "4"])).toMatchObject({
+      kind: "eval",
+      concurrency: 4,
+    });
+    expect(parseCliArgs(["eval", "--concurrency", "0"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["eval", "--concurrency", "9"])).toMatchObject({ kind: "invalid" });
+    expect(parseCliArgs(["watch", "--concurrency", "2"])).toMatchObject({
+      kind: "watch",
+      concurrency: 2,
+    });
+    expect(parseCliArgs(["watch"])).toMatchObject({ kind: "watch", concurrency: 1, once: false });
+  });
+
   it("parses eval with optional task ids", () => {
-    const none = { resume: null, costCapUsd: null };
+    const none = { resume: null, costCapUsd: null, concurrency: 1 };
     expect(parseCliArgs(["eval"])).toEqual({ kind: "eval", taskIds: [], repeat: 1, ...none });
     expect(parseCliArgs(["eval", "a-task", "b", "a-task"])).toEqual({
       kind: "eval",
@@ -73,6 +87,7 @@ describe("parseCliArgs", () => {
       repeat: 3,
       resume: "eval-20261016-113113",
       costCapUsd: 21,
+      concurrency: 1,
     });
     expect(parseCliArgs(["eval", "--resume", "../runs"])).toMatchObject({ kind: "invalid" });
     expect(parseCliArgs(["eval", "--cost-cap", "0"])).toMatchObject({ kind: "invalid" });

@@ -91,17 +91,25 @@ const issueObj = (i) => ({
   html_url: `https://github.com/${repo}/issues/${i.number}`,
   labels: i.labels.map((name) => ({ name })),
 });
-const findIssue = (n) => state.issues.find((i) => i.number === n);
+// Entries may carry `repo` ("owner/name"); entries without it belong to every repository.
+const inRepo = (x) => x.repo === undefined || x.repo === repo;
+const findIssue = (n) => state.issues.find((i) => i.number === n && inRepo(i));
+const findPull = (n) => state.pulls.find((p) => p.number === n && inRepo(p));
 
-if (method === "GET" && (r = m(/^repos\/[^/]+\/[^/]+\/issues$/))) {
+if (method === "GET" && m(/^repos\/[^/]+\/[^/]+\/issues$/)) {
   const label = q.get("labels");
-  const items = since(state.issues.filter((i) => !label || i.labels.includes(label))).sort(
-    byUpdated,
-  );
+  const items = since(
+    state.issues.filter((i) => inRepo(i) && (!label || i.labels.includes(label))),
+  ).sort(byUpdated);
   respond(200, page(items).map(issueObj));
 }
-if (method === "GET" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/comments$/))) {
-  respond(200, page(since(state.comments).sort(byUpdated)));
+if (method === "GET" && m(/^repos\/[^/]+\/[^/]+\/issues\/comments$/)) {
+  respond(
+    200,
+    page(
+      since(state.comments.filter((c) => c.issue_url.includes(`/repos/${repo}/`))).sort(byUpdated),
+    ),
+  );
 }
 if (method === "GET" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments$/))) {
   const url = `https://api.github.com/repos/${repo}/issues/${r[1]}`;
@@ -134,7 +142,7 @@ if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments$/
   respond(201, c);
 }
 if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/labels$/))) {
-  const t = findIssue(Number(r[1])) ?? state.pulls.find((p) => p.number === Number(r[1]));
+  const t = findIssue(Number(r[1])) ?? findPull(Number(r[1]));
   for (const l of input.labels) if (!t.labels.includes(l)) t.labels.push(l);
   respond(
     200,
@@ -142,7 +150,7 @@ if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/labels$/))
   );
 }
 if (method === "DELETE" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/labels\/(.+)$/))) {
-  const t = findIssue(Number(r[1])) ?? state.pulls.find((p) => p.number === Number(r[1]));
+  const t = findIssue(Number(r[1])) ?? findPull(Number(r[1]));
   const name = decodeURIComponent(r[2]);
   if (!t.labels.includes(name)) respond(404, { message: "Label does not exist" });
   t.labels = t.labels.filter((l) => l !== name);
@@ -151,7 +159,7 @@ if (method === "DELETE" && (r = m(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/labels\/
     t.labels.map((n) => ({ name: n })),
   );
 }
-if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/labels$/))) {
+if (method === "POST" && m(/^repos\/[^/]+\/[^/]+\/labels$/)) {
   state.repoLabels ??= [];
   if (state.repoLabels.includes(input.name)) respond(422, { message: "Validation Failed" });
   state.repoLabels.push(input.name);
@@ -164,15 +172,23 @@ const pullObj = (p) => ({
   head: { ref: p.head, sha: p.head_sha ?? "0".repeat(40) },
   base: { ref: p.base },
 });
-if (method === "GET" && (r = m(/^repos\/[^/]+\/[^/]+\/pulls$/))) {
+if (method === "GET" && m(/^repos\/[^/]+\/[^/]+\/pulls$/)) {
   const head = q.get("head")?.split(":")[1];
-  respond(200, page(state.pulls.filter((p) => !head || p.head === head)).map(pullObj));
+  respond(
+    200,
+    page(state.pulls.filter((p) => inRepo(p) && (!head || p.head === head))).map(pullObj),
+  );
 }
-if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/pulls$/))) {
+if (method === "POST" && m(/^repos\/[^/]+\/[^/]+\/pulls$/)) {
   const number =
-    Math.max(0, ...state.issues.map((i) => i.number), ...state.pulls.map((p) => p.number)) + 1;
+    Math.max(
+      0,
+      ...state.issues.filter(inRepo).map((i) => i.number),
+      ...state.pulls.filter(inRepo).map((p) => p.number),
+    ) + 1;
   const p = {
     id: state.nextId++,
+    repo,
     number,
     title: input.title,
     body: input.body,
@@ -188,12 +204,12 @@ if (method === "POST" && (r = m(/^repos\/[^/]+\/[^/]+\/pulls$/))) {
   respond(201, pullObj(p));
 }
 if (method === "GET" && (r = m(/^repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/))) {
-  const p = state.pulls.find((x) => x.number === Number(r[1]));
+  const p = findPull(Number(r[1]));
   if (p) respond(200, pullObj(p));
   respond(404, { message: "Not Found" });
 }
 if (method === "PATCH" && (r = m(/^repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/))) {
-  const p = state.pulls.find((x) => x.number === Number(r[1]));
+  const p = findPull(Number(r[1]));
   Object.assign(p, input);
   respond(200, pullObj(p));
 }

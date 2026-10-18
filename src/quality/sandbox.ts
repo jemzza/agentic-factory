@@ -122,6 +122,8 @@ export function buildDockerRunArgs(opts: {
   worktreePath: string;
   command: readonly string[];
   limits?: SandboxLimits;
+  /** Run that owns the container (label `agentic-factory.run=<runId>`, for cleanup). */
+  runId?: string;
 }): string[] {
   const l = opts.limits ?? DEFAULT_LIMITS;
   return [
@@ -131,6 +133,7 @@ export function buildDockerRunArgs(opts: {
     opts.containerName,
     "--label",
     "agentic-factory=check",
+    ...(opts.runId ? ["--label", `agentic-factory.run=${opts.runId}`] : []),
     // Isolation
     "--network",
     "none",
@@ -176,6 +179,28 @@ export function buildDockerRunArgs(opts: {
   ];
 }
 
+/** Docker container name for a run step; only [a-zA-Z0-9_.-] (Docker's name rule). */
+export function containerNameFor(runId: string, step: string): string {
+  return `factory-${runId}-${step}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
+}
+
+/**
+ * Removes every container a run left behind (e.g. after a crash mid-check), by its label.
+ * Docker unavailable is not an error here: the next check reports it.
+ */
+export async function removeRunContainers(runId: string): Promise<number> {
+  const list = await runCommand(
+    "docker",
+    ["ps", "-aq", "--filter", `label=agentic-factory.run=${runId}`],
+    { cwd: FACTORY_ROOT, timeoutMs: 30_000 },
+  );
+  const ids = list.exitCode === 0 ? list.stdout.split("\n").filter((x) => x.trim() !== "") : [];
+  if (ids.length) {
+    await runCommand("docker", ["rm", "-f", ...ids], { cwd: FACTORY_ROOT, timeoutMs: 60_000 });
+  }
+  return ids.length;
+}
+
 /** docker run's own failure (daemon down, bad flags, ...) — not the command's exit code. */
 const DOCKER_RUN_ERROR_EXIT = 125;
 
@@ -188,7 +213,7 @@ export async function runInSandbox(
   worktreePath: string,
   command: readonly string[],
   timeoutMs: number,
-  opts: { image: string; limits?: SandboxLimits },
+  opts: { image: string; limits?: SandboxLimits; tag?: { runId: string; step: string } },
 ): Promise<SandboxResult> {
   if (command.length === 0) throw new Error("runInSandbox: empty command");
   if (!path.isAbsolute(worktreePath)) {
@@ -202,13 +227,24 @@ export async function runInSandbox(
     throw new Error(`runInSandbox: not a directory: ${worktreePath}`);
   }
 
-  const containerName = `af-check-${randomBytes(6).toString("hex")}`;
+  // One name per run step (`factory-<runId>-<step>`), so parallel runs never collide and a
+  // leftover from a crashed attempt of the same step is removed first.
+  const containerName = opts.tag
+    ? containerNameFor(opts.tag.runId, opts.tag.step)
+    : `factory-check-${randomBytes(6).toString("hex")}`;
+  if (opts.tag) {
+    await runCommand("docker", ["rm", "-f", containerName], {
+      cwd: worktreePath,
+      timeoutMs: 30_000,
+    });
+  }
   const args = buildDockerRunArgs({
     image: opts.image,
     containerName,
     worktreePath,
     command,
     ...(opts.limits ? { limits: opts.limits } : {}),
+    ...(opts.tag ? { runId: opts.tag.runId } : {}),
   });
 
   const result: CommandResult = await runCommand("docker", args, {

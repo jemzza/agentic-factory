@@ -231,6 +231,7 @@ export function fakeConfig(workdir: string): ResolvedConfig {
  */
 export function resultOf(outcome: RunOutcome): RunTaskResult {
   if (outcome.kind === "finished") return outcome;
+  if (outcome.kind === "paused") throw new Error(`run paused: ${outcome.reason}`);
   if (outcome.result) return outcome.result;
   throw new Error(`run paused at ${outcome.gate} approval without a report`);
 }
