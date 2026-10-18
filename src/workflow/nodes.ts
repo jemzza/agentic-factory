@@ -5,6 +5,7 @@ import {
   parsePlannerResult,
   PLANNER_OUTPUT_SCHEMA,
   plannerPrompt,
+  type KnowledgeItem,
   SPEC_OUTPUT_SCHEMA,
   specFixPrompt,
 } from "../agents/planner.js";
@@ -22,6 +23,9 @@ import {
 } from "../git/merge.js";
 import type { RemoteGit } from "../github/remote.js";
 import type { CostPool } from "../pipeline/cost-pool.js";
+import type { MemoryAccess } from "../memory/runtime.js";
+import { MemoryUnavailableError, type MemoryOrigin, type NewMemory } from "../memory/types.js";
+import { ReviewVerdictSchema } from "../schemas/agents.js";
 import { withRepoLock } from "../git/repo-lock.js";
 import {
   BASELINE_TAG,
@@ -115,6 +119,8 @@ export interface NodeContext {
   pauseReason?: (() => string | null) | undefined;
   /** Shared spending cap of parallel runs; each agent step reserves its budget here. */
   costPool?: CostPool | undefined;
+  /** Project memory (absent: disabled). */
+  memory?: MemoryAccess | undefined;
   /** Set by the report node; read by the driver. */
   result?: { report: RunReport; reportJsonPath: string; reportMdPath: string };
 }
@@ -325,6 +331,61 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     return execCache.exec;
   };
   const hostDepsDir = (s: RunStateValue) => projectOf(s).config.profile.host_deps_dir;
+  const projectIdOf = (s: RunStateValue) => s.project?.id ?? ctx.project.id;
+
+  /** Memory is enabled but cannot be used: an infra error if this run requires it. */
+  const memoryDown = (s: RunStateValue, why: string): RunStateUpdate =>
+    ctx.memory?.required
+      ? {
+          lastError: { node: "plan", kind: "infra", message: `project memory unavailable: ${why}` },
+        }
+      : { memory: { ...s.memory, status: "unavailable", note: why } };
+
+  /**
+   * Stores confirmed knowledge. Ordinary runs survive a memory outage (noted in the report);
+   * a run that requires memory turns it into an infra error.
+   */
+  const remember = async (
+    s: RunStateValue,
+    items: NewMemory[],
+    errorNode: NodeName,
+  ): Promise<RunStateUpdate> => {
+    const access = ctx.memory;
+    if (!access || items.length === 0) return {};
+    if (!access.memory) return access.required ? memoryDown(s, access.unavailable ?? "") : {};
+    const written = [...s.memory.written];
+    try {
+      for (const m of items) {
+        const rec = await access.memory.add(projectIdOf(s), m);
+        if (!written.includes(rec.id)) written.push(rec.id);
+      }
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      if (err instanceof MemoryUnavailableError && access.required) {
+        return {
+          lastError: {
+            node: errorNode,
+            kind: "infra",
+            message: `project memory unavailable: ${why}`,
+          },
+        };
+      }
+      ctx.log(`  memory: not stored (${why})`);
+      return { memory: { ...s.memory, written, note: s.memory.note || `not stored: ${why}` } };
+    }
+    ctx.log(`  memory: ${items.length} record(s) stored`);
+    return { memory: { ...s.memory, written } };
+  };
+
+  /** Who rejected the spec (approvals table): an allowed GitHub user or the CLI. */
+  const rejectionOrigin = (s: RunStateValue): MemoryOrigin => {
+    const last = ctx.store
+      ?.listApprovals(s.runId)
+      .filter((a) => a.gate === "spec" && a.decision === "reject")
+      .at(-1);
+    if (last?.channel === "github") return { kind: "github", login: last.actor, allowed: true };
+    return last?.channel === "auto" ? { kind: "factory" } : { kind: "cli" };
+  };
 
   /** The approved spec as committed (never read from the working tree). */
   const approvedSpec = async (s: RunStateValue): Promise<Record<string, string>> => {
@@ -391,19 +452,56 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
     }),
 
     plan: node("plan", async (s) => {
+      // Project knowledge for the planner: up to `limit` records of this project only.
+      let knowledge: KnowledgeItem[] = [];
+      let memoryUpdate: RunStateUpdate = {};
+      const access = ctx.memory;
+      if (access) {
+        if (!access.memory) {
+          memoryUpdate = memoryDown(s, access.unavailable ?? "memory is not available");
+        } else {
+          try {
+            const query = [s.task.title, s.task.request, ...s.task.acceptance_criteria].join("\n");
+            const hits = await access.memory.search(projectIdOf(s), query, access.limit);
+            knowledge = hits.map((h) => ({
+              text: h.record.text,
+              source: h.record.source,
+              runId: h.record.runId,
+            }));
+            memoryUpdate = {
+              memory: {
+                ...s.memory,
+                status: "used",
+                note: "",
+                used: hits.map((h) => ({
+                  id: h.record.id,
+                  text: h.record.text,
+                  source: h.record.source,
+                  runId: h.record.runId,
+                })),
+              },
+            };
+            ctx.log(`  memory: ${hits.length} record(s) for the planner`);
+          } catch (err) {
+            memoryUpdate = memoryDown(s, err instanceof Error ? err.message : String(err));
+          }
+        }
+        if (memoryUpdate.lastError) return memoryUpdate;
+      }
       const { res, update } = await agentStep(
         ctx,
         s,
         "planner",
         0,
-        plannerPrompt(s.task, s.specRejections),
+        plannerPrompt(s.task, s.specRejections, knowledge),
         PLANNER_OUTPUT_SCHEMA,
       );
-      if (update.lastError) return update;
+      if (update.lastError) return { ...memoryUpdate, ...update };
       const planned = parsePlannerResult(res);
       if (!planned.ok) return { ...update, lastError: { node: "plan", ...planned.error } };
       // A new plan starts a fresh spec draft (rejection comments are kept).
       return {
+        ...memoryUpdate,
         ...update,
         planResult: planned.value,
         specRaw: planned.value.spec ?? null,
@@ -538,6 +636,23 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
       // previous attempt of this node may have left behind.
       await resetWorktree(wt, s.headCommit, worktreesRoot);
       const cycle = s.cycle + 1;
+      // The spec revised after a human rejection was approved: its lessons are confirmed.
+      let lessonsUpdate: RunStateUpdate = {};
+      if (cycle === 0 && s.specRejections.length > 0 && s.planResult.lessons.length > 0) {
+        const origin = rejectionOrigin(s);
+        lessonsUpdate = await remember(
+          s,
+          s.planResult.lessons.map((text, i) => ({
+            text,
+            source: "spec_rejection_comment" as const,
+            runId: s.runId,
+            origin,
+            dedupeKey: `${s.runId}:lesson:${i}`,
+          })),
+          "develop",
+        );
+        if (lessonsUpdate.lastError) return lessonsUpdate;
+      }
       // Which budget this run spends was decided on the edge into develop; count it here.
       const reason = fixReason(s);
       const gateFixCycles = s.gateFixCycles + (reason === "gate_failure" ? 1 : 0);
@@ -569,7 +684,9 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           projectOf(s).config.profile.self_check,
         ),
       );
-      if (update.lastError) return { ...update, ...counters, cycle, reviewVerdict: null };
+      if (update.lastError) {
+        return { ...lessonsUpdate, ...update, ...counters, cycle, reviewVerdict: null };
+      }
       const commit = await snapshot(
         wt,
         `factory: ${s.task.id} developer cycle ${cycle}`,
@@ -586,7 +703,15 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         gateFixCycles,
         reviewCycles,
       });
-      return { ...update, ...counters, steps, cycle, headCommit: commit, reviewVerdict: null };
+      return {
+        ...lessonsUpdate,
+        ...update,
+        ...counters,
+        steps,
+        cycle,
+        headCommit: commit,
+        reviewVerdict: null,
+      };
     }),
 
     gate: node("gate", async (s) => {
@@ -698,6 +823,36 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
           ? decision.message
           : `internal error: report reached while the next node is ${decision.node}`;
 
+      // Reviewer findings that were fixed, after which gate and review passed: confirmed.
+      let memoryState = s.memory;
+      if (status === "success" && s.reviewCycles > 0) {
+        const fixed = s.steps
+          .flatMap((st) =>
+            st.kind === "agent" && st.role === "reviewer" && st.ok ? [st.output] : [],
+          )
+          .flatMap((out) => {
+            try {
+              const v = ReviewVerdictSchema.safeParse(JSON.parse(out));
+              return v.success && v.data.verdict === "request_changes" ? v.data.issues : [];
+            } catch {
+              return [];
+            }
+          })
+          .filter((i) => i.severity !== "minor");
+        const upd = await remember(
+          s,
+          fixed.slice(0, 3).map((i, k) => ({
+            text: i.description.slice(0, 300),
+            source: "review_issue_fixed" as const,
+            runId: s.runId,
+            origin: { kind: "factory" as const },
+            dedupeKey: `${s.runId}:review:${k}`,
+          })),
+          "report",
+        );
+        if (upd.memory) memoryState = upd.memory;
+      }
+
       let diff = "";
       let files: string[] = [];
       let head: string | null = null;
@@ -776,6 +931,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         },
         changedFiles: files,
         diff,
+        memory: memoryState,
       });
       await mkdir(s.runDir, { recursive: true });
       const reportJsonPath = path.join(s.runDir, "report.json");
@@ -801,7 +957,7 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
         });
       }
       ctx.result = { report, reportJsonPath, reportMdPath };
-      return { status, statusMessage: message };
+      return { status, statusMessage: message, memory: memoryState };
     }),
 
     // Pure: on resume LangGraph re-runs it from the start and interrupt() returns the answer.
@@ -979,7 +1135,24 @@ export function makeNodes(ctx: NodeContext): Record<NodeName, NodeFn> {
             `- Run report: ${reportPath}`,
           ].join("\n") + "\n",
         );
+        // Decisions of the merged spec that go beyond the task: the behaviors it keeps.
+        const decisions = (s.spec?.capabilities ?? [])
+          .flatMap((c) => c.requirements)
+          .filter((r) => r.source === "existing_behavior")
+          .slice(0, 3);
+        const memoryUpdate = await remember(
+          s,
+          decisions.map((r, i) => ({
+            text: r.text,
+            source: "merged_run" as const,
+            runId: s.runId,
+            origin: { kind: "factory" as const },
+            dedupeKey: `${s.runId}:merged:${i}`,
+          })),
+          "merge",
+        );
         return {
+          ...(memoryUpdate.memory ? { memory: memoryUpdate.memory } : {}),
           mergeOutcome: {
             kind: "merged",
             mergeCommit: candidate.mergeCommit,

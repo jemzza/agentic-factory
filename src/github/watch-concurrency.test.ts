@@ -164,10 +164,19 @@ describe("factory:watch --concurrency 4, two projects", () => {
     };
 
     // Plan all ten (four at a time), approve all, then merge all.
-    await watcher.pollOnce();
+    const first = await watcher.pollOnce();
     await watcher.drain();
+    const statuses = store.db
+      .prepare(
+        "SELECT project_id, issue_number, status, status_message FROM runs ORDER BY project_id, issue_number",
+      )
+      .all();
+    expect({ errors: first.errors, statuses }).toMatchObject({ errors: [] });
     for (const p of ["alpha", "beta"]) {
-      expect(store.listGithubRuns(p, ["awaiting_spec_approval"])).toHaveLength(5);
+      expect(
+        store.listGithubRuns(p, ["awaiting_spec_approval"]),
+        JSON.stringify(statuses),
+      ).toHaveLength(5);
     }
     for (const p of ["alpha", "beta"]) {
       for (let i = 1; i <= 5; i++) await comment(`owner/${p}`, i, "/approve");

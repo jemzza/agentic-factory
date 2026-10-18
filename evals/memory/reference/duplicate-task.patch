@@ -1,0 +1,81 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..f379246 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -26,6 +26,9 @@ const updateTaskBodySchema = z
+     message: "At least one field must be provided",
+   });
+ 
++/** Action routes take no body fields; an absent body is the same as `{}`. */
++const emptyBodySchema = z.strictObject({});
++
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
+ });
+@@ -54,6 +57,12 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return toTaskDto(await service.update(id, body));
+   });
+ 
++  app.post("/tasks/:id/duplicate", async (request, reply) => {
++    const { id } = parseInput(taskIdParamsSchema, request.params);
++    parseInput(emptyBodySchema, request.body ?? {});
++    return reply.code(201).send(toTaskDto(await service.duplicate(id)));
++  });
++
+   app.delete("/tasks/:id", async (request, reply) => {
+     const { id } = parseInput(taskIdParamsSchema, request.params);
+     await service.softDelete(id);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..579521b 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -70,6 +70,12 @@ export class TaskService {
+     return updated;
+   }
+ 
++  /** Copies a task as "<title> (copy)", status todo; the copy's title must be free. */
++  async duplicate(id: string): Promise<Task> {
++    const task = await this.getMutable(id);
++    return this.create({ title: `${task.title} (copy)`, description: task.description });
++  }
++
+   async softDelete(id: string): Promise<void> {
+     const task = await this.getMutable(id);
+     const now = this.deps.clock();
+diff --git a/tests/duplicate-task.test.ts b/tests/duplicate-task.test.ts
+new file mode 100644
+index 0000000..9c5b6fe
+--- /dev/null
++++ b/tests/duplicate-task.test.ts
+@@ -0,0 +1,31 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("POST /tasks/:id/duplicate", () => {
++  it("creates a copy titled '<title> (copy)' with status todo", async () => {
++    const { app } = setup();
++    const t = await createTask(app, { title: "Ship", description: "v1", status: "done" });
++    const res = await app.inject({ method: "POST", url: `/tasks/${t.id}/duplicate` });
++    expect(res.statusCode).toBe(201);
++    expect(res.json()).toMatchObject({ title: "Ship (copy)", description: "v1", status: "todo" });
++  });
++
++  it("returns 409 when the title is taken or the task is deleted, 404 when unknown", async () => {
++    const { app } = setup();
++    const t = await createTask(app, { title: "Ship" });
++    await createTask(app, { title: "Ship (copy)" });
++    expect((await app.inject({ method: "POST", url: `/tasks/${t.id}/duplicate` })).statusCode).toBe(409);
++    const gone = await createTask(app, { title: "Gone" });
++    await deleteTask(app, gone.id);
++    expect((await app.inject({ method: "POST", url: `/tasks/${gone.id}/duplicate` })).statusCode).toBe(409);
++    expect((await app.inject({ method: "POST", url: "/tasks/nope/duplicate" })).statusCode).toBe(404);
++  });
++
++  it("returns 400 VALIDATION_ERROR for any body field", async () => {
++    const { app } = setup();
++    const t = await createTask(app, { title: "Ship" });
++    const res = await app.inject({ method: "POST", url: `/tasks/${t.id}/duplicate`, payload: { title: "x" } });
++    expect(res.statusCode).toBe(400);
++    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
++  });
++});

@@ -1,0 +1,134 @@
+diff --git a/src/domain/task.ts b/src/domain/task.ts
+index b6e8026..8f3e2ed 100644
+--- a/src/domain/task.ts
++++ b/src/domain/task.ts
+@@ -11,6 +11,7 @@ export interface Task {
+   updatedAt: Date;
+   /** Set when the task is soft-deleted; `null` while the task is active. */
+   deletedAt: Date | null;
++  starred: boolean;
+ }
+ 
+ /** JSON representation returned by the HTTP API (dates as ISO-8601 strings). */
+@@ -22,6 +23,7 @@ export interface TaskDto {
+   createdAt: string;
+   updatedAt: string;
+   deletedAt: string | null;
++  starred: boolean;
+ }
+ 
+ export function toTaskDto(task: Task): TaskDto {
+@@ -33,6 +35,7 @@ export function toTaskDto(task: Task): TaskDto {
+     createdAt: task.createdAt.toISOString(),
+     updatedAt: task.updatedAt.toISOString(),
+     deletedAt: task.deletedAt ? task.deletedAt.toISOString() : null,
++    starred: task.starred,
+   };
+ }
+ 
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..551b697 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -54,6 +54,16 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return toTaskDto(await service.update(id, body));
+   });
+ 
++  app.post("/tasks/:id/star", async (request) => {
++    const { id } = parseInput(taskIdParamsSchema, request.params);
++    return toTaskDto(await service.setStarred(id, true));
++  });
++
++  app.post("/tasks/:id/unstar", async (request) => {
++    const { id } = parseInput(taskIdParamsSchema, request.params);
++    return toTaskDto(await service.setStarred(id, false));
++  });
++
+   app.delete("/tasks/:id", async (request, reply) => {
+     const { id } = parseInput(taskIdParamsSchema, request.params);
+     await service.softDelete(id);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..d2ff323 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -41,6 +41,7 @@ export class TaskService {
+       createdAt: now,
+       updatedAt: now,
+       deletedAt: null,
++      starred: false,
+     };
+     await this.deps.repository.insert(task);
+     return task;
+@@ -70,6 +71,15 @@ export class TaskService {
+     return updated;
+   }
+ 
++  /** Sets the starred flag. Setting it to its current value is a no-op (no updatedAt bump). */
++  async setStarred(id: string, starred: boolean): Promise<Task> {
++    const task = await this.getMutable(id);
++    if (task.starred === starred) return task;
++    const updated: Task = { ...task, starred, updatedAt: this.deps.clock() };
++    await this.deps.repository.save(updated);
++    return updated;
++  }
++
+   async softDelete(id: string): Promise<void> {
+     const task = await this.getMutable(id);
+     const now = this.deps.clock();
+diff --git a/tests/create-task.test.ts b/tests/create-task.test.ts
+index d09ac4d..9e055d6 100644
+--- a/tests/create-task.test.ts
++++ b/tests/create-task.test.ts
+@@ -19,6 +19,7 @@ describe("POST /tasks", () => {
+       createdAt: "2026-01-01T00:00:00.000Z",
+       updatedAt: "2026-01-01T00:00:00.000Z",
+       deletedAt: null,
++      starred: false,
+     });
+   });
+ 
+diff --git a/tests/in-memory-task-repository.test.ts b/tests/in-memory-task-repository.test.ts
+index 3a5c131..d96f475 100644
+--- a/tests/in-memory-task-repository.test.ts
++++ b/tests/in-memory-task-repository.test.ts
+@@ -12,6 +12,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
+     createdAt: now,
+     updatedAt: now,
+     deletedAt: null,
++    starred: false,
+     ...overrides,
+   };
+ }
+diff --git a/tests/star-task.test.ts b/tests/star-task.test.ts
+new file mode 100644
+index 0000000..5a93257
+--- /dev/null
++++ b/tests/star-task.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("star / unstar", () => {
++  it("toggles starred and bumps updatedAt; repeating is a no-op", async () => {
++    const { app, clock } = setup();
++    const t = await createTask(app);
++    expect(t.starred).toBe(false);
++    clock.advance(1000);
++    const s1 = await app.inject({ method: "POST", url: `/tasks/${t.id}/star` });
++    expect(s1.json()).toMatchObject({ starred: true, updatedAt: "2026-01-01T00:00:01.000Z" });
++    clock.advance(1000);
++    const s2 = await app.inject({ method: "POST", url: `/tasks/${t.id}/star` });
++    expect(s2.statusCode).toBe(200);
++    expect(s2.json()).toEqual(s1.json());
++    const u = await app.inject({ method: "POST", url: `/tasks/${t.id}/unstar` });
++    expect(u.json()).toMatchObject({ starred: false, updatedAt: "2026-01-01T00:00:02.000Z" });
++  });
++
++  it("returns 409 for a deleted task and 404 for an unknown one", async () => {
++    const { app } = setup();
++    const t = await createTask(app);
++    await deleteTask(app, t.id);
++    expect((await app.inject({ method: "POST", url: `/tasks/${t.id}/star` })).statusCode).toBe(409);
++    expect((await app.inject({ method: "POST", url: "/tasks/nope/unstar" })).statusCode).toBe(404);
++  });
++});

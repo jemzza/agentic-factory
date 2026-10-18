@@ -4,7 +4,13 @@ import { parseCliArgs, USAGE, type CliCommand } from "./cli-args.js";
 import { loadConfig } from "./config/load-config.js";
 import { runHiddenTests } from "./eval/hidden-tests.js";
 import { rescoreEval } from "./eval/rescore.js";
+import { openMemory, type MemoryAccess } from "./memory/runtime.js";
+import { IndexedMemory } from "./memory/indexed.js";
+import { Mem0Index } from "./memory/mem0-index.js";
+import { MemoryIndexMismatchError } from "./memory/types.js";
+import { embedModelId } from "./schemas/config.js";
 import type { EvalRunOutcome, PoolStatus, RunControl } from "./eval/run-eval.js";
+import type { TaskSpec } from "./schemas/task.js";
 import type { RunTaskResult } from "./pipeline/run-task.js";
 import { checkProject } from "./config/project-check.js";
 import { runDaemon } from "./github/daemon.js";
@@ -45,6 +51,15 @@ import { parse as parseYaml } from "yaml";
 import { git } from "./git/git.js";
 import { createRedactor, secretsFromEnv } from "./store/redact.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
+import {
+  loadPairs,
+  MEMORY_EVAL_DIRS,
+  runMemoryAb,
+  verifyMemoryManifest,
+  writeMemoryAb,
+  writeMemoryManifest,
+} from "./eval/memory-ab.js";
+import { makeEvalId } from "./eval/run-eval.js";
 import type { CommandResult } from "./process/run-command.js";
 import { openDb } from "./store/db.js";
 import { importRunReports } from "./store/import-runs.js";
@@ -91,6 +106,21 @@ try {
 /** The DB, masking every secret listed in config.secretEnv before anything is written. */
 function openStore(config: ResolvedConfig): Store {
   return new Store(openDb(), { secrets: secretsFromEnv(config.secretEnv) });
+}
+
+/**
+ * Project memory per the config (`memory.enabled`). An index built with another embedder stops
+ * the command (reindex first); an unreachable embedder only means runs go on without memory.
+ */
+async function memoryDeps(
+  config: ResolvedConfig,
+  store: Store,
+): Promise<{ memory?: MemoryAccess }> {
+  const access = await openMemory(config, store);
+  if (!access) return {};
+  if (access.unavailable)
+    console.warn(`memory unavailable — runs go on without it: ${access.unavailable}`);
+  return { memory: access };
 }
 
 /** One runtime per role from the config (switching runtimes is a config change). */
@@ -200,6 +230,7 @@ async function runOne(
       runtimes,
       runsDir: RUNS_DIR,
       project,
+      ...(await memoryDeps(config, store)),
       store,
       specApprovalMode: autoApproveSpec ? "auto" : "manual",
       log: consoleLog,
@@ -252,6 +283,7 @@ async function decideGate(
         store,
         project,
         ...(remote ? { remote } : {}),
+        ...(await memoryDeps(config, store)),
         log: consoleLog,
       },
       { answer: { decision, actor, ...(comment ? { comment } : {}) } },
@@ -485,6 +517,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
   }
   // With several tasks in parallel each run logs to its own file; the console gets a status line.
   const parallel = cmd.concurrency > 1;
+  const evalMemory = await memoryDeps(config, store);
   const evalRunDeps = (runsDir: string, ctl: RunControl) => ({
     config,
     runtime,
@@ -495,6 +528,7 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
     makeSandboxExec: () => Promise.resolve(exec),
     pauseReason: ctl.pauseReason,
     costPool: ctl.costPool,
+    ...evalMemory,
     log: parallel ? fileLog(path.join(runsDir, ctl.runId, "run.log")) : consoleLog,
   });
   // Eval approves specs automatically and never merges: a successful run stops at the merge
@@ -691,6 +725,155 @@ async function evalRescore(evalId: string): Promise<number> {
 }
 
 /** Is a registered project ready for the factory? (config, image, checks on clean main) */
+/**
+ * Memory A/B on the frozen evals/memory/ pairs (design: docs/week3-design.md §11).
+ * `verify` checks the pairs' hidden tests like verify-hidden; `freeze` writes the manifest;
+ * a run refuses a pair set that differs from its manifest, and stops infra_error when the
+ * memory backend is unavailable (memory_on must never silently become memory_off).
+ */
+async function evalMemory(cmd: Extract<CliCommand, { kind: "eval-memory" }>): Promise<number> {
+  const pairs = await loadPairs();
+  const ids = pairs.flatMap((p) => [p.b]);
+  if (cmd.action === "freeze") {
+    await writeMemoryManifest();
+    console.log("wrote evals/memory/MANIFEST.sha256");
+    return 0;
+  }
+  const stand = await loadEvalStand();
+  if (cmd.action === "verify") {
+    let failures = 0;
+    for (const id of ids) {
+      const v = await verifyHiddenTests(id, { stand, dirs: MEMORY_EVAL_DIRS });
+      if (!v.ok) failures++;
+      console.log(
+        `${v.ok ? "PASS" : "FAIL"}  ${id.padEnd(16)} baseline(hidden)=${describeRun(v.baseline).padEnd(20)} ` +
+          `reference(check)=${describeRun(v.reference).padEnd(20)} ${v.reason}`,
+      );
+      if (!v.ok) {
+        for (const r of [v.baseline, v.reference]) {
+          if (r) console.log((r.stdout + r.stderr).split("\n").slice(-40).join("\n"));
+        }
+      }
+    }
+    console.log(`\n${ids.length - failures}/${ids.length} B tasks have valid hidden tests`);
+    return failures === 0 ? 0 : 1;
+  }
+  const drift = await verifyMemoryManifest();
+  if (drift.length > 0) {
+    console.error(
+      `evals/memory/ differs from its MANIFEST.sha256 (the pairs are frozen):\n  ${drift.join("\n  ")}`,
+    );
+    return 2;
+  }
+  const config = await loadConfig();
+  const costCapUsd = cmd.costCapUsd ?? config.evalCostCapUsd;
+  const repo = await ensureTargetRepo(stand.project, config.workdirAbs, "baseline");
+  const { config: baselineProject } = await readProjectConfig(repo.dir, BASELINE_TAG);
+  const exec = await defaultSandboxExec(repo.dir, sandboxProfile(baselineProject));
+  const { runtime, runtimes } = runtimeDeps(config);
+  const store = openStore(config);
+  const evalId = makeEvalId(new Date()).replace(/^eval-/, "memeval-");
+  const outDir = path.join(RUNS_DIR, evalId);
+  store.createEval({
+    id: evalId,
+    repeatCount: cmd.repeat,
+    baselineCommit: repo.baseCommit,
+    costCapUsd,
+    projectId: stand.project.id,
+  });
+  console.log(
+    `Memory A/B ${evalId}: ${pairs.length} pair(s), A once + B ×${cmd.repeat} per condition; cost cap $${costCapUsd}; embedder ${embedModelId(config.memory.embedder)}`,
+  );
+  const deps = (memory: MemoryAccess | undefined, approval: "auto" | "manual") => ({
+    config,
+    runtime,
+    runtimes,
+    runsDir: outDir,
+    store,
+    project: stand.project,
+    makeSandboxExec: () => Promise.resolve(exec),
+    specApprovalMode: approval,
+    runContext: { mode: "eval" as const, evalId, evalRepeat: 1, baselineCommit: repo.baseCommit },
+    ...(memory ? { memory } : {}),
+    log: consoleLog,
+  });
+  const finished = (o: RunOutcome, what: string): RunTaskResult => {
+    if (o.kind === "finished") return o;
+    if (o.kind === "awaiting" && o.result) return o.result; // eval never merges
+    throw new Error(
+      `${what}: unexpected stop (${o.kind}${o.kind === "awaiting" ? ` at ${o.gate}` : ""})`,
+    );
+  };
+  /** One human decision at the spec gate, recorded like a CLI decision and resumed. */
+  const decideSpec = async (
+    runId: string,
+    memory: MemoryAccess,
+    decision: "approve" | "reject",
+    comment: string | null,
+  ): Promise<RunOutcome> => {
+    const actor = "recorded-comment";
+    store.recordApproval({ runId, gate: "spec", decision, actor, comment, channel: "cli" });
+    const res = await resumeRun(runId, deps(memory, "manual"), {
+      answer: { decision, actor, ...(comment ? { comment } : {}) },
+    });
+    if (res.kind !== "resumed") throw new Error(`run ${runId} could not be resumed (${res.kind})`);
+    return res.outcome;
+  };
+  try {
+    const summary = await runMemoryAb({
+      pairs,
+      repeats: cmd.repeat,
+      namespace: evalId,
+      costCapUsd,
+      loadTask: (id: string): Promise<TaskSpec> => loadTaskSpec(id, MEMORY_EVAL_DIRS),
+      memory: async () => {
+        const access = await openMemory(config, store, { force: true, required: true });
+        if (!access) throw new Error("unreachable: memory forced on");
+        return access;
+      },
+      runA: async (task, rejectComment, memory) => {
+        const first = await runTask(task, deps(memory, "manual"));
+        if (first.kind !== "awaiting" || first.gate !== "spec")
+          return finished(first, `A ${task.id}`);
+        const revised = await decideSpec(first.runId, memory, "reject", rejectComment);
+        if (revised.kind !== "awaiting" || revised.gate !== "spec")
+          return finished(revised, `A ${task.id}`);
+        return finished(await decideSpec(first.runId, memory, "approve", null), `A ${task.id}`);
+      },
+      runB: async (task, memory) =>
+        finished(await runTask(task, deps(memory, "auto")), `B ${task.id}`),
+      runHidden: (worktreePath, taskId) =>
+        runHiddenTests({
+          worktreePath,
+          taskId,
+          exec,
+          timeoutMs: config.stepTimeoutsMinutes.check * 60_000,
+          hidden: stand.hidden,
+          dirs: MEMORY_EVAL_DIRS,
+        }),
+      log: consoleLog,
+    });
+    const md = await writeMemoryAb(outDir, evalId, summary);
+    store.finishEval(evalId, {
+      status:
+        summary.status === "completed"
+          ? "completed"
+          : summary.status === "cost_cap_reached"
+            ? "cost_cap_reached"
+            : "interrupted",
+      repeatCount: cmd.repeat,
+      costUsd: summary.totalCostUsd,
+      summaryPath: md,
+    });
+    console.log(
+      `\n${summary.status}${summary.reason ? `: ${summary.reason}` : ""}\nsummary: ${path.relative(process.cwd(), md)}`,
+    );
+    return summary.status === "completed" ? 0 : summary.status === "infra_error" ? 4 : 3;
+  } finally {
+    store.db.close();
+  }
+}
+
 async function projectCheck(projectId: string): Promise<number> {
   const config = await loadConfig();
   const project = await projectSourceFor(projectId, "interactive");
@@ -752,12 +935,21 @@ async function watch(
   });
   try {
     const { runtime, runtimes } = runtimeDeps(config);
+    const watchMemory = await memoryDeps(config, store);
     const watcher = new Watcher({
       api,
       remote,
       store,
       projects,
-      runDeps: () => ({ config, runtime, runtimes, runsDir: RUNS_DIR, store, log: consoleLog }),
+      runDeps: () => ({
+        config,
+        runtime,
+        runtimes,
+        runsDir: RUNS_DIR,
+        store,
+        ...watchMemory,
+        log: consoleLog,
+      }),
       log: consoleLog,
       shouldStop: () => stop,
       concurrency,
@@ -790,6 +982,82 @@ async function watch(
   }
 }
 
+/** `npm run memory -- ...`: the canonical records are in SQLite; the index is derived. */
+async function memoryCommand(cmd: Extract<CliCommand, { kind: "memory" }>): Promise<number> {
+  const config = await loadConfig();
+  const store = openStore(config);
+  try {
+    if (cmd.action === "list" || cmd.action === "export") {
+      const rows = store.listMemories(cmd.projectId);
+      if (cmd.action === "export") {
+        console.log(JSON.stringify({ projectId: cmd.projectId, records: rows }, null, 2));
+        return 0;
+      }
+      for (const r of rows) {
+        console.log(
+          `${r.id}  ${r.created_at.slice(0, 19)}  ${r.source.padEnd(22)} ${r.run_id ?? "-"}\n    ${r.text}`,
+        );
+      }
+      console.log(`${rows.length} record(s) in ${cmd.projectId ?? ""}`);
+      return 0;
+    }
+    if (cmd.action === "show") {
+      const r = store.getMemory(cmd.projectId ?? "", cmd.id ?? "");
+      if (!r) {
+        console.error(`error: no memory ${cmd.id ?? ""} in project ${cmd.projectId ?? ""}`);
+        return 2;
+      }
+      console.log(JSON.stringify(r, null, 2));
+      return 0;
+    }
+    // remove / reindex / check use the index.
+    const access = await openMemory(config, store, { force: true }).catch((err: unknown) => {
+      // A mismatched index can still be rebuilt; everything else is shown as is.
+      if (cmd.action === "reindex" && err instanceof MemoryIndexMismatchError) return null;
+      throw err;
+    });
+    const memory = new IndexedMemory(store, new Mem0Index(config.memory), {
+      indexName: "mem0",
+      secrets: secretsFromEnv(config.secretEnv),
+    });
+    if (cmd.action === "reindex") {
+      const count = await memory.reindex();
+      console.log(`reindexed ${count} record(s) with ${embedModelId(config.memory.embedder)}`);
+      return 0;
+    }
+    if (access?.unavailable) {
+      console.error(`error: memory unavailable: ${access.unavailable}`);
+      return 3;
+    }
+    if (cmd.action === "remove") {
+      const ok = await memory.remove(cmd.projectId ?? "", cmd.id ?? "");
+      console.log(
+        ok
+          ? `removed ${cmd.id ?? ""}`
+          : `no active memory ${cmd.id ?? ""} in ${cmd.projectId ?? ""}`,
+      );
+      return ok ? 0 : 2;
+    }
+    // check: a live round trip in a throwaway project namespace.
+    const probe = `memory-check-${Date.now()}`;
+    const rec = await memory.add(probe, {
+      text: "Memory check: action endpoints reject unknown request body keys.",
+      source: "manual",
+      runId: null,
+      origin: { kind: "cli" },
+    });
+    const hits = await memory.search(probe, "unknown keys in the request body", 3);
+    await memory.remove(probe, rec.id);
+    const ok = hits[0]?.record.id === rec.id;
+    console.log(
+      `${ok ? "PASS" : "FAIL"}  embedder ${embedModelId(config.memory.embedder)}: add (infer:false) + search ${ok ? "found the record" : "did not find the record"}; memory.enabled=${String(config.memory.enabled)}`,
+    );
+    return ok ? 0 : 1;
+  } finally {
+    store.db.close();
+  }
+}
+
 async function resumeOne(runId: string): Promise<number> {
   const config = await loadConfig();
   const store = openStore(config);
@@ -803,6 +1071,7 @@ async function resumeOne(runId: string): Promise<number> {
       runsDir: RUNS_DIR,
       store,
       project: await projectSourceFor(run.project_id, run.mode),
+      ...(await memoryDeps(config, store)),
       log: (m) => {
         console.log(m);
       },
@@ -868,6 +1137,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return evalRescore(cmd.evalId);
     case "project-check":
       return projectCheck(cmd.projectId);
+    case "memory":
+      return memoryCommand(cmd);
     case "watch":
       return watch(cmd.once, cmd.intervalSeconds, cmd.concurrency);
     case "run":
@@ -878,6 +1149,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return baselineUpdate(cmd.reason);
     case "reopen-merge":
       return reopenMerge(cmd.runId);
+    case "eval-memory":
+      return evalMemory(cmd);
     case "eval-review":
       return evalReview(cmd.only);
     case "eval":

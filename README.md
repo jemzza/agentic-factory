@@ -77,6 +77,8 @@ edge, node table and idempotency rules: [docs/graph.md](docs/graph.md); design d
   repo under `FACTORY_WORKDIR`; eval starts from its immutable `factory-baseline` tag and
   never uses a remote. Second project: `ledgerlite` (Python 3.12, pytest, mypy, ruff), a
   separate repository.
+- `memory/` — optional project memory (Week 3): confirmed knowledge of a project, given to
+  the planner of later runs of that project only. See [Project memory](#project-memory-optional).
 - `evals/tasks/` (visible) · `evals/hidden/` (hidden tests + eval metadata) ·
   `evals/reference/` (reference patches) — the last two are never reachable from agents.
   `evals/review/` — frozen reviewer evaluation set (15 diffs with known defects / clean).
@@ -148,6 +150,9 @@ claude auth status            # the Claude Code CLI must be logged in
 | `npm run eval -- --concurrency N [...]`                                                | Run N tasks in parallel (per-project git lock, shared cost cap, pause on infra_error)  |
 | `npm run eval -- --resume <evalId> [--repeat N]`                                       | Continue an eval interrupted by a provider limit and/or add repeats up to N            |
 | `npm run eval:review [-- --only <runtime>]`                                            | Compare reviewers on `evals/review/` (recall, false positive rate)                     |
+| `npm run memory -- list\|export --project <id>`                                        | Project memory records (`show\|remove <id> --project <id>` for one record)             |
+| `npm run memory -- check \| reindex`                                                   | Live embedder round trip; rebuild the index from the canonical SQLite records          |
+| `npm run eval:memory [-- --repeat N]`                                                  | Memory A/B on the frozen `evals/memory/` pairs (needs Ollama; `verify`, `freeze`)      |
 | `npm run verify-hidden [-- <taskId>]`                                                  | Hidden tests fail on baseline and pass on reference patches                            |
 | `npm run eval:rescore -- <evalId>`                                                     | Re-judge a finished eval with the current hidden tests (stored diffs, no agents, $0)   |
 | `npm run baseline:update -- --reason "…"`                                              | Move the `factory-baseline` tag to `main` (recorded in the DB)                         |
@@ -251,6 +256,48 @@ public server.
   that bypass, or protect only against force-push and deletion. A PR merged by hand on GitHub
   is recorded as `merged_externally`, because no merge gate ran.
 
+## Project memory (optional)
+
+The factory works without memory; it is **off by default** (`memory.enabled: false` in
+`factory.config.ts`). When it is on, the planner of a run gets up to `memory.limit` records of
+that project, each with its source, and the report and PR list which records were used.
+
+What is stored, and only once it is confirmed:
+
+- `spec_rejection_comment`: a rule the planner generalized from a human `/reject` comment (an
+  allowed user, never the factory), stored when the revised spec is approved;
+- `review_issue_fixed`: a reviewer finding whose fix then passed the gate and the review;
+- `merged_run`: an `existing_behavior` requirement of a merged spec;
+- `manual`: a human entry.
+
+Never stored: hidden tests or anything about them, reference patches, raw logs, diffs,
+secrets (token and key shapes, configured secret values), text of users who are not allowed.
+Every record is at most 500 characters.
+
+**Storage.** The canonical record (text, source, run, time, project, embedder) is in the SQLite
+`memories` table. The vector index is Mem0 OSS (`mem0ai` 3.3.1) with `infer: false` (Mem0's LLM
+is never called), its SQLite vector store in `data/memory/` (git-ignored), and a local Ollama
+embedder. No key, nothing leaves the machine.
+
+**Install Ollama** (only if you turn memory on):
+
+```bash
+brew install ollama
+brew services start ollama      # listens on 127.0.0.1:11434; do not change OLLAMA_HOST
+ollama pull nomic-embed-text:latest
+npm run memory -- check         # live round trip: embed, store, search, delete
+```
+
+The config pins the model with its tag and digest (`nomic-embed-text:latest`, `0a109f422b47`)
+and every record names it (`ollama/nomic-embed-text:latest@0a109f422b47`). The URL must be
+`http://127.0.0.1:<port>`. If the tag moves to another digest, or the config names another
+model, the factory refuses to start on the old index and says to run
+`npm run memory -- reindex`, which rebuilds it from the canonical records.
+
+**When Ollama is not running:** ordinary runs go on without memory, and the report and the PR
+say "Memory unavailable". `npm run eval:memory` stops with `infra_error` instead, because
+`memory_on` must not silently become `memory_off`. `npm run check` never needs Ollama.
+
 ## Security model
 
 ### Checks run in a sandbox (`src/quality/sandbox.ts`, `sandbox/<profile>/`)
@@ -334,6 +381,7 @@ restricted to the Anthropic API endpoint (egress proxy / firewall allow-list).
 - Claude Code CLI (`claude`), authenticated
 - `OPENAI_API_KEY` in `.env` only if the OpenCode reviewer is re-enabled (OpenCode itself is an
   npm dependency)
+- Ollama with `nomic-embed-text:latest`, only if project memory is turned on (optional)
 
 ## Development
 

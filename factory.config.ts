@@ -27,6 +27,23 @@ const config: FactoryConfigInput = {
     "GOOGLE_GENERATIVE_AI_API_KEY",
     "FACTORY_GITHUB_TOKEN",
   ],
+  // Project memory (Mem0, infer:false; the rule text comes from the planner). Off until the
+  // A/B measurement (docs/week3-results.md). Local embedder: Ollama on 127.0.0.1, pinned by
+  // tag and digest. The OpenAI variant is supported by config only:
+  //   embedder: { provider: "openai", model: "text-embedding-3-small", dims: 1536, keyEnv: "OPENAI_API_KEY" }
+  // Changing the embedder requires `npm run memory -- reindex`.
+  memory: {
+    enabled: false,
+    limit: 5,
+    embedder: {
+      provider: "ollama",
+      url: "http://127.0.0.1:11434",
+      model: "nomic-embed-text:latest",
+      digest: "0a109f422b47",
+      dims: 768,
+    },
+    indexDir: "data/memory",
+  },
   // GitHub interface (npm run factory:watch); the token is FACTORY_GITHUB_TOKEN in .env.
   github: { tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 },
   stepTimeoutsMinutes: { planner: 5, developer: 15, reviewer: 5, check: 5 },

@@ -16,7 +16,15 @@ const plannerFields = {
  * Week 1 reports (which had no spec) stay readable.
  */
 export const PlannerOutputSchema = z
-  .strictObject({ ...plannerFields, spec: z.unknown().optional() })
+  .strictObject({
+    ...plannerFields,
+    spec: z.unknown().optional(),
+    /**
+     * After human feedback on a spec: up to 3 short, general project rules it implies (stored
+     * in project memory once the revised spec is approved). Empty without feedback.
+     */
+    lessons: z.array(z.string().trim().min(1).max(300)).max(3).default([]),
+  })
   .superRefine((p, ctx) => {
     if (p.questions.length === 0 && (p.spec === undefined || p.spec === null)) {
       ctx.addIssue({

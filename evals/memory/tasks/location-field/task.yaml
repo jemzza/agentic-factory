@@ -1,0 +1,11 @@
+id: location-field
+title: Task location
+request: |
+  Tasks need a location. Add an optional location field. Add tests.
+acceptance_criteria:
+  - Every task has a field location, a string or null, null by default, present in all API responses
+  - location can be set on create and changed or cleared (null) via PATCH
+  - A non-string location is 400 VALIDATION_ERROR
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.0, timeout_minutes: 15 }

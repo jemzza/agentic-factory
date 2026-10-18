@@ -198,6 +198,28 @@ export const SpecVersionRowSchema = z.object({
 });
 export type SpecVersionRow = z.output<typeof SpecVersionRowSchema>;
 
+export const MEMORY_SOURCES = [
+  "spec_rejection_comment",
+  "review_issue_fixed",
+  "merged_run",
+  "manual",
+] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
+
+export const MemoryRowSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  text: z.string(),
+  source: z.enum(MEMORY_SOURCES),
+  run_id: z.string().nullable(),
+  created_at: z.string(),
+  embed_model: z.string(),
+  index_id: z.string().nullable(),
+  removed_at: z.string().nullable(),
+  dedupe_key: z.string().nullable(),
+});
+export type MemoryRow = z.output<typeof MemoryRowSchema>;
+
 export interface NewRun {
   id: string;
   /** Project from projects.yaml. */
@@ -907,5 +929,99 @@ export class Store {
 
   deleteWatchRetry(runId: string): void {
     this.db.prepare("DELETE FROM watch_retries WHERE run_id = ?").run(runId);
+  }
+
+  // ---- project memory (canonical records; the vector index is derived) ---------
+
+  insertMemory(m: {
+    id: string;
+    projectId: string;
+    text: string;
+    source: MemorySource;
+    runId: string | null;
+    embedModel: string;
+    dedupeKey?: string | null;
+  }): { row: MemoryRow; created: boolean } {
+    if (m.dedupeKey) {
+      const existing = this.db
+        .prepare("SELECT * FROM memories WHERE dedupe_key = ?")
+        .get(m.dedupeKey);
+      if (existing !== undefined) return { row: MemoryRowSchema.parse(existing), created: false };
+    }
+    this.db
+      .prepare(
+        `INSERT INTO memories (id, project_id, text, source, run_id, created_at, embed_model,
+           dedupe_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        m.id,
+        m.projectId,
+        this.redact(m.text),
+        m.source,
+        m.runId,
+        this.ts(),
+        m.embedModel,
+        m.dedupeKey ?? null,
+      );
+    return { row: this.requireMemory(m.projectId, m.id), created: true };
+  }
+
+  getMemory(projectId: string, id: string): MemoryRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM memories WHERE project_id = ? AND id = ?")
+      .get(projectId, id);
+    return row === undefined ? null : MemoryRowSchema.parse(row);
+  }
+
+  private requireMemory(projectId: string, id: string): MemoryRow {
+    const m = this.getMemory(projectId, id);
+    if (!m) throw new Error(`memory ${id} not found in project ${projectId}`);
+    return m;
+  }
+
+  /** Active records of a project (or of all projects), oldest first. */
+  listMemories(projectId: string | null, opts: { includeRemoved?: boolean } = {}): MemoryRow[] {
+    const where = [
+      ...(projectId === null ? [] : ["project_id = ?"]),
+      ...(opts.includeRemoved ? [] : ["removed_at IS NULL"]),
+    ];
+    return this.db
+      .prepare(
+        `SELECT * FROM memories ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`,
+      )
+      .all(...(projectId === null ? [] : [projectId]))
+      .map((r) => MemoryRowSchema.parse(r));
+  }
+
+  setMemoryIndexed(id: string, indexId: string | null, embedModel: string): void {
+    this.db
+      .prepare("UPDATE memories SET index_id = ?, embed_model = ? WHERE id = ?")
+      .run(indexId, embedModel, id);
+  }
+
+  removeMemory(projectId: string, id: string): boolean {
+    const info = this.db
+      .prepare(
+        "UPDATE memories SET removed_at = ? WHERE project_id = ? AND id = ? AND removed_at IS NULL",
+      )
+      .run(this.ts(), projectId, id);
+    return info.changes === 1;
+  }
+
+  getMemoryIndex(name: string): { embed_model: string; dims: number; built_at: string } | null {
+    const row = this.db.prepare("SELECT * FROM memory_index WHERE name = ?").get(name) as
+      { embed_model: string; dims: number; built_at: string } | undefined;
+    return row ?? null;
+  }
+
+  setMemoryIndex(name: string, embedModel: string, dims: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO memory_index (name, embed_model, dims, built_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (name) DO UPDATE SET embed_model = excluded.embed_model,
+           dims = excluded.dims, built_at = excluded.built_at`,
+      )
+      .run(name, embedModel, dims, this.ts());
   }
 }

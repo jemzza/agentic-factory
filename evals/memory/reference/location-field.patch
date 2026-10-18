@@ -1,0 +1,163 @@
+diff --git a/src/domain/task.ts b/src/domain/task.ts
+index b6e8026..e8e182a 100644
+--- a/src/domain/task.ts
++++ b/src/domain/task.ts
+@@ -11,6 +11,7 @@ export interface Task {
+   updatedAt: Date;
+   /** Set when the task is soft-deleted; `null` while the task is active. */
+   deletedAt: Date | null;
++  location: string | null;
+ }
+ 
+ /** JSON representation returned by the HTTP API (dates as ISO-8601 strings). */
+@@ -22,6 +23,7 @@ export interface TaskDto {
+   createdAt: string;
+   updatedAt: string;
+   deletedAt: string | null;
++  location: string | null;
+ }
+ 
+ export function toTaskDto(task: Task): TaskDto {
+@@ -33,6 +35,7 @@ export function toTaskDto(task: Task): TaskDto {
+     createdAt: task.createdAt.toISOString(),
+     updatedAt: task.updatedAt.toISOString(),
+     deletedAt: task.deletedAt ? task.deletedAt.toISOString() : null,
++    location: task.location,
+   };
+ }
+ 
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..6345a94 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -4,6 +4,7 @@ import { toTaskDto } from "../domain/task.js";
+ import type { TaskService } from "../services/task-service.js";
+ import {
+   descriptionSchema,
++  freeTextSchema,
+   parseInput,
+   taskIdParamsSchema,
+   taskStatusSchema,
+@@ -14,6 +15,7 @@ const createTaskBodySchema = z.strictObject({
+   title: titleSchema,
+   description: descriptionSchema.optional(),
+   status: taskStatusSchema.optional(),
++  location: freeTextSchema.optional(),
+ });
+ 
+ const updateTaskBodySchema = z
+@@ -21,6 +23,7 @@ const updateTaskBodySchema = z
+     title: titleSchema.optional(),
+     description: descriptionSchema.optional(),
+     status: taskStatusSchema.optional(),
++    location: freeTextSchema.optional(),
+   })
+   .refine((body) => Object.keys(body).length > 0, {
+     message: "At least one field must be provided",
+diff --git a/src/routes/validation.ts b/src/routes/validation.ts
+index b1d7739..65bd67a 100644
+--- a/src/routes/validation.ts
++++ b/src/routes/validation.ts
+@@ -9,6 +9,15 @@ export const taskStatusSchema = z.enum(TASK_STATUSES);
+ export const titleSchema = z.string().trim().min(1).max(TITLE_MAX_LENGTH);
+ export const descriptionSchema = z.string().max(DESCRIPTION_MAX_LENGTH);
+ 
++export const FREE_TEXT_MAX_LENGTH = 100;
++/** A free-text field: trimmed; empty after trimming is null; at most 100 characters. */
++export const freeTextSchema = z
++  .string()
++  .trim()
++  .max(FREE_TEXT_MAX_LENGTH)
++  .transform((v) => (v === "" ? null : v))
++  .nullable();
++
+ export const taskIdParamsSchema = z.object({ id: z.string().min(1) });
+ 
+ /**
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..b5c91ce 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -6,12 +6,14 @@ export interface CreateTaskInput {
+   title: string;
+   description?: string;
+   status?: TaskStatus;
++  location?: string | null;
+ }
+ 
+ export interface UpdateTaskInput {
+   title?: string;
+   description?: string;
+   status?: TaskStatus;
++  location?: string | null;
+ }
+ 
+ export interface TaskServiceDeps {
+@@ -41,6 +43,7 @@ export class TaskService {
+       createdAt: now,
+       updatedAt: now,
+       deletedAt: null,
++      location: input.location ?? null,
+     };
+     await this.deps.repository.insert(task);
+     return task;
+@@ -64,6 +67,7 @@ export class TaskService {
+       ...(input.title !== undefined && { title: input.title }),
+       ...(input.description !== undefined && { description: input.description }),
+       ...(input.status !== undefined && { status: input.status }),
++      ...(input.location !== undefined && { location: input.location }),
+       updatedAt: this.deps.clock(),
+     };
+     await this.deps.repository.save(updated);
+diff --git a/tests/create-task.test.ts b/tests/create-task.test.ts
+index d09ac4d..883d858 100644
+--- a/tests/create-task.test.ts
++++ b/tests/create-task.test.ts
+@@ -19,6 +19,7 @@ describe("POST /tasks", () => {
+       createdAt: "2026-01-01T00:00:00.000Z",
+       updatedAt: "2026-01-01T00:00:00.000Z",
+       deletedAt: null,
++      location: null,
+     });
+   });
+ 
+diff --git a/tests/in-memory-task-repository.test.ts b/tests/in-memory-task-repository.test.ts
+index 3a5c131..ae3dd23 100644
+--- a/tests/in-memory-task-repository.test.ts
++++ b/tests/in-memory-task-repository.test.ts
+@@ -12,6 +12,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
+     createdAt: now,
+     updatedAt: now,
+     deletedAt: null,
++    location: null,
+     ...overrides,
+   };
+ }
+diff --git a/tests/location-field.test.ts b/tests/location-field.test.ts
+new file mode 100644
+index 0000000..794c737
+--- /dev/null
++++ b/tests/location-field.test.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import { createTask, setup } from "./helpers.js";
++
++describe("location", () => {
++  it("defaults to null, is set, changed and cleared", async () => {
++    const { app } = setup();
++    expect((await createTask(app, { title: "A" })).location).toBeNull();
++    const t = await createTask(app, { title: "B", location: "Office" });
++    const res = await app.inject({ method: "PATCH", url: `/tasks/${t.id}`, payload: { location: null } });
++    expect(res.json().location).toBeNull();
++  });
++
++  it("is trimmed, empty means null, at most 100 characters, strings only", async () => {
++    const { app } = setup();
++    expect((await createTask(app, { title: "A", location: "  Room 1 " })).location).toBe("Room 1");
++    expect((await createTask(app, { title: "B", location: "  " })).location).toBeNull();
++    for (const location of ["x".repeat(101), 42]) {
++      const res = await app.inject({ method: "POST", url: "/tasks", payload: { title: "C", location } });
++      expect(res.statusCode).toBe(400);
++    }
++  });
++});

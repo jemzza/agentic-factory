@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../config/load-config.js";
+import { DEFAULT_MEMORY_CONFIG } from "../schemas/config.js";
 import { findHiddenArtifacts } from "../eval/hidden-guard.js";
 import { git } from "../git/git.js";
 import type { TargetRepo } from "../git/target-repo.js";
@@ -174,6 +175,7 @@ function config(): ResolvedConfig {
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
     github: { tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 },
+    memory: { ...DEFAULT_MEMORY_CONFIG },
   };
 }
 

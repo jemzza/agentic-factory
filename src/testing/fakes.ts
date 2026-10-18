@@ -2,6 +2,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/load-config.js";
+import { DEFAULT_MEMORY_CONFIG } from "../schemas/config.js";
 import { git } from "../git/git.js";
 import type { ProjectSource, TargetRepo } from "../git/target-repo.js";
 import type { SandboxExec } from "../quality/gate.js";
@@ -50,6 +51,7 @@ export const FAKE_PLAN: PlannerOutput = {
   risks: [],
   questions: [],
   spec: FAKE_SPEC,
+  lessons: [],
 };
 
 /** Minimal `openspec init --tools none` layout, so the real `openspec validate` can run. */
@@ -132,7 +134,8 @@ export class FakeRuntime implements AgentRuntime {
     await writeFile(logPath, "{}\n");
     return {
       ok: true,
-      output: "",
+      // Like the real adapters: a structured answer's output is its JSON text.
+      output: partial.structured === undefined ? "" : JSON.stringify(partial.structured),
       durationMs: 5,
       costUsd: 0.01,
       tokens: { input: 1, output: 1 },
@@ -222,6 +225,7 @@ export function fakeConfig(workdir: string): ResolvedConfig {
     maxDiffCharsForReview: 100_000,
     evalCostCapUsd: 10,
     github: { tokenEnv: "FACTORY_GITHUB_TOKEN", pollIntervalSeconds: 60 },
+    memory: { ...DEFAULT_MEMORY_CONFIG },
   };
 }
 

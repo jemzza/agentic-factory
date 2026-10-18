@@ -124,6 +124,23 @@ export const RunReportSchema = z.strictObject({
   task: StoredTaskSpecSchema,
   runtime: z.string(),
   models: z.record(z.string(), z.string()),
+  /** Project memory in this run (absent before Week 3 Phase 5). */
+  memory: z
+    .strictObject({
+      /** disabled: off in the config; used: read (maybe nothing matched); unavailable: enabled but down. */
+      status: z.enum(["disabled", "used", "unavailable"]),
+      note: z.string(),
+      used: z.array(
+        z.strictObject({
+          id: z.string(),
+          text: z.string(),
+          source: z.string(),
+          runId: z.string().nullable(),
+        }),
+      ),
+      written: z.array(z.string()),
+    })
+    .optional(),
   /** Project from projects.yaml (absent in reports written before projects existed). */
   projectId: z.string().optional(),
   target: z

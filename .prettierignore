@@ -7,3 +7,5 @@ fixtures/
 evals/hidden/
 evals/reference/
 evals/review/cases/
+evals/memory/hidden/
+evals/memory/reference/

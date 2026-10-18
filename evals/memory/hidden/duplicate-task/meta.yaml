@@ -1,0 +1,4 @@
+difficulty: simple
+expected_outcome: implemented
+traps:
+  - "[lesson] a project decision from the paired task A, not in the task text or CLAUDE.md"

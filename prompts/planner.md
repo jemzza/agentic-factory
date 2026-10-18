@@ -38,6 +38,18 @@ Return JSON matching the provided schema:
 - `risks`: edge cases and ways the implementation could subtly go wrong.
 - `questions`: blocking questions for a human (usually empty).
 
+## Lessons from human feedback (`lessons`)
+
+If the prompt contains **Human feedback on previous specification drafts**, also return
+`lessons`: at most 3 short, general rules about this project that the feedback implies and
+that would apply to future tasks too (one sentence each, e.g. "Action endpoints reject any
+request body field with 400 VALIDATION_ERROR"). Not task details, not code. Without human
+feedback, `lessons` is an empty array.
+
+If the prompt contains **Project knowledge**, those are rules learned in earlier runs of this
+project. Follow them where they apply, unless they contradict the repository conventions or
+the task; then the conventions and the task win.
+
 ## Specification (`spec`)
 
 Unless you ask questions, also return `spec`: the OpenSpec change proposal for this task.

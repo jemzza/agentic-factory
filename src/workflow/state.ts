@@ -92,6 +92,22 @@ export const ProjectSnapshotSchema = z.strictObject({
 });
 export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
 
+export const MemoryStateSchema = z.strictObject({
+  status: z.enum(["disabled", "used", "unavailable"]),
+  note: z.string(),
+  used: z.array(
+    z.strictObject({
+      id: z.string(),
+      text: z.string(),
+      source: z.string(),
+      runId: z.string().nullable(),
+    }),
+  ),
+  /** Ids of records this run wrote. */
+  written: z.array(z.string()),
+});
+export type MemoryState = z.infer<typeof MemoryStateSchema>;
+
 export const TargetRepoSchema = z.strictObject({ dir: z.string(), baseCommit: z.string() });
 export const WorktreeSchema = z.strictObject({
   path: z.string(),
@@ -120,6 +136,8 @@ export const RunState = new StateSchema({
    * target branch as checked out in its main clone (interactive).
    */
   repoRef: z.enum(["baseline", "main"]).default("main"),
+  /** Project memory read for the plan and written by this run. */
+  memory: MemoryStateSchema.default({ status: "disabled", note: "", used: [], written: [] }),
   /** Null only in checkpoints written before projects existed (Week 3); such runs cannot go on. */
   project: ProjectSnapshotSchema.nullable().default(null),
   startedAtMs: z.number(),

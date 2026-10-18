@@ -29,6 +29,7 @@ import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { buildGraph } from "../workflow/graph.js";
 import { makeNodes, RunPaused, type NodeContext } from "../workflow/nodes.js";
 import type { CostPool } from "./cost-pool.js";
+import type { MemoryAccess } from "../memory/runtime.js";
 
 export interface RunTaskDeps {
   config: ResolvedConfig;
@@ -48,6 +49,8 @@ export interface RunTaskDeps {
   pauseReason?: () => string | null;
   /** Spending cap shared with other runs (eval cost cap, factory:watch). */
   costPool?: CostPool;
+  /** Project memory (absent: disabled). */
+  memory?: MemoryAccess;
   /** Removes containers a crashed attempt left; default: by run label, with the real sandbox. */
   cleanupContainers?: (runId: string) => Promise<unknown>;
   /** Materializes the project's repo. Default: ensureTargetRepo. */
@@ -164,6 +167,7 @@ function prepareGraph(deps: RunTaskDeps, pausedMs: number) {
     log: deps.log ?? (() => undefined),
     pauseReason: deps.pauseReason,
     costPool: deps.costPool,
+    memory: deps.memory,
   };
   const checkpointer = deps.store ? new SqliteSaver(deps.store.db) : new MemorySaver();
   const graph = buildGraph(makeNodes(ctx), { deadlineNow: ctx.deadlineNow, checkpointer });

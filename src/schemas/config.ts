@@ -18,6 +18,63 @@ export type Check = z.infer<typeof CheckSchema>;
 
 const Minutes = z.number().positive();
 
+/**
+ * The embedder that turns memory records into vectors. Provider-neutral: a local Ollama model
+ * (pinned by tag AND digest, loopback only) or an OpenAI embedding model (key from .env).
+ * Records store the embedder they were indexed with; a different one needs a reindex.
+ */
+export const EmbedderConfigSchema = z.discriminatedUnion("provider", [
+  z.strictObject({
+    provider: z.literal("ollama"),
+    /** Only the local service; never another host (owner's rule). */
+    url: z
+      .string()
+      .regex(/^http:\/\/127\.0\.0\.1:\d{2,5}$/, "Ollama must be http://127.0.0.1:<port>"),
+    /** Model with an explicit tag, e.g. "nomic-embed-text:latest". */
+    model: z.string().regex(/^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+$/, "model must have a tag"),
+    /** First 12 hex chars of the model digest (`ollama list`); `latest` moves, the digest does not. */
+    digest: z.string().regex(/^[0-9a-f]{12}$/),
+    dims: z.number().int().positive(),
+  }),
+  z.strictObject({
+    provider: z.literal("openai"),
+    model: z.string().min(1),
+    dims: z.number().int().positive(),
+    /** .env variable with the key; must be listed in secretEnv. */
+    keyEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  }),
+]);
+export type EmbedderConfig = z.infer<typeof EmbedderConfigSchema>;
+
+/** Identity of an embedder's vector space, written into every record and into the index. */
+export function embedModelId(e: EmbedderConfig): string {
+  return e.provider === "ollama" ? `ollama/${e.model}@${e.digest}` : `openai/${e.model}`;
+}
+
+export const MemoryConfigSchema = z.strictObject({
+  /** Read and write project memory in runs. Default off until the A/B result (Phase 5). */
+  enabled: z.boolean(),
+  /** At most this many records go into the planner's "Project knowledge" block. */
+  limit: z.number().int().min(1).max(20),
+  embedder: EmbedderConfigSchema,
+  /** Mem0's vector index files, relative to the factory root (git-ignored data/). */
+  indexDir: z.string().min(1),
+});
+export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
+
+export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
+  enabled: false,
+  limit: 5,
+  embedder: {
+    provider: "ollama",
+    url: "http://127.0.0.1:11434",
+    model: "nomic-embed-text:latest",
+    digest: "0a109f422b47",
+    dims: 768,
+  },
+  indexDir: "data/memory",
+};
+
 export const RUNTIME_NAMES = ["claude-code", "opencode"] as const;
 
 export const RoleBindingSchema = z.strictObject({
@@ -57,6 +114,8 @@ export const FactoryConfigSchema = z.strictObject({
   maxDiffCharsForReview: z.number().int().positive(),
   /** Global spend cap for one `npm run eval` (USD); remaining tasks are skipped once reached. */
   evalCostCapUsd: z.number().positive(),
+  /** Project memory (Week 3 Phase 5). Off until the A/B measurement says otherwise. */
+  memory: MemoryConfigSchema.default(DEFAULT_MEMORY_CONFIG),
   /** GitHub interface (`npm run factory:watch`). The token itself lives in .env only. */
   github: z
     .strictObject({
@@ -107,6 +166,11 @@ export function roleBindingIssues(c: FactoryConfig): string[] {
         issues.push(`reviewEval.reviewers[${i}].keyEnv ${k} must also be listed in secretEnv`);
     }
   });
+  if (c.memory.embedder.provider === "openai" && !c.secretEnv.includes(c.memory.embedder.keyEnv)) {
+    issues.push(
+      `memory.embedder.keyEnv ${c.memory.embedder.keyEnv} must also be listed in secretEnv`,
+    );
+  }
   if (!c.secretEnv.includes(c.github.tokenEnv)) {
     issues.push(`github.tokenEnv ${c.github.tokenEnv} must also be listed in secretEnv`);
   }

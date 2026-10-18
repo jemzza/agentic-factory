@@ -1,0 +1,39 @@
+# Memory A/B pairs (Week 3 Phase 5). FROZEN once the first A/B run starts (MANIFEST.sha256).
+# In each pair, task A's first spec is rejected with the recorded comment below; the comment
+# states a project decision that is NOT in TaskFlow's CLAUDE.md. The planner generalizes it
+# into a lesson, which is stored in project memory when A's revised spec is approved. Task B
+# never mentions the decision; B's hidden tests check exactly it. So B can only get it right
+# through memory (memory_on), or by chance (memory_off).
+version: 1
+pairs:
+  - id: strict-action-body
+    a: start-task
+    b: duplicate-task
+    lesson: Action endpoints take no request body; any body field is 400 VALIDATION_ERROR.
+    reject_comment: >-
+      Action endpoints like POST /tasks/:id/<action> take no request body. Any field in the
+      body must be rejected with 400 VALIDATION_ERROR (a strict empty body). This is a project
+      rule for every action endpoint; please put it into the spec.
+  - id: noop-flag-actions
+    a: pin-task
+    b: star-task
+    lesson: Repeating a flag action is a no-op (200, task unchanged, updatedAt not bumped).
+    reject_comment: >-
+      Setting a flag that is already set (pinning a pinned task, unpinning an unpinned one) is
+      a no-op: answer 200 with the unchanged task and do NOT bump updatedAt. This is our rule
+      for every flag action; please put it into the spec.
+  - id: bulk-limit-50
+    a: bulk-delete
+    b: bulk-complete
+    lesson: Bulk endpoints accept at most 50 ids; more is 400 VALIDATION_ERROR.
+    reject_comment: >-
+      All bulk endpoints in this project accept at most 50 ids; 51 or more is 400
+      VALIDATION_ERROR. Please use 50 here and state it in the spec.
+  - id: free-text-fields
+    a: assignee-field
+    b: location-field
+    lesson: New free-text fields are trimmed, empty after trimming means null, at most 100 characters.
+    reject_comment: >-
+      New free-text fields are trimmed; a value that is empty after trimming is stored as
+      null; at most 100 characters (longer is 400 VALIDATION_ERROR). That is our rule for every
+      new text field; please put it into the spec.

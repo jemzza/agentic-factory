@@ -1,0 +1,11 @@
+id: bulk-complete
+title: Complete several tasks at once
+request: |
+  Add an endpoint that marks several tasks as done in one request. Add tests.
+acceptance_criteria:
+  - POST /tasks/bulk-complete with { ids } sets status done on every listed task, bumps their updatedAt and returns 200 with { items } in the order of ids
+  - ids is a non-empty array of unique ids; otherwise 400 VALIDATION_ERROR
+  - An unknown id is 404 NOT_FOUND, a deleted one 409 CONFLICT; on any error no task changes
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.5, timeout_minutes: 20 }

@@ -63,6 +63,26 @@ function stepRow(step: StepResult): string {
   }
 }
 
+/** Project memory in a run, for the report and the PR description; null when it is off. */
+export function renderMemorySection(m: RunReport["memory"]): string | null {
+  if (!m || m.status === "disabled") return null;
+  if (m.status === "unavailable") {
+    return `## Project memory\n\n**Memory unavailable** — the run went on without it: ${m.note}`;
+  }
+  const used = m.used.length
+    ? m.used
+        .map((u) => `- ${u.text} (source: ${u.source}${u.runId ? `, run ${u.runId}` : ""})`)
+        .join("\n")
+    : "_No record matched this task._";
+  return [
+    "## Project memory",
+    "Records given to the planner:",
+    used,
+    ...(m.written.length ? [`Records stored by this run: ${m.written.length}.`] : []),
+    ...(m.note ? [`Note: ${m.note}`] : []),
+  ].join("\n\n");
+}
+
 export function renderReportMarkdown(r: RunReport): string {
   const out: string[] = [];
   out.push(`# ${STATUS_ICON[r.status]} ${r.task.title} — \`${r.status}\``);
@@ -104,6 +124,9 @@ export function renderReportMarkdown(r: RunReport): string {
     "### Acceptance criteria",
     r.task.acceptance_criteria.map((c, i) => `${i + 1}. ${c}`).join("\n"),
   );
+
+  const memorySection = renderMemorySection(r.memory);
+  if (memorySection) out.push(memorySection);
 
   if (r.plan) {
     out.push("## Plan", r.plan.plan.trim());

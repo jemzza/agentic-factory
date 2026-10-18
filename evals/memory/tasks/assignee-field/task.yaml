@@ -1,0 +1,11 @@
+id: assignee-field
+title: Task assignee
+request: |
+  Tasks need an assignee. Add an optional assignee field. Add tests.
+acceptance_criteria:
+  - Every task has a field assignee, a string or null, null by default, present in all API responses
+  - assignee can be set on create and changed or cleared (null) via PATCH
+  - A non-string assignee is 400 VALIDATION_ERROR
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.0, timeout_minutes: 15 }

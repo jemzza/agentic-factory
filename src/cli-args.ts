@@ -23,6 +23,13 @@ export type CliCommand =
   | { kind: "reopen-merge"; runId: string }
   | { kind: "eval-review"; only: string | null }
   | {
+      kind: "eval-memory";
+      /** verify: check the pairs' hidden tests (fail on baseline, pass on reference); no agents. */
+      action: "run" | "verify" | "freeze";
+      repeat: number;
+      costCapUsd: number | null;
+    }
+  | {
       kind: "eval";
       taskIds: string[];
       repeat: number;
@@ -36,6 +43,13 @@ export type CliCommand =
   | { kind: "verify-hidden"; taskId: string | null }
   | { kind: "eval-rescore"; evalId: string }
   | { kind: "project-check"; projectId: string }
+  | {
+      kind: "memory";
+      action: "list" | "show" | "remove" | "export" | "reindex" | "check";
+      /** Project (required for list/show/remove/export). */
+      projectId: string | null;
+      id: string | null;
+    }
   | { kind: "watch"; once: boolean; intervalSeconds: number | null; concurrency: number }
   | { kind: "runs"; limit: number }
   | { kind: "resume"; runId: string }
@@ -55,6 +69,12 @@ export const USAGE = `Usage:
                                  Close a successful run without merging
   npm run eval:review [-- --only <claude-code|opencode>]
                                  Compare reviewers on evals/review/ (recall, false positive rate)
+  npm run eval:memory [-- --repeat N] [-- --cost-cap USD]
+  npm run eval:memory -- verify | freeze
+                                 Memory A/B on the frozen evals/memory/ pairs (A once with the
+                                 recorded rejection, B N times with and without memory; needs
+                                 Ollama: stops infra_error without it). verify: hidden tests of
+                                 the pairs; freeze: write MANIFEST.sha256 (before the first run)
   npm run reopen-merge -- <runId> One-time: put a success run from before the merge gate at it
   npm run baseline:update -- --reason "..."
                                  Move the factory-baseline tag to main (recorded in the DB)
@@ -65,6 +85,11 @@ export const USAGE = `Usage:
   npm run factory:watch [-- --once] [-- --interval <seconds>] [-- --concurrency N]
                                  Poll GitHub for factory issues and commands in every project
                                  of projects.yaml; one instance; Ctrl+C stops after the node
+  npm run memory -- list|export --project <id>
+  npm run memory -- show|remove <memoryId> --project <id>
+  npm run memory -- reindex | check
+                                 Project memory: inspect, remove, export (JSON); rebuild the
+                                 index from the canonical records; live check of the embedder
   npm run project:check -- <projectId>
                                  Check a project's .factory/config.yaml, sandbox image and that
                                  its checks pass on a clean target branch (no agents)
@@ -180,6 +205,38 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       }
       return { kind: "watch", once, intervalSeconds, concurrency };
     }
+    case "memory": {
+      const [action, ...more] = rest;
+      let projectId: string | null = null;
+      const positional: string[] = [];
+      for (let k = 0; k < more.length; k++) {
+        if (more[k] === "--project") {
+          const v = more[++k];
+          if (v === undefined || !PROJECT_ID_PATTERN.test(v)) {
+            return { kind: "invalid", message: "memory: --project expects a project id" };
+          }
+          projectId = v;
+        } else positional.push(more[k] ?? "");
+      }
+      const actions = ["list", "show", "remove", "export", "reindex", "check"] as const;
+      const a = actions.find((x) => x === action);
+      if (!a) return { kind: "invalid", message: `memory: expected one of ${actions.join(", ")}` };
+      const needsId = a === "show" || a === "remove";
+      const needsProject = a !== "reindex" && a !== "check";
+      const id = positional[0] ?? null;
+      if (needsProject && projectId === null) {
+        return { kind: "invalid", message: `memory ${a}: --project <id> is required` };
+      }
+      if (needsId !== (id !== null) || positional.length > 1) {
+        return {
+          kind: "invalid",
+          message: needsId
+            ? `memory ${a}: expected <memoryId>`
+            : `memory ${a}: unexpected argument`,
+        };
+      }
+      return { kind: "memory", action: a, projectId, id };
+    }
     case "project-check": {
       const [projectId, ...extra] = rest;
       if (projectId === undefined || extra.length > 0 || !PROJECT_ID_PATTERN.test(projectId)) {
@@ -252,6 +309,30 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         return { kind: "invalid", message: 'close: --comment "<why not merged>" is required' };
       }
       return { kind: "decide", runId, gate: "merge", decision: command, comment };
+    }
+    case "eval-memory": {
+      if (rest.length === 1 && (rest[0] === "verify" || rest[0] === "freeze")) {
+        return { kind: "eval-memory", action: rest[0], repeat: 2, costCapUsd: null };
+      }
+      let repeat = 2;
+      let costCapUsd: number | null = null;
+      for (let k = 0; k < rest.length; k++) {
+        const a = rest[k];
+        if (a === "--repeat" && /^[1-5]$/.test(rest[k + 1] ?? "")) repeat = Number(rest[++k]);
+        else if (a === "--cost-cap") {
+          const v = Number(rest[++k]);
+          if (!Number.isFinite(v) || v <= 0 || v > 100) {
+            return { kind: "invalid", message: "eval-memory: --cost-cap expects USD in (0, 100]" };
+          }
+          costCapUsd = v;
+        } else {
+          return {
+            kind: "invalid",
+            message: "eval-memory: expected verify, freeze, --repeat 1..5 or --cost-cap USD",
+          };
+        }
+      }
+      return { kind: "eval-memory", action: "run", repeat, costCapUsd };
     }
     case "eval-review": {
       if (rest.length === 0) return { kind: "eval-review", only: null };

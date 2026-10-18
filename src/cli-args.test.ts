@@ -176,6 +176,23 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["resume", "../x"])).toMatchObject({ kind: "invalid" });
   });
 
+  it("parses eval-memory: run (default 2 repeats), verify, freeze", () => {
+    expect(parseCliArgs(["eval-memory"])).toEqual({
+      kind: "eval-memory",
+      action: "run",
+      repeat: 2,
+      costCapUsd: null,
+    });
+    expect(parseCliArgs(["eval-memory", "--repeat", "1", "--cost-cap", "20"])).toMatchObject({
+      action: "run",
+      repeat: 1,
+      costCapUsd: 20,
+    });
+    expect(parseCliArgs(["eval-memory", "verify"])).toMatchObject({ action: "verify" });
+    expect(parseCliArgs(["eval-memory", "freeze"])).toMatchObject({ action: "freeze" });
+    expect(parseCliArgs(["eval-memory", "--repeat", "9"])).toMatchObject({ kind: "invalid" });
+  });
+
   it("rejects unknown commands", () => {
     expect(parseCliArgs(["deploy"])).toMatchObject({ kind: "invalid" });
   });

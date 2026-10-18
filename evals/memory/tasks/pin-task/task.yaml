@@ -1,0 +1,11 @@
+id: pin-task
+title: Pin tasks
+request: |
+  Tasks can be pinned. Add a pinned flag and endpoints to pin and unpin. Add tests.
+acceptance_criteria:
+  - Every task has a boolean field pinned, false by default, present in all API responses
+  - POST /tasks/:id/pin sets pinned to true and POST /tasks/:id/unpin sets it to false; both return 200 with the task
+  - A deleted task returns 409 CONFLICT, an unknown task 404 NOT_FOUND
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.0, timeout_minutes: 15 }

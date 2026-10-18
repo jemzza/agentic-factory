@@ -4,9 +4,28 @@
 // (status line, headers, blank line, JSON body; exit 1 on HTTP errors with the gh-style
 // message on stderr), as observed with gh 2.102.0. Response objects follow the REST
 // reference shapes (fields the factory reads, plus a few realistic extras).
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
 
 const file = process.env.FAKE_GH_STATE;
+// Parallel runs start several fake gh processes at once: one at a time may read-modify-write
+// the state (mkdir is atomic), and the file is replaced atomically (temp file + rename).
+const lock = `${file}.lock`;
+for (let i = 0; ; i++) {
+  try {
+    mkdirSync(lock);
+    break;
+  } catch {
+    if (i > 2000) throw new Error("fake gh: state lock timeout");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+}
+process.on("exit", () => {
+  try {
+    rmdirSync(lock);
+  } catch {
+    // already released
+  }
+});
 const state = JSON.parse(readFileSync(file, "utf8"));
 state.requests ??= [];
 state.nextId ??= 1000;
@@ -36,7 +55,10 @@ state.requests.push({
 
 const tick = () => new Date((state.clock += 1000)).toISOString();
 const user = (login) => ({ login, type: "User", id: login.length });
-const save = () => writeFileSync(file, JSON.stringify(state, null, 2));
+const save = () => {
+  writeFileSync(`${file}.tmp`, JSON.stringify(state, null, 2));
+  renameSync(`${file}.tmp`, file);
+};
 function respond(status, body, headers = {}) {
   save();
   const reason =

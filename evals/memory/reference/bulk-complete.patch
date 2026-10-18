@@ -1,0 +1,88 @@
+diff --git a/src/routes/tasks.ts b/src/routes/tasks.ts
+index 6dcf307..188c2b6 100644
+--- a/src/routes/tasks.ts
++++ b/src/routes/tasks.ts
+@@ -26,6 +26,17 @@ const updateTaskBodySchema = z
+     message: "At least one field must be provided",
+   });
+ 
++/** Bulk endpoints accept at most this many ids. */
++const BULK_MAX_IDS = 50;
++
++const bulkIdsBodySchema = z.strictObject({
++  ids: z
++    .array(z.string().min(1))
++    .min(1)
++    .max(BULK_MAX_IDS)
++    .refine((ids) => new Set(ids).size === ids.length, { message: "ids must be unique" }),
++});
++
+ const listTasksQuerySchema = z.object({
+   status: taskStatusSchema.optional(),
+ });
+@@ -37,6 +48,11 @@ export function registerTaskRoutes(app: FastifyInstance, service: TaskService):
+     return reply.code(201).send(toTaskDto(task));
+   });
+ 
++  app.post("/tasks/bulk-complete", async (request) => {
++    const { ids } = parseInput(bulkIdsBodySchema, request.body);
++    return { items: (await service.bulkComplete(ids)).map(toTaskDto) };
++  });
++
+   app.get("/tasks", async (request) => {
+     const query = parseInput(listTasksQuerySchema, request.query);
+     const tasks = await service.list(query);
+diff --git a/src/services/task-service.ts b/src/services/task-service.ts
+index 5faae72..77fb1a9 100644
+--- a/src/services/task-service.ts
++++ b/src/services/task-service.ts
+@@ -70,6 +70,16 @@ export class TaskService {
+     return updated;
+   }
+ 
++  /** Marks every listed task done, all or nothing: every id is checked before any save. */
++  async bulkComplete(ids: readonly string[]): Promise<Task[]> {
++    const tasks: Task[] = [];
++    for (const id of ids) tasks.push(await this.getMutable(id));
++    const now = this.deps.clock();
++    const done = tasks.map((t): Task => ({ ...t, status: "done", updatedAt: now }));
++    for (const t of done) await this.deps.repository.save(t);
++    return done;
++  }
++
+   async softDelete(id: string): Promise<void> {
+     const task = await this.getMutable(id);
+     const now = this.deps.clock();
+diff --git a/tests/bulk-complete.test.ts b/tests/bulk-complete.test.ts
+new file mode 100644
+index 0000000..3cb9018
+--- /dev/null
++++ b/tests/bulk-complete.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from "vitest";
++import { createTask, deleteTask, setup } from "./helpers.js";
++
++describe("POST /tasks/bulk-complete", () => {
++  it("marks tasks done in ids order", async () => {
++    const { app } = setup();
++    const a = await createTask(app, { title: "A" });
++    const b = await createTask(app, { title: "B" });
++    const res = await app.inject({ method: "POST", url: "/tasks/bulk-complete", payload: { ids: [b.id, a.id] } });
++    expect(res.statusCode).toBe(200);
++    expect(res.json().items.map((t: { id: string }) => t.id)).toEqual([b.id, a.id]);
++  });
++
++  it("validates ids (empty, duplicates, more than 50) and changes nothing on errors", async () => {
++    const { app } = setup();
++    const a = await createTask(app, { title: "A" });
++    for (const ids of [[], [a.id, a.id], Array.from({ length: 51 }, (_, i) => `id-${i}`)]) {
++      const res = await app.inject({ method: "POST", url: "/tasks/bulk-complete", payload: { ids } });
++      expect(res.statusCode).toBe(400);
++    }
++    expect((await app.inject({ method: "POST", url: "/tasks/bulk-complete", payload: { ids: [a.id, "nope"] } })).statusCode).toBe(404);
++    const b = await createTask(app, { title: "B" });
++    await deleteTask(app, b.id);
++    expect((await app.inject({ method: "POST", url: "/tasks/bulk-complete", payload: { ids: [a.id, b.id] } })).statusCode).toBe(409);
++    expect((await app.inject({ method: "GET", url: `/tasks/${a.id}` })).json().status).toBe("todo");
++  });
++});

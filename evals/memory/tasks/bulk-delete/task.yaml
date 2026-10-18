@@ -1,0 +1,11 @@
+id: bulk-delete
+title: Delete several tasks at once
+request: |
+  Add an endpoint that soft-deletes several tasks in one request. Add tests.
+acceptance_criteria:
+  - POST /tasks/bulk-delete with { ids } soft-deletes every listed task and returns 204
+  - ids is a non-empty array of unique ids; otherwise 400 VALIDATION_ERROR
+  - An unknown id is 404 NOT_FOUND, an already deleted one 409 CONFLICT; on any error no task changes
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.5, timeout_minutes: 20 }

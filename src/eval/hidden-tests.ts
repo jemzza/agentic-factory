@@ -18,6 +18,8 @@ export interface HiddenTestResult {
   outputTail: string;
   /** Sandbox infrastructure failure (the hidden tests did not actually run). */
   infraError?: string;
+  /** Per-test results, when Vitest's JSON report could be parsed. */
+  cases?: VitestCase[];
 }
 
 const VitestJsonSchema = z.looseObject({
@@ -133,6 +135,7 @@ export async function runHiddenTests(opts: {
       opts.timeoutMs,
     );
     const counts = parseVitestJson(res.stdout);
+    const cases = parseVitestCases(res.stdout);
     return {
       passed: res.infraError === undefined && res.exitCode === 0 && !res.timedOut,
       exitCode: res.exitCode,
@@ -144,6 +147,7 @@ export async function runHiddenTests(opts: {
         ? counts.failures.slice(0, 40).join("\n")
         : tailLines(`${res.stdout}\n${res.stderr}`, 40),
       ...(res.infraError !== undefined ? { infraError: res.infraError } : {}),
+      ...(cases ? { cases } : {}),
     };
   } finally {
     await rm(root, { recursive: true, force: true });

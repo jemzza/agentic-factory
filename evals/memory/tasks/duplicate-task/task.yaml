@@ -1,0 +1,11 @@
+id: duplicate-task
+title: Duplicate a task
+request: |
+  Add a way to duplicate a task. Add tests for the success path and the errors.
+acceptance_criteria:
+  - POST /tasks/:id/duplicate creates a new task with the title "<title> (copy)", the same description and status todo, and returns 201 with it
+  - If an active task with that title already exists, 409 CONFLICT
+  - A deleted task returns 409 CONFLICT, an unknown task 404 NOT_FOUND
+scope:
+  allowed_paths: ["src/**", "tests/**"]
+budget: { max_gate_fix_cycles: 2, max_review_cycles: 1, max_cost_usd: 1.0, timeout_minutes: 15 }

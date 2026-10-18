@@ -286,3 +286,78 @@ concurrency is decided by those numbers and the subscription limit).
 
 Not covered without a live run: the effect of real parallel load on the subscription limits
 (the reason the default stays 1 until the final block).
+
+## Phase 5: project memory
+
+Implemented and tested on fakes; the embedder and Mem0 were checked live (no agent runs).
+**Live measurement: in the final block** (design §11, item 5: `npm run eval:memory`, 20 task
+runs). `memory.enabled` stays `false` until the owner decides by those numbers.
+
+### Versions (checked 2026-10-18)
+
+| Component       | Version                                                               |
+| --------------- | --------------------------------------------------------------------- |
+| Ollama          | 0.40.6 (Homebrew service, 127.0.0.1:11434, `OLLAMA_HOST` not changed) |
+| Embedding model | `nomic-embed-text:latest`, digest `0a109f422b47`, 137M F16, 768 dims  |
+| `mem0ai`        | 3.3.1 (`mem0ai/oss`), exact pin                                       |
+| `ollama` (npm)  | 0.5.18 (Mem0's Ollama client), exact pin                              |
+
+Records name their embedder as `ollama/nomic-embed-text:latest@0a109f422b47`.
+
+### What was built
+
+- **Canonical records in SQLite** (migration 009): `memories` (text, source, run, time,
+  project, embedder, dedupe key, soft removal) and `memory_index` (embedder and dimension the
+  index was built with). Mem0 is only an index over them.
+- **`ProjectMemory`** (`src/memory/`): `search`/`add`/`remove`/`list`, every call names its
+  project. `IndexedMemory` keeps the canonical record and the vector index in step;
+  `InMemoryMemory` and `FakeVectorIndex` are the test doubles.
+- **Mem0 with `infer: false`** (`Mem0Index`): Ollama embedder, Mem0's SQLite vector store in
+  `data/memory/`, `MEM0_TELEMETRY=false`, history off. The URL must be `http://127.0.0.1:<port>`.
+- **Write guard** (`assertWritable`), in every implementation, before anything is stored.
+  Refused: hidden tests and anything about them, reference patches, raw logs, diffs, token and
+  key shapes, configured secret values, text of GitHub users who are not allowed, rejection
+  lessons not made by a human, records over 500 characters.
+- **What the pipeline stores** (only confirmed knowledge, idempotent on replay):
+  the planner's `lessons` from a human rejection, once the revised spec is approved
+  (`spec_rejection_comment`); non-minor reviewer findings whose fix then passed the gate and
+  the review (`review_issue_fixed`); `existing_behavior` requirements of a merged spec
+  (`merged_run`); human entries (`manual`).
+- **What the planner gets:** up to `memory.limit` (5) records of its own project, each with its
+  source, in a `<project_knowledge>` block. The report and the PR list the records used.
+- **Startup check:** the pinned model must be present with the pinned digest. A moved tag, a
+  missing model or another embedder in the index stops the factory with a clear message;
+  `npm run memory -- reindex` rebuilds the index from the canonical records.
+- **Unavailable memory:** an ordinary run goes on without it and says "Memory unavailable" in
+  the report and the PR. A run that requires memory (`eval:memory`, `memory_on`) ends
+  `infra_error` before the planner runs.
+- **CLI:** `npm run memory -- list | export | show | remove | reindex | check`.
+- **`evals/memory/`:** 4 frozen pairs A → B (`MANIFEST.sha256`, checked by a test and by the
+  runner), and `npm run eval:memory` (A once with the recorded rejection, then B ×2 with
+  read-only memory and B ×2 without; per-pair namespaces; cost cap; summary in
+  `runs/memeval-<ts>/`). `npm run eval:memory -- verify`: 4/4 B tasks fail on the baseline
+  and pass on their reference.
+
+### Live checks of Mem0 and Ollama (no agents, $0)
+
+| Check                                                                         | Result                 |
+| ----------------------------------------------------------------------------- | ---------------------- |
+| `infer: false` stores the given text verbatim, no LLM call                    | pass                   |
+| Search with `user_id` returns only that project's records                     | pass                   |
+| Metadata (`factoryId`) round-trips                                            | pass                   |
+| Only host contacted: 127.0.0.1:11434                                          | pass                   |
+| Ollama stopped → `fetch failed`, reported as memory unavailable               | pass                   |
+| `npm run memory -- check` (embed, store, search, delete in a probe namespace) | PASS, `…@0a109f422b47` |
+
+Trap found: Mem0 constructs an LLM client even with `infer: false`, and its `ollama` LLM
+provider pulls its model at construction. The LLM slot therefore holds an inert OpenAI client
+pointed at 127.0.0.1:9, which is never called.
+
+### Tests
+
+`npm run check`: exit 0, 387 tests. The memory tests use fakes and a stubbed `fetch`; none needs
+Ollama or the network.
+
+Known weakness of the A/B set: TaskFlow's `CLAUDE.md` already says unknown body keys are 400,
+so the `strict-action-body` lesson may be applied without memory. That pair is weaker
+evidence than the other three (`evals/memory/README.md`).

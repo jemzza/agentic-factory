@@ -336,7 +336,7 @@ Live tasks (2–3):
 | `infra_error`       | stops the sequential eval                             | first one closes the pool: no new tasks; running ones stop at their next checkpoint; eval → `--resume`, watch → pause (15 min, doubling) and a delay comment in the issue                                                      |
 | Subscription limits | —                                                     | the main practical limit; default concurrency decided by the Phase 4 measurement                                                                                                                                               |
 
-## 8. Mem0 — owner decision (no choice made)
+## 8. Mem0 — owner decision: A′ (implemented in Phase 5)
 
 Facts (docs.mem0.ai, `npm view mem0ai`, 2026-10-18): `mem0ai` **3.3.1** (TS, `mem0ai/oss`).
 Defaults: OpenAI LLM (`gpt-5-mini`) and OpenAI embedder (`text-embedding-3-small`, 1536 dims).
@@ -360,9 +360,18 @@ our SQLite `memories` table (the DB is the source of truth); Mem0 is an index ov
 **Switching to OpenAI later:** LLM switch = config change, existing memories untouched.
 Embedder switch (e.g. Ollama 768 dims → OpenAI 1536 dims) makes old vectors unusable (different
 dimension and vector space; Mem0's docs mention dimension errors on a mismatch) → **reindex is
-required**: `npm run memory -- reindex --project <id>` drops the collection and re-adds every
+required**: `npm run memory -- reindex` drops the collection and re-adds every
 record from `memories` with `infer: false` (no LLM cost, embedding cost only — fractions of a
 cent). Without the canonical table, a reindex would be impossible for option B.
+
+**Decision and what was built (Phase 5).** Option A′, with Mem0's own SQLite vector store
+instead of Qdrant (no extra container). Verified live with `mem0ai` 3.3.1 and Ollama 0.40.6:
+`infer: false` stores the given text without any LLM call; `user_id` isolates projects; the
+only host contacted is 127.0.0.1:11434. Mem0 still constructs an LLM client: the `ollama` LLM
+provider pulls its model at construction, so the slot holds an inert OpenAI client pointed at
+127.0.0.1:9 that is never called. The embedder is pinned with tag and digest, and every record
+names it; a mismatch stops the factory with a reindex hint. Details: `docs/week3-results.md`,
+Phase 5.
 
 ## 9. Diagram: graph and GitHub events
 

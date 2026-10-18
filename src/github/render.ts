@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RunReport } from "../schemas/report.js";
 import type { PersistedSpecChange } from "../schemas/spec.js";
+import { renderMemorySection } from "../report/markdown.js";
 import { BOT_MARKER } from "./commands.js";
 
 /*
@@ -178,6 +179,7 @@ export function prBody(o: {
           )
           .join("\n")
       : "_none_",
+    ...(renderMemorySection(r.memory) ? [renderMemorySection(r.memory) ?? ""] : []),
     "## Quality gate (run by the factory in the sandbox, not by the agent)",
     gates
       .map(
