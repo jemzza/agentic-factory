@@ -38,6 +38,7 @@ Takes a development task against a target repository and drives it to a **verifi
 > - [docs/new-project.md](docs/new-project.md): adding a project;
 > - [docs/enable-openai.md](docs/enable-openai.md): enabling OpenAI;
 > - [docs/pi-runtime.md](docs/pi-runtime.md): the Pi runtime.
+> - [docs/roadmap.md](docs/roadmap.md): the proposed next weeks.
 >
 > **Reviewing this repository? Start with [docs/showcase/README.md](docs/showcase/README.md).**
 
