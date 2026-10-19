@@ -654,3 +654,74 @@ The resumed task ended exactly as in the sequential run.
 concurrency mostly brings the subscription limit closer.
 
 Final block spent so far: $10.42 + $6.52 = **$16.94**. Limit hits: **1**.
+
+## Final block, item 5: memory A/B
+
+**Result: with memory, B applied the human decision every time (8/8); without memory,
+never (0/16).**
+
+| Condition                                                            | B runs | Verified       | `[lesson]` tests passed | First pass     | Memory records given | Cost of B runs |
+| -------------------------------------------------------------------- | ------ | -------------- | ----------------------- | -------------- | -------------------- | -------------- |
+| **memory_on** (`memeval-20261018-204846`)                            | 8      | **100%** (8/8) | **100%** (8/8)          | **100%** (8/8) | 1–2 per run          | $5.23          |
+| **memory_off** (`memeval-20261018-164224`, 16 B runs without memory) | 16     | **0%** (0/16)  | **0%** (0/16)           | 0%             | 0                    | $9.41          |
+
+Per pair, with memory against without:
+
+| Pair                 | With memory | Without memory |
+| -------------------- | ----------- | -------------- |
+| `strict-action-body` | 2/2         | 0/4            |
+| `noop-flag-actions`  | 2/2         | 0/4            |
+| `bulk-limit-50`      | 2/2         | 0/4            |
+| `free-text-fields`   | 2/2         | 0/4            |
+
+Every `memory_off` run was a `false_success` that failed only its pair's decision.
+
+**What A stored**, the planner's own generalisations of the recorded `/reject` comment, for
+example:
+
+- "Action endpoints (POST /tasks/:id/<action>) take no request body: absent or {} is
+  accepted, and any field … is rejected with 400 VALIDATION_ERROR."
+- "All bulk endpoints accept at most 50 ids; … 51 or more … 400 VALIDATION_ERROR."
+- "Flag-setting action endpoints … treat setting an already set value as a no-op: 200 with
+  the unchanged task, updatedAt not bumped."
+
+They are stored in per-attempt namespaces (`taskflow~<eval>-<pair>-a<n>`), never in the
+project's real memory.
+
+**How this result came about (two harness bugs, both fixed).**
+
+1. **The first A/B (`memeval-20261018-164224`, $14.38) was invalid as a memory measurement.**
+   Task A was auto-approved, because eval mode forced automatic spec approval over the A/B's
+   explicit "manual". No rejection was applied, so no lesson was stored and `memory_on` was
+   in fact `memory_off`. Fixed in `d5945f2`: manual approval is honoured, and the A/B now
+   fails loudly if A was not rejected. That run's 16 B runs did run without memory and are
+   used here as `memory_off`.
+2. **A one-pair check of the A path then showed the planner still returned no lesson.** The
+   planner's agent JSON schema (`--json-schema`) had no `lessons` field since Phase 5, so
+   Claude Code could never return one. Fixed in `6292a6c`, with a test that the agent schema
+   offers every field the factory reads. The check run then stored 2 lessons.
+3. **By the owner's decision, only `memory_on` was re-run** (4 A + 8 B) and combined with the
+   16 `memory_off` runs. The run was interrupted by the subscription limit once and resumed
+   pair by pair (`--resume`). Pair `noop-flag-actions` was redone in a fresh namespace
+   (attempt 2); its attempt-1 lessons were not visible to B.
+
+**Caveats.**
+
+- n = 2 per pair and condition. 8 against 16 is a large effect, but a small sample.
+- The pairs are built so that B cannot know the decision without memory (design §11). The
+  result shows that the mechanism works end to end: rejection → planner lesson → stored on
+  approval → retrieved by B's planner → implemented → hidden test passes. It does not show
+  how often such reusable decisions occur in real projects.
+- The two conditions come from two A/B runs on the same frozen pairs and baseline. Between
+  them the factory changed only in the A path and in the planner's schema, which now also
+  offers `lessons` to B's planner.
+- One A (`pin-task`, attempt 2) ended `timeout` in the developer step after its lesson was
+  stored. That does not affect the pair, since only A's lesson matters.
+
+**Recommendation for the owner's decision (§11, item 7):** turn `memory.enabled` on. That
+needs Ollama with the pinned embedder on 127.0.0.1. If Ollama is down, runs continue without
+memory and say so. Today memory stores only confirmed knowledge, under the write guard.
+
+**Cost of item 5:** $14.38 (the invalid run, whose B runs are reused) + $1.30 (two A-path
+checks) + $8.79 (`memory_on` rerun) = **$24.47**, against the ≈ $12 estimate. Subscription
+limits hit during item 5: **2**. In the whole final block so far: **3**.
