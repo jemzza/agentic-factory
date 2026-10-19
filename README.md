@@ -207,16 +207,17 @@ every `keyEnv` must also be listed in `secretEnv`.
 
 ## Latest metrics
 
-Week 3 final block (in progress), TaskFlow, 10 tasks. The hidden tests now also check
+Week 3 final block, TaskFlow, 10 tasks. The hidden tests now also check
 TaskFlow's own rules, so the Week 3 baseline (the last Week 2 eval re-judged with them) is
 lower than Week 2's ~97%. Details and caveats: [docs/week3-results.md](docs/week3-results.md).
 
-| Measurement                                          | Verified     | False success | First-pass   | Cost / pass   |
-| ---------------------------------------------------- | ------------ | ------------- | ------------ | ------------- |
-| Week 3 baseline (rescore, 3 repeats)                 | 66.7% ± 5.8% | 34.7% ± 2.4%  | 63.0% ± 6.4% | $5.98 ± $0.38 |
-| Week 3 code, Opus in every role (1 repeat)           | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $5.86         |
-| Same with `--concurrency 2` (1 repeat, ≈1.6× faster) | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $6.52         |
-| Sonnet plans and develops, Opus reviews (1 repeat)   | 60% (6/10)   | 38% (3/8)     | 56% (5/9)    | $2.85         |
+| Measurement                                                   | Verified         | False success    | First-pass   | Cost / pass       |
+| ------------------------------------------------------------- | ---------------- | ---------------- | ------------ | ----------------- |
+| Week 3 baseline (rescore, 3 repeats)                          | 66.7% ± 5.8%     | 34.7% ± 2.4%     | 63.0% ± 6.4% | $5.98 ± $0.38     |
+| Week 3 code, Opus in every role (1 repeat)                    | 80% (8/10)       | 22% (2/9)        | 78% (7/9)    | $5.86             |
+| Same with `--concurrency 2` (1 repeat, ≈1.6× faster)          | 80% (8/10)       | 22% (2/9)        | 78% (7/9)    | $6.52             |
+| Sonnet plans and develops, Opus reviews (1 repeat)            | 60% (6/10)       | 38% (3/8)        | 56% (5/9)    | $2.85             |
+| **Final, chosen: Sonnet + Opus reviewer + memory, 3 repeats** | **66.7% ± 5.8%** | **35.5% ± 3.9%** | **66.7%**    | **$3.21 ± $0.21** |
 
 The other final-block measurements:
 
@@ -224,7 +225,7 @@ The other final-block measurements:
   without memory, 0/16.
 - **Reviewer eval:** Opus found 10/10 defects; the Pi reviewer on a local 7B model found 2/10.
 
-The final `eval --repeat 3` is pending. Week 2 and cycle-budget results:
+The chosen configuration matches the baseline's quality at 46% lower cost; Opus everywhere is better (80%) but twice as expensive. Week 2 and cycle-budget results:
 [docs/week2-results.md](docs/week2-results.md),
 [docs/cycles-budget-results.md](docs/cycles-budget-results.md).
 

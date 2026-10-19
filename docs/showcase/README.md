@@ -20,22 +20,22 @@ In evals, hidden tests that agents never see decide whether a claimed success is
 - The main interface is **GitHub**: an issue is a task, comments are decisions, and the
   result is a PR. The factory only polls GitHub from the owner's computer.
 
-## Status for review (2026-10-19): Week 3 after Phase 7
+## Status for review (2026-10-19): Week 3
 
 Phases 0–7 are implemented, tested and committed. `npm run check` passes: 459 tests on fake
 agents, a fake `gh`, the Docker sandbox, and the real Pi binary against a fake provider.
 
-The **final measurement block** (live runs) is in progress:
+The **final measurement block** (live runs):
 
-| #   | Measurement                                                              | Status                                                                                                                                                                                                                                                                                                     |
-| --- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Equivalence after the Phase 2–7 refactor (Opus in every role)            | **done**: verified 80%, false success 22%, first pass 78% (Week 3 baseline: 67% / 35% / 63%)                                                                                                                                                                                                               |
-| 2   | Candidate roles (Sonnet plans and develops, Opus reviews)                | **done**: verified 60%, false success 38%, half the cost                                                                                                                                                                                                                                                   |
-| 3   | Live GitHub cycle in two projects                                        | **ledgerlite: merged** (issue → spec → `/approve` → PR #2 → `/merge` → gate on the merge result → `main`). **taskflow-demo:** issue → spec v1 → `/reject` → spec v2 → `/approve` ran live; the developer then hit the task's $1 budget (`budget_exceeded`; the re-plan had used half of it), retry pending |
-| 4   | `--concurrency 2`                                                        | **done**: task-for-task the same outcomes as sequential, ~1.6× faster; a subscription limit was hit and resumed                                                                                                                                                                                            |
-| 5   | Memory A/B                                                               | **done**: with memory 8/8 runs applied the human decision, without memory 0/16                                                                                                                                                                                                                             |
-| 6   | Pi reviewer on a local model                                             | **done**: recall 20% of Opus's (threshold 70%), so no eval with Pi; Opus stays the reviewer                                                                                                                                                                                                                |
-| 7–8 | Owner's decisions; final `eval --repeat 3 --concurrency 2`; final report | pending                                                                                                                                                                                                                                                                                                    |
+| #   | Measurement                                                   | Status                                                                                                                                                                                                                                                                                                     |
+| --- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Equivalence after the Phase 2–7 refactor (Opus in every role) | **done**: verified 80%, false success 22%, first pass 78% (Week 3 baseline: 67% / 35% / 63%)                                                                                                                                                                                                               |
+| 2   | Candidate roles (Sonnet plans and develops, Opus reviews)     | **done**: verified 60%, false success 38%, half the cost                                                                                                                                                                                                                                                   |
+| 3   | Live GitHub cycle in two projects                             | **ledgerlite: merged** (issue → spec → `/approve` → PR #2 → `/merge` → gate on the merge result → `main`). **taskflow-demo:** issue → spec v1 → `/reject` → spec v2 → `/approve` ran live; the developer then hit the task's $1 budget (`budget_exceeded`; the re-plan had used half of it), retry pending |
+| 4   | `--concurrency 2`                                             | **done**: task-for-task the same outcomes as sequential, ~1.6× faster; a subscription limit was hit and resumed                                                                                                                                                                                            |
+| 5   | Memory A/B                                                    | **done**: with memory 8/8 runs applied the human decision, without memory 0/16                                                                                                                                                                                                                             |
+| 6   | Pi reviewer on a local model                                  | **done**: recall 20% of Opus's (threshold 70%), so no eval with Pi; Opus stays the reviewer                                                                                                                                                                                                                |
+| 7–8 | Owner's decisions; final `eval --repeat 3 --concurrency 2`    | **done**: Sonnet plans and develops, Opus reviews, memory on, concurrency 2. Final: verified 66.7% ± 5.8%, false success 35.5%, **$3.21 per repeat (−46%)**, 97 s per task                                                                                                                                 |
 
 All numbers, with their runs and caveats: [docs/week3-results.md](../week3-results.md). The
 plan: [docs/week3-design.md](../week3-design.md) §11. The proposed next weeks:
@@ -53,22 +53,23 @@ plan: [docs/week3-design.md](../week3-design.md) §11. The proposed next weeks:
 | `--concurrency N` works; the Phase 4 tests pass; live parallel run not worse than the baseline                                                    | ✅                                                                                                                    |
 | `PiRuntime` in the chosen role through config; adapter tests pass; eval with Pi run and compared                                                  | ⚠️ Pi works and is tested; the eval was not run by the owner's rule (recall gate failed)                              |
 | OpenCode adapter tests pass; `provider:check -- openai` without a key gives a clear message; `docs/enable-openai.md`; OpenAI without code changes | ✅                                                                                                                    |
-| Final `eval --repeat 3`; `week3-results.md`, `demo.md`, `new-project.md`, `demo:reset` ready                                                      | ⏳ docs and `demo:reset` ✅; the final eval is pending                                                                |
-| Memory isolated per project; forbidden writes tested; A/B done; `memory.enabled` decision recorded with numbers                                   | ✅ A/B done; the decision is the owner's                                                                              |
+| Final `eval --repeat 3`; `week3-results.md`, `demo.md`, `new-project.md`, `demo:reset` ready                                                      | ✅                                                                                                                    |
+| Memory isolated per project; forbidden writes tested; A/B done; `memory.enabled` decision recorded with numbers                                   | ✅ on, by the A/B (8/8 vs 0/16)                                                                                       |
 | Dashboard: runs of all projects, a whole run, evals; no write routes; secrets masked                                                              | ✅                                                                                                                    |
 
 ### What the live runs found (and what was fixed)
 
-Fakes passed, and live runs then found five defects in how the factory talks to real tools.
+Fakes passed, and live runs then found six defects in how the factory talks to real tools.
 Each is fixed with a regression test:
 
-| Defect                                                                              | Effect                                                      | Fix       |
-| ----------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------- |
-| Since Phase 4, eval misread runs that ended without the merge gate                  | `needs_clarification` and failures were recorded as `error` | `1122e69` |
-| The planner's agent JSON schema had no `lessons` field (Phase 5)                    | Memory could never learn from a rejection                   | `6292a6c` |
-| Eval mode forced automatic spec approval over the memory A/B's explicit "manual"    | The first memory A/B ($14.38) measured nothing              | `d5945f2` |
-| `project:check` and `run-task --project` cloned GitHub projects with plain git      | git fell back to the owner's macOS keychain                 | `d51bd67` |
-| A re-plan after `/reject` within the same second could produce the same spec commit | No spec v2 published (seen as a flaky test)                 | `b2e5595` |
+| Defect                                                                                        | Effect                                                      | Fix       |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------- |
+| Since Phase 4, eval misread runs that ended without the merge gate                            | `needs_clarification` and failures were recorded as `error` | `1122e69` |
+| The planner's agent JSON schema had no `lessons` field (Phase 5)                              | Memory could never learn from a rejection                   | `6292a6c` |
+| Eval mode forced automatic spec approval over the memory A/B's explicit "manual"              | The first memory A/B ($14.38) measured nothing              | `d5945f2` |
+| `project:check` and `run-task --project` cloned GitHub projects with plain git                | git fell back to the owner's macOS keychain                 | `d51bd67` |
+| A re-plan after `/reject` within the same second could produce the same spec commit           | No spec v2 published (seen as a flaky test)                 | `b2e5595` |
+| `eval --resume` compared task lists as sequences; a parallel pass records them as they finish | The final eval's resume was refused                         | `98db828` |
 
 The lesson is the core of Week 4 in the roadmap: contract tests against the real CLIs.
 
@@ -180,12 +181,13 @@ TaskFlow, 10 tasks: 9 are to be implemented, and 1 is contradictory, where the c
 Week 3's hidden tests also check TaskFlow's own rules, for example "unknown body keys → 400".
 That made the suite harder: Week 2's ~97% became 67% on the same diffs.
 
-| Measurement                                                  | Verified     | False success | First-pass   | Cost / pass   |
-| ------------------------------------------------------------ | ------------ | ------------- | ------------ | ------------- |
-| Week 3 baseline (rescore of the last Week 2 eval, 3 repeats) | 66.7% ± 5.8% | 34.7% ± 2.4%  | 63.0% ± 6.4% | $5.98 ± $0.38 |
-| Week 3 code, Opus in every role (1 repeat)                   | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $5.86         |
-| Same, `--concurrency 2` (1 repeat)                           | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $6.52         |
-| Sonnet plans and develops, Opus reviews (1 repeat)           | 60% (6/10)   | 38% (3/8)     | 56% (5/9)    | $2.85         |
+| Measurement                                                   | Verified         | False success    | First-pass   | Cost / pass       |
+| ------------------------------------------------------------- | ---------------- | ---------------- | ------------ | ----------------- |
+| Week 3 baseline (rescore of the last Week 2 eval, 3 repeats)  | 66.7% ± 5.8%     | 34.7% ± 2.4%     | 63.0% ± 6.4% | $5.98 ± $0.38     |
+| Week 3 code, Opus in every role (1 repeat)                    | 80% (8/10)       | 22% (2/9)        | 78% (7/9)    | $5.86             |
+| Same, `--concurrency 2` (1 repeat)                            | 80% (8/10)       | 22% (2/9)        | 78% (7/9)    | $6.52             |
+| Sonnet plans and develops, Opus reviews (1 repeat)            | 60% (6/10)       | 38% (3/8)        | 56% (5/9)    | $2.85             |
+| **Final, chosen: Sonnet + Opus reviewer + memory, 3 repeats** | **66.7% ± 5.8%** | **35.5% ± 3.9%** | **66.7%**    | **$3.21 ± $0.21** |
 
 The remaining false successes are almost all the same rule: a new action endpoint accepts an
 unknown body key. The Opus reviewer approves it every time, because it is the same vendor and

@@ -770,3 +770,76 @@ project's real memory. A resumed run keeps its repeat's namespace. Interactive a
 runs use the project's real memory.
 
 The final `eval --repeat 3 --concurrency 2` (item 8) measures this configuration.
+
+## Final block, item 8: the final eval (the chosen configuration)
+
+`eval-20261019-024805`: TaskFlow, 10 tasks × 3 repeats, `--concurrency 2`. Planner and
+developer Sonnet 5.5, reviewer Opus 5.5, memory on. Factory `aae9500`; the resumed part ran on
+`98db828`, whose only change was the resume fix below.
+
+| Metric               | Week 3 baseline (Opus, rescore, 3 repeats) | Opus, Week 3 code (items 1 and 4, 1 repeat each) | **Final: Sonnet + Opus reviewer + memory (3 repeats)** |
+| -------------------- | ------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------ |
+| Verified rate        | 66.7% ± 5.8%                               | 80%, 80%                                         | **66.7% ± 5.8%** (60–70%)                              |
+| False success rate   | 34.7% ± 2.4%                               | 22%, 22%                                         | **35.5% ± 3.9%**                                       |
+| First-pass rate      | 63.0% ± 6.4%                               | 78%, 78%                                         | **66.7% ± 0.0%**                                       |
+| Gate / review cycles | 0 / 0                                      | 0 / 0                                            | 0 / 0                                                  |
+| Active time per task | 156.7 s ± 27.4 s                           | 124 s, 140 s                                     | **96.8 s**                                             |
+| Cost per repeat      | $5.98 ± $0.38                              | $5.86, $6.52                                     | **$3.21 ± $0.21** (−46%)                               |
+
+Per task over the 3 repeats:
+
+| Task                                                                        | Result                                                                                                                               |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| bulk-status, due-date, pagination, search-tasks, sort-tasks, status-history | verified in 3/3                                                                                                                      |
+| complete-task, reopen-task, restore-task                                    | false success in 3/3: the strict-body rule on the new action route                                                                   |
+| hard-delete (the contradictory task)                                        | needs_clarification in 2/3. In r3 Sonnet implemented it (410 for a deleted task) instead of asking, against the soft-delete contract |
+
+**Reading.**
+
+- The chosen configuration reaches the Week 3 baseline's quality, the same verified and false
+  success, at 46% lower cost and about 40% less time per task.
+- It is below Opus-everywhere on the Week 3 code: 80% verified and 22% false success, on 2
+  repeats.
+- The quality gap is the same rule every time: an action endpoint accepting an unknown body
+  key. No reviewer configuration in this week catches it. This is Week 5's target in the
+  roadmap: deterministic checks of project rules and an independent reviewer.
+
+**Memory was on but had nothing to store in this eval.** 0 records in 31 runs. An eval
+approves specs automatically (no `/reject`, so no lessons), the reviewer approved everything
+(no fixed review findings), and an eval never merges. So this eval does not measure memory;
+the A/B (item 5) does.
+
+**Time in the summary** (547 s ± 775 s) is wall time, and it includes the wait for a limit
+reset. The active time above comes from `runs.active_duration_ms`.
+
+**Subscription limit, hit once** on the first pass ("resets 9:30am"). The pool stopped,
+paused `due-date` at its checkpoint, and the eval was resumed.
+
+**The resume found a sixth bug.** `--resume` compared the task lists as sequences, and a
+parallel pass records tasks in the order they finish, so the resume was refused ("task set
+differs"). Fixed in `98db828` (compare sets), with a regression test. After it, the resume kept
+the two decided tasks, continued `due-date` from its checkpoint, and re-ran only the
+interrupted attempt.
+
+## Final block: spending and limits
+
+| Item                                                               | Spent      |
+| ------------------------------------------------------------------ | ---------- |
+| 1 Equivalence (Opus)                                               | $5.86      |
+| 2 Sonnet candidate                                                 | $2.85      |
+| 3 Live GitHub (ledgerlite merged; taskflow-demo `budget_exceeded`) | $1.67      |
+| 4 `--concurrency 2`                                                | $6.52      |
+| 5 Memory A/B (incl. the invalid first run)                         | $24.47     |
+| 6 Reviewer eval (Opus side; Pi $0)                                 | $1.71      |
+| 8 Final eval, 3 repeats                                            | $9.63      |
+| **Total**                                                          | **$52.71** |
+
+That is within §11's original estimate of ≈ $57–58 for the whole block. The memory A/B cost
+twice its estimate because of the invalid first run. The final eval cost half of the Opus
+estimate, since the owner chose Sonnet.
+
+**Subscription limits hit: 4** (items 4, 5 twice, 8). Every time the run stopped at a
+checkpoint and was resumed after the reset, with no lost decided work.
+
+**Bugs found by live runs in the final block: 6**, each fixed with a regression test. The five
+listed in `docs/showcase/README.md`, plus the parallel resume (`98db828`).

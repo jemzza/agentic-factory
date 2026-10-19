@@ -226,6 +226,12 @@ describe("parallel eval (--concurrency)", () => {
     // The provider is back: resume. Paused runs continue from their checkpoints (no new plan).
     providerBack = true;
     const plannerCallsBefore = t.runtime.calls.filter((c) => c.role === "planner").length;
+    // A paused run stops at a node boundary: usually after its plan, but under heavy load it can
+    // pause before planning (then planning it on resume is correct). What must never happen is
+    // planning a run twice.
+    const plannedBeforePause = s1.pausedRuns.filter((p) =>
+      t.store.listSteps(p.runId).some((st) => st.node === "planner" && st.status === "ok"),
+    ).length;
     const second = await runEval(t.tasks(8), {
       ...t.evalDeps,
       concurrency: 3,
@@ -237,7 +243,7 @@ describe("parallel eval (--concurrency)", () => {
     expect(second.summary.tasks.map((r) => r.outcome)).toEqual(Array(8).fill("verified"));
     const newPlans =
       t.runtime.calls.filter((c) => c.role === "planner").length - plannerCallsBefore;
-    expect(newPlans).toBe(8 - 2); // task-01 and task-02 were already planned
+    expect(newPlans).toBe(8 - plannedBeforePause); // runs planned before the pause are not planned again
     for (const p of s1.pausedRuns) {
       expect(second.summary.tasks.find((r) => r.taskId === p.taskId)?.reportPath).toContain(
         p.runId,
