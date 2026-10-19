@@ -9,9 +9,10 @@ Takes a development task against a target repository and drives it to a **verifi
 4. **Quality Gate** — typecheck and tests run by the factory (not the agent) in a Docker
    sandbox with `--network none`, plus scope and spec-immutability checks of the diff.
 5. **Reviewer** — read-only review of the diff against the spec and the acceptance criteria.
-   The architecture intends a model from **another vendor** (OpenCode). **Currently every role,
-   the reviewer included, is Claude Code Opus 5.5**: the OpenCode reviewer is disabled by the
-   project owner's decision, so the review is less independent than designed.
+   The architecture intends a model from **another vendor**. **Currently every role, the
+   reviewer included, is Claude Code Opus 5.5.** The OpenCode (OpenAI) reviewer is disabled by
+   the owner's decision, and the Pi reviewer on a local model was too weak (recall 2/10). So
+   the review is less independent than designed.
 6. **Report**, then **merge approval** — a human merges or closes; the gate re-runs on the
    merge result before `main` moves. Nothing is ever merged automatically.
 
@@ -206,25 +207,26 @@ every `keyEnv` must also be listed in `secretEnv`.
 
 ## Latest metrics
 
-Cycle-budget correction, `eval-20261017-095351`: TaskFlow, 10 tasks × 3 repeats, every role
-Claude Code Opus 5.5, 2026-10-17. Mean ± sample stdev. Details:
+Week 3 final block (in progress), TaskFlow, 10 tasks. The hidden tests now also check
+TaskFlow's own rules, so the Week 3 baseline (the last Week 2 eval re-judged with them) is
+lower than Week 2's ~97%. Details and caveats: [docs/week3-results.md](docs/week3-results.md).
+
+| Measurement                                          | Verified     | False success | First-pass   | Cost / pass   |
+| ---------------------------------------------------- | ------------ | ------------- | ------------ | ------------- |
+| Week 3 baseline (rescore, 3 repeats)                 | 66.7% ± 5.8% | 34.7% ± 2.4%  | 63.0% ± 6.4% | $5.98 ± $0.38 |
+| Week 3 code, Opus in every role (1 repeat)           | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $5.86         |
+| Same with `--concurrency 2` (1 repeat, ≈1.6× faster) | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $6.52         |
+| Sonnet plans and develops, Opus reviews (1 repeat)   | 60% (6/10)   | 38% (3/8)     | 56% (5/9)    | $2.85         |
+
+The other final-block measurements:
+
+- **Memory A/B:** with memory, 8/8 B runs applied a human decision from an earlier rejection;
+  without memory, 0/16.
+- **Reviewer eval:** Opus found 10/10 defects; the Pi reviewer on a local 7B model found 2/10.
+
+The final `eval --repeat 3` is pending. Week 2 and cycle-budget results:
+[docs/week2-results.md](docs/week2-results.md),
 [docs/cycles-budget-results.md](docs/cycles-budget-results.md).
-
-| Metric                       | After the correction (3 repeats)        | Week 2, Opus reviewer (1 run) |
-| ---------------------------- | --------------------------------------- | ----------------------------- |
-| First-pass rate              | 96.3% ± 6.4% (denominator 9 per repeat) | 100% (9/9)                    |
-| Verified rate                | 96.7% ± 5.8%                            | 100% (10/10)                  |
-| False success rate           | 0% ± 0%                                 | 0% (0/9)                      |
-| Avg gate fix / review cycles | 0.00 / 0.00                             | 0 (total only)                |
-| Stopped by the review limit  | 0 of 27                                 | —                             |
-| infra_error                  | 1 attempt, replaced by `--resume`       | — (recorded as `error`)       |
-| Cost per repeat              | $5.98 ± $0.38                           | $5.82                         |
-
-The only incorrect outcome (r2 `due-date`, `timeout`) was a provider outage: the reviewer's log
-has only `api_retry` events and no model output. The measured code (`bb50b61`) counted it as
-`timeout`; since `421b588` such a timeout is classified as `infra_error`. The metrics above
-were not recomputed. The review limit never engaged, so `max_review_cycles` stays 1. The
-Sol-vs-Opus reviewer comparison from Week 2 is in [docs/week2-results.md](docs/week2-results.md).
 
 ## GitHub interface (`npm run factory:watch`)
 

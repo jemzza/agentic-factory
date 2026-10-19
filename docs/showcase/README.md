@@ -1,14 +1,76 @@
 # Start here
 
 **Agentic Software Factory** takes a development task for a target repository and drives it to
-a result that is **checked by facts, not by what an agent says**. A planner writes a spec, a
-human approves it, a developer agent implements it in an isolated git worktree, and the
-factory's own checks run in a Docker sandbox with no network. A read-only reviewer then
-checks the diff against the acceptance criteria, and a human merges. In evals, hidden tests
-that agents never see decide whether a claimed success is real.
+a result that is **checked by facts, not by what an agent says**:
 
-Today it runs against one target, **TaskFlow** (a small Fastify + TypeScript service,
-[`fixtures/taskflow/`](../../fixtures/taskflow)), on one machine.
+1. A planner writes a spec, and a human approves it.
+2. A developer agent implements it in an isolated git worktree.
+3. The factory's own checks run in a Docker sandbox with no network.
+4. A read-only reviewer checks the diff against the spec and the acceptance criteria.
+5. A human merges, and the gate runs again on the merge result.
+
+In evals, hidden tests that agents never see decide whether a claimed success is real.
+
+**One factory, many projects** (Week 3):
+
+- The factory names no project in its code. Projects are registered in `projects.yaml`, each
+  with its own `.factory/config.yaml`.
+- Two stacks today: **TaskFlow** (Fastify + TypeScript, the eval stand) and **ledgerlite**
+  (Python 3.12, pytest, mypy, ruff).
+- The main interface is **GitHub**: an issue is a task, comments are decisions, and the
+  result is a PR. The factory only polls GitHub from the owner's computer.
+
+## Status for review (2026-10-19): Week 3 after Phase 7
+
+Phases 0–7 are implemented, tested and committed. `npm run check` passes: 459 tests on fake
+agents, a fake `gh`, the Docker sandbox, and the real Pi binary against a fake provider.
+
+The **final measurement block** (live runs) is in progress:
+
+| #   | Measurement                                                              | Status                                                                                                                                                                                                                        |
+| --- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Equivalence after the Phase 2–7 refactor (Opus in every role)            | **done**: verified 80%, false success 22%, first pass 78% (Week 3 baseline: 67% / 35% / 63%)                                                                                                                                  |
+| 2   | Candidate roles (Sonnet plans and develops, Opus reviews)                | **done**: verified 60%, false success 38%, half the cost                                                                                                                                                                      |
+| 3   | Live GitHub cycle in two projects                                        | **in progress**. In taskflow-demo, issue → spec v1 → `/reject` → spec v2 (covering the rejection) → `/approve` ran live; the developer then hit the task's $1 budget (the re-plan had used half of it). ledgerlite is running |
+| 4   | `--concurrency 2`                                                        | **done**: task-for-task the same outcomes as sequential, ~1.6× faster; a subscription limit was hit and resumed                                                                                                               |
+| 5   | Memory A/B                                                               | **done**: with memory 8/8 runs applied the human decision, without memory 0/16                                                                                                                                                |
+| 6   | Pi reviewer on a local model                                             | **done**: recall 20% of Opus's (threshold 70%), so no eval with Pi; Opus stays the reviewer                                                                                                                                   |
+| 7–8 | Owner's decisions; final `eval --repeat 3 --concurrency 2`; final report | pending                                                                                                                                                                                                                       |
+
+All numbers, with their runs and caveats: [docs/week3-results.md](../week3-results.md). The
+plan: [docs/week3-design.md](../week3-design.md) §11. The proposed next weeks:
+[docs/roadmap.md](../roadmap.md).
+
+### The week's acceptance criteria
+
+| Criterion                                                                                                                                         | Status                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `npm run check` passes                                                                                                                            | ✅ 459 tests                                                                             |
+| Hidden tests check TaskFlow's rules; `verify-hidden` 10/10; old tests unchanged; baseline by `eval:rescore`                                       | ✅ Phase 1                                                                               |
+| No TaskFlow in factory code; both projects through the registry and `.factory/config.yaml`; `project:check` passes for both                       | ✅ (live, against the GitHub repositories)                                               |
+| Full cycle issue → `/approve` → PR → `/merge` on real GitHub in two projects; the Phase 3 fake-`gh` tests pass                                    | ⏳ fake-`gh` tests ✅; live cycle in progress (see item 3)                               |
+| Unauthorized commands ignored, their text never reaches agents; approval bound to a spec version; no command executed twice after a restart       | ✅ tests; live: `/approve` applied to v2                                                 |
+| `--concurrency N` works; the Phase 4 tests pass; live parallel run not worse than the baseline                                                    | ✅                                                                                       |
+| `PiRuntime` in the chosen role through config; adapter tests pass; eval with Pi run and compared                                                  | ⚠️ Pi works and is tested; the eval was not run by the owner's rule (recall gate failed) |
+| OpenCode adapter tests pass; `provider:check -- openai` without a key gives a clear message; `docs/enable-openai.md`; OpenAI without code changes | ✅                                                                                       |
+| Final `eval --repeat 3`; `week3-results.md`, `demo.md`, `new-project.md`, `demo:reset` ready                                                      | ⏳ docs and `demo:reset` ✅; the final eval is pending                                   |
+| Memory isolated per project; forbidden writes tested; A/B done; `memory.enabled` decision recorded with numbers                                   | ✅ A/B done; the decision is the owner's                                                 |
+| Dashboard: runs of all projects, a whole run, evals; no write routes; secrets masked                                                              | ✅                                                                                       |
+
+### What the live runs found (and what was fixed)
+
+Fakes passed, and live runs then found five defects in how the factory talks to real tools.
+Each is fixed with a regression test:
+
+| Defect                                                                              | Effect                                                      | Fix       |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------- |
+| Since Phase 4, eval misread runs that ended without the merge gate                  | `needs_clarification` and failures were recorded as `error` | `1122e69` |
+| The planner's agent JSON schema had no `lessons` field (Phase 5)                    | Memory could never learn from a rejection                   | `6292a6c` |
+| Eval mode forced automatic spec approval over the memory A/B's explicit "manual"    | The first memory A/B ($14.38) measured nothing              | `d5945f2` |
+| `project:check` and `run-task --project` cloned GitHub projects with plain git      | git fell back to the owner's macOS keychain                 | `d51bd67` |
+| A re-plan after `/reject` within the same second could produce the same spec commit | No spec v2 published (seen as a flaky test)                 | `b2e5595` |
+
+The lesson is the core of Week 4 in the roadmap: contract tests against the real CLIs.
 
 ## The loop
 
@@ -70,8 +132,14 @@ Full description: [docs/graph.md](../graph.md).
 | [`src/quality/gate.ts`](../../src/quality/gate.ts), [`sandbox.ts`](../../src/quality/sandbox.ts)                                  | Quality gate: typecheck and tests in Docker (`--network none`), scope and spec-immutability checks                   |
 | [`src/runtimes/claude-code.ts`](../../src/runtimes/claude-code.ts), [`provider-errors.ts`](../../src/runtimes/provider-errors.ts) | Claude Code headless adapter (stream-json parsed with Zod; tool policy) and provider-limit detection (`infra_error`) |
 | [`src/eval/run-eval.ts`](../../src/eval/run-eval.ts), [`hidden-tests.ts`](../../src/eval/hidden-tests.ts)                         | Eval: hidden tests on a copy of the final worktree; verified, false success and first-pass metrics                   |
+| [`src/github/watch.ts`](../../src/github/watch.ts), [`gh-cli.ts`](../../src/github/gh-cli.ts)                                     | GitHub as the interface: polling, commands from allowed users only, exactly-once events, spec versions, PRs          |
+| [`src/config/projects.ts`](../../src/config/projects.ts), [`project-check.ts`](../../src/config/project-check.ts)                 | Project registry and per-project `.factory/config.yaml`, read with `git show`; `project:check`                       |
+| [`src/pipeline/cost-pool.ts`](../../src/pipeline/cost-pool.ts), [`src/eval/run-eval.ts`](../../src/eval/run-eval.ts)              | Parallel runs: shared cost cap by reservations, pause at node boundaries, `--resume`                                 |
+| [`src/memory/`](../../src/memory), [`src/eval/memory-ab.ts`](../../src/eval/memory-ab.ts)                                         | Optional project memory (canonical SQLite + Mem0 index, local Ollama embedder, write guard) and its A/B              |
+| [`src/runtimes/pi.ts`](../../src/runtimes/pi.ts), [`pi-guard.ts`](../../src/runtimes/pi-guard.ts)                                 | Pi runtime (read-only roles) and the extension that confines its tools to the worktree                               |
+| [`src/dashboard/`](../../src/dashboard)                                                                                           | Read-only dashboard on 127.0.0.1                                                                                     |
 
-## A live run, step by step
+## A live run, step by step (Week 2, CLI)
 
 Run `20261016-062925-e708`, task `complete-task` ("POST /tasks/:id/complete; 409 for a deleted
 task, 404 for an unknown one"), all roles Claude Code Opus, manual approvals. It cost $0.64.
@@ -103,53 +171,52 @@ database history (approvals, events, steps) in [db-history.md](live-run/db-histo
 ## Metrics
 
 TaskFlow, 10 tasks: 9 are to be implemented, and 1 is contradictory, where the correct answer is
-`needs_clarification`. **Verified** means the run claimed success _and_ the hidden tests passed.
-**False success** means the run claimed success but the hidden tests failed. **First-pass**
-means verified with no rework.
+`needs_clarification`.
 
-| Measurement                                    | Verified     | False success | First-pass   | Fix cycles        | Cost / pass   |
-| ---------------------------------------------- | ------------ | ------------- | ------------ | ----------------- | ------------- |
-| Week 2, Opus reviewer, 1 run (2 parts¹)        | 100% (10/10) | 0% (0/9)      | 100% (9/9)   | 0                 | $5.82         |
-| Week 2, Sol reviewer (OpenCode, OpenAI), 1 run | 90% (9/10)   | 0% (0/8)      | —            | 0.44 avg          | $6.03         |
-| Cycle-budget correction, Opus, 3 repeats       | 96.7% ± 5.8% | 0%            | 96.3% ± 6.4% | 0 gate / 0 review | $5.98 ± $0.38 |
+- **Verified:** the run claimed success _and_ the hidden tests passed.
+- **False success:** the run claimed success but the hidden tests failed.
+- **First-pass:** verified with no rework.
 
-¹ The run hit the subscription session limit, and its last 4 tasks were re-run after the reset.
-Summaries: [Opus part 1](evals/week2-opus-part1-summary.md),
-[Opus part 2](evals/week2-opus-part2-summary.md), [Sol](evals/week2-sol-summary.md),
-[cycle budgets](evals/cycle-budgets-summary.md). Analysis:
-[docs/week2-results.md](../week2-results.md) and
-[docs/cycles-budget-results.md](../cycles-budget-results.md). The one miss in the 3-repeat run
-was a provider outage that was recorded as `timeout`; it has been classified as `infra_error`
-since `421b588`.
+Week 3's hidden tests also check TaskFlow's own rules, for example "unknown body keys → 400".
+That made the suite harder: Week 2's ~97% became 67% on the same diffs.
+
+| Measurement                                                  | Verified     | False success | First-pass   | Cost / pass   |
+| ------------------------------------------------------------ | ------------ | ------------- | ------------ | ------------- |
+| Week 3 baseline (rescore of the last Week 2 eval, 3 repeats) | 66.7% ± 5.8% | 34.7% ± 2.4%  | 63.0% ± 6.4% | $5.98 ± $0.38 |
+| Week 3 code, Opus in every role (1 repeat)                   | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $5.86         |
+| Same, `--concurrency 2` (1 repeat)                           | 80% (8/10)   | 22% (2/9)     | 78% (7/9)    | $6.52         |
+| Sonnet plans and develops, Opus reviews (1 repeat)           | 60% (6/10)   | 38% (3/8)     | 56% (5/9)    | $2.85         |
+
+The remaining false successes are almost all the same rule: a new action endpoint accepts an
+unknown body key. The Opus reviewer approves it every time, because it is the same vendor and
+model as the developer. This is the main quality limitation. Week 2's numbers:
+[docs/week2-results.md](../week2-results.md).
 
 ## Honest limitations
 
-- **The reviewer is the same vendor and model as the developer** (Claude Code Opus). The design
-  calls for an independent reviewer from another vendor. The OpenCode adapter exists and is
-  tested, but it is disabled for now, so the review is less independent than designed.
-- **The hidden tests check the acceptance criteria, not the repository's rules.** For example,
-  TaskFlow's "unknown body keys → 400" convention is not tested. The Sol reviewer rejected
-  changes for breaking it, and the hidden tests passed either way.
-- **The factory runs locally.** It is one machine with one target, and tasks run one at a time.
-  Checks run in Docker, but the agent itself runs on the host, limited by a per-role tool
-  allow-list (see "Known limitation" in the [README](../../README.md)).
-- **The suite is saturated for Opus.** At about 100% it can show regressions but not
-  improvements, and with only n = 1–3 repeats the spread is wide.
-
-## What's next
-
-GitHub Issues as the task source, and pull requests instead of local merges · several target
-projects · parallel task execution · memory across runs · a dashboard for runs and evals ·
-Pi as another agent runtime.
+- **The reviewer is the same vendor and model as the developer.** The OpenAI reviewer is off by
+  the owner's decision, and the local Pi reviewer was too weak (2/10 defects found).
+- **Live runs found bugs that fakes hid** (see above). The fakes do not check the contracts of
+  the real CLIs yet.
+- **The evidence base is small:** 10 tasks on one stand with hidden tests, 1–3 repeats. The
+  second project has no hidden tests.
+- **The agent runs on the host,** limited by tool allow-lists. Checks run in Docker
+  (`--network none`). Pi is additionally confined by the guard extension.
+- **It runs on the owner's laptop and subscription.** A session window held about $10 of work;
+  the limit was hit 3 times in the final block and recovered every time.
+- **No branch protection:** GitHub Free does not offer it for private repositories. The
+  factory never force-pushes.
 
 ## Try it
 
 ```bash
 npm ci && npm run check          # typecheck, lint, format, unit tests (fake agents, no network)
 npm run verify-hidden            # hidden tests fail on the baseline and pass on the reference patches (Docker)
+npm run dashboard                # read-only dashboard on http://127.0.0.1:4317/
+npm run demo:reset               # a separate demo sandbox; see docs/demo.md
 ```
 
 The TaskFlow fixture is part of this repository. On first use, the factory materializes it as a
-git repository under `FACTORY_WORKDIR` (default `~/agentic-factory-work`), so no submodule or
-setup script is needed. Running agents (`npm run run-task`, `npm run eval`) needs an
-authenticated Claude Code CLI; see the [README](../../README.md).
+git repository under `FACTORY_WORKDIR` (default `~/agentic-factory-work`). Running agents
+(`npm run run-task`, `npm run eval`) needs an authenticated Claude Code CLI; GitHub needs a
+fine-grained token in `.env`; see the [README](../../README.md).
