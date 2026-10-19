@@ -213,7 +213,9 @@ export function resumeMismatch(
     return `roles differ: eval has ${roles(stored.roles)}, config has ${roles(current.roles)}`;
   if (stored.baselineCommit !== current.baselineCommit)
     return `baseline commit differs: eval ${stored.baselineCommit ?? "?"}, now ${current.baselineCommit ?? "?"}`;
-  if (stored.taskIds.join(",") !== current.taskIds.join(","))
+  // A set, not a sequence: a parallel pass records its tasks in the order they finished.
+  const set = (ids: readonly string[]) => [...ids].sort().join(",");
+  if (set(stored.taskIds) !== set(current.taskIds))
     return `task set differs: eval ran ${stored.taskIds.join(", ")}`;
   return null;
 }

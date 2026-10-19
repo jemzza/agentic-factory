@@ -220,6 +220,11 @@ describe("resumeMismatch", () => {
   it("accepts the same measurement regardless of role order", () => {
     expect(resumeMismatch(base, { ...base, roles: { b: "y:2", a: "x:1" } })).toBeNull();
   });
+  it("accepts the same tasks in another order (a parallel pass records them as they finish)", () => {
+    // Regression (final block, eval-20261019-024805): a --concurrency 2 pass stored
+    // hard-delete before due-date and its resume was refused.
+    expect(resumeMismatch(base, { ...base, taskIds: ["t2", "t1"] })).toBeNull();
+  });
   it("refuses a different baseline commit or task set", () => {
     expect(resumeMismatch(base, { ...base, baselineCommit: "d" })).toMatch(/baseline commit/);
     expect(resumeMismatch(base, { ...base, taskIds: ["t1"] })).toMatch(/task set/);
