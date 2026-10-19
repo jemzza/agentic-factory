@@ -751,3 +751,22 @@ it is surprising in practice. Options for the owner:
 - raise the default budget;
 - count spec revisions outside the developer's share;
 - `/retry` with a larger budget in the issue's Budget section.
+
+## Final block, item 7: the owner's decisions (2026-10-19)
+
+| Decision         | Choice                                                  | Numbers behind it                                                                                                                                                                        |
+| ---------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Roles            | **Planner and developer Sonnet 5.5, reviewer Opus 5.5** | Item 2: half the cost ($2.85 against $5.86 per repeat) and 40% less time; quality lower on one repeat (verified 60% against 80%). The reviewer stays Opus as the filter before "success" |
+| `memory.enabled` | **On**                                                  | Item 5: 8/8 with memory against 0/16 without                                                                                                                                             |
+| Concurrency      | **2** for evals                                         | Item 4: the same outcomes as sequential, ≈ 1.6× faster                                                                                                                                   |
+| Pi               | Stays a one-line alternative reviewer, not the default  | Item 6: recall 20% of Opus's                                                                                                                                                             |
+
+`factory.config.ts` now has these roles and `memory.enabled: true`. The previous configuration
+(Opus in every role) is kept as `factory.opus.config.ts` (`FACTORY_CONFIG=` for comparisons).
+
+**Evals with memory:** every repeat gets its own empty memory namespace
+(`<project>~<eval>-r<N>`), so repeats stay independent, and an eval never writes into a
+project's real memory. A resumed run keeps its repeat's namespace. Interactive and GitHub
+runs use the project's real memory.
+
+The final `eval --repeat 3 --concurrency 2` (item 8) measures this configuration.

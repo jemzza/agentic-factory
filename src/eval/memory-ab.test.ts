@@ -8,6 +8,7 @@ import type { RunReport } from "../schemas/report.js";
 import { FAKE_TASK } from "../testing/fakes.js";
 import type { HiddenTestResult } from "./hidden-tests.js";
 import {
+  evalRepeatMemory,
   loadPairs,
   MEMORY_EVAL_DIRS,
   NamespacedMemory,
@@ -238,6 +239,30 @@ describe("runMemoryAb", () => {
     const off = await runMemoryAb(offOnly.d);
     expect(offOnly.calls).toEqual(["B task-b off", "B task-b off"]); // no A without memory_on
     expect(off.results).toHaveLength(2);
+  });
+
+  it("eval repeats get their own memory: independent of each other and of the project's real memory", async () => {
+    const mem = new InMemoryMemory();
+    await mem.add("t", {
+      text: "real project rule",
+      source: "manual",
+      runId: null,
+      origin: { kind: "cli" },
+    });
+    const base: MemoryAccess = { memory: mem, unavailable: null, limit: 5, required: false };
+    const r1 = evalRepeatMemory(base, "eval-1", "r1");
+    const r2 = evalRepeatMemory(base, "eval-1", "r2");
+    await r1.memory?.add("t", {
+      text: "learned in r1",
+      source: "manual",
+      runId: null,
+      origin: { kind: "cli" },
+    });
+    expect((await r1.memory?.list("t"))?.map((m) => m.text)).toEqual(["learned in r1"]);
+    expect(await r2.memory?.list("t")).toEqual([]);
+    expect((await mem.list("t")).map((m) => m.text)).toEqual(["real project rule"]);
+    const down: MemoryAccess = { ...base, memory: null, unavailable: "down" };
+    expect(evalRepeatMemory(down, "eval-1", "r1")).toBe(down);
   });
 
   it("namespaces never share records", async () => {

@@ -191,9 +191,9 @@ claude auth status            # the Claude Code CLI must be logged in
 
 ```ts
 roles: {
-  planner:   { runtime: "claude-code", model: "opus" },
-  developer: { runtime: "claude-code", model: "opus" },
-  reviewer:  { runtime: "claude-code", model: "opus" },   // OpenCode reviewer disabled
+  planner:   { runtime: "claude-code", model: "claude-sonnet-5-5" },
+  developer: { runtime: "claude-code", model: "claude-sonnet-5-5" },
+  reviewer:  OPUS_REVIEWER,   // or PI_OLLAMA_REVIEWER (one line); OpenCode reviewer disabled
   // to re-enable: { runtime: "opencode", model: "openai/gpt-6.1-sol", keyEnv: ["OPENAI_API_KEY"] }
 },
 reviewEval: { reviewers: [{ runtime: "claude-code", model: "opus" }] },

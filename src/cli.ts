@@ -52,6 +52,7 @@ import { git } from "./git/git.js";
 import { createRedactor, secretsFromEnv } from "./store/redact.js";
 import { verifyHiddenTests } from "./eval/verify-hidden.js";
 import {
+  evalRepeatMemory,
   loadPairs,
   MEMORY_EVAL_DIRS,
   MemoryAbProgressSchema,
@@ -408,7 +409,7 @@ async function baselineUpdate(reason: string): Promise<number> {
 const MEASUREMENT_PATHS = [
   "prompts",
   "factory.config.ts",
-  "factory.sonnet-dev.config.ts",
+  "factory.opus.config.ts",
   "src/agents",
   "src/runtimes",
 ];
@@ -536,7 +537,16 @@ async function evalSuite(cmd: Extract<CliCommand, { kind: "eval" }>): Promise<nu
     makeSandboxExec: () => Promise.resolve(exec),
     pauseReason: ctl.pauseReason,
     costPool: ctl.costPool,
-    ...evalMemory,
+    // runs/eval-<ts>/r<N>/: memory per repeat, never the project's real memory.
+    ...(evalMemory.memory
+      ? {
+          memory: evalRepeatMemory(
+            evalMemory.memory,
+            path.basename(path.dirname(runsDir)),
+            path.basename(runsDir),
+          ),
+        }
+      : {}),
     log: parallel ? fileLog(path.join(runsDir, ctl.runId, "run.log")) : consoleLog,
   });
   // Eval approves specs automatically and never merges: a successful run stops at the merge

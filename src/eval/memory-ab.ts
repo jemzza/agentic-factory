@@ -128,6 +128,20 @@ export class NamespacedMemory implements ProjectMemory {
   }
 }
 
+/**
+ * Memory for one eval repeat: its own namespace (`<project>~<eval>-r<N>`), so repeats stay
+ * independent (repeat 2 never sees what repeat 1 stored) and an eval never writes into a
+ * project's real memory. A resumed run gets the same namespace (same eval and repeat).
+ */
+export function evalRepeatMemory(
+  access: MemoryAccess,
+  evalId: string,
+  repeatDir: string,
+): MemoryAccess {
+  if (!access.memory) return access;
+  return { ...access, memory: new NamespacedMemory(access.memory, `${evalId}-${repeatDir}`) };
+}
+
 export const CONDITIONS = ["memory_on", "memory_off"] as const;
 export type Condition = (typeof CONDITIONS)[number];
 

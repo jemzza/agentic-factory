@@ -27,8 +27,10 @@ const PI_OLLAMA_REVIEWER: RoleBindingInput = {
 const config: FactoryConfigInput = {
   workdir: "~/agentic-factory-work",
   roles: {
-    planner: { runtime: "claude-code", model: "opus" },
-    developer: { runtime: "claude-code", model: "opus" },
+    // Owner's decision after the final block's items 1-2 (docs/week3-results.md): Sonnet plans and
+    // develops (half the cost and time of Opus), Opus reviews (the filter before "success").
+    planner: { runtime: "claude-code", model: "claude-sonnet-5-5" },
+    developer: { runtime: "claude-code", model: "claude-sonnet-5-5" },
     // Same vendor and model as the developer: the OpenCode reviewer (OpenAI) is disabled by the
     // project owner's decision. Review independence is therefore lower than the architecture
     // intends. The OpenCode runtime (src/runtimes/opencode.ts) stays available; to re-enable it:
@@ -48,13 +50,14 @@ const config: FactoryConfigInput = {
     "GOOGLE_GENERATIVE_AI_API_KEY",
     "FACTORY_GITHUB_TOKEN",
   ],
-  // Project memory (Mem0, infer:false; the rule text comes from the planner). Off until the
-  // A/B measurement (docs/week3-results.md). Local embedder: Ollama on 127.0.0.1, pinned by
-  // tag and digest. The OpenAI variant is supported by config only:
+  // Project memory (Mem0, infer:false; the rule text comes from the planner). On by the owner's
+  // decision after the A/B (memory_on 8/8 vs memory_off 0/16, docs/week3-results.md). Needs
+  // Ollama on 127.0.0.1 with the pinned embedder; without it runs go on and say so. Evals use
+  // a fresh memory namespace per repeat, never the project's real memory. The OpenAI variant is supported by config only:
   //   embedder: { provider: "openai", model: "text-embedding-3-small", dims: 1536, keyEnv: "OPENAI_API_KEY" }
   // Changing the embedder requires `npm run memory -- reindex`.
   memory: {
-    enabled: false,
+    enabled: true,
     limit: 5,
     embedder: {
       provider: "ollama",
