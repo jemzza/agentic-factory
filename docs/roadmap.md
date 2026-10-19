@@ -52,7 +52,7 @@ session window held about $10 of work, and the limit was hit 3 times in the fina
 ## Week 4 — Trust the numbers
 
 **Goal:** a change that breaks a contract with a real tool is caught by a test, not by a paid
-run. Metrics have known uncertainty.
+run. Metrics have known uncertainty, and the dashboard shows them clearly.
 
 - **Contract tests against the real CLIs.**
   - Record short live sessions of `claude` (stream-json with `--json-schema`, a limit error),
@@ -73,15 +73,46 @@ run. Metrics have known uncertainty.
   - `eval:compare` states whether a difference is beyond the spread.
 - **CI.** `npm run check` on every push (GitHub Actions on the factory repository, no
   secrets), so a green check no longer depends on the laptop's load.
+- **Dashboard: a clear, professional interface** (the week's last phase, so it shows the new
+  metrics and the bigger eval). Still read-only, 127.0.0.1 only, secrets masked, no external
+  scripts: charts are server-rendered SVG, so the strict CSP stays.
+  - **Overview page:**
+    - the latest evals with verified, false success and cost, each with its spread;
+    - runs in progress and the node each is at;
+    - spending per day and per week;
+    - subscription-limit hits.
+  - **Trends:** verified, false success and cost per repeat over all evals, with a
+    confidence band, so an improvement can be told from noise.
+  - **Eval comparison as a heat map:** tasks × repeats, colored by outcome (verified, false
+    success, error, clarification), with the difference stated as "beyond / within the
+    spread".
+  - **Run timeline:** a bar per step (planner → developer → gate → review → merge) with time
+    and cost, the event feed beside it.
+  - **Memory page:** records per project, their source, and the runs that used them.
+  - **Design:**
+    - one visual system (spacing, type scale, a small palette);
+    - status badges with text, not color alone;
+    - light and dark themes;
+    - usable at phone width;
+    - every number with its unit and, where it exists, its spread;
+    - empty and error states that say what to do next.
+  - **Checks:**
+    - rendering tests per page (including XSS and secret masking);
+    - an accessibility check (contrast, labels, keyboard);
+    - screenshots of every page in light and dark theme, in `docs/showcase/`.
 - **Live block:**
   - re-record the contracts (≈ $1);
-  - a new Week 4 baseline, ≈ $15–18 per repeat × 3.
+  - a new Week 4 baseline: ≈ $15–18 per repeat × 3 with Opus roles, ≈ $9–10 per repeat with
+    the chosen Sonnet roles;
+  - the dashboard needs no agent runs ($0).
 
 **Done when:**
 
-- the contract tests run in `npm run check`, and each of the five Week 3 bugs is reproduced
-  by a test that would have failed;
-- the new baseline is recorded with intervals.
+- the contract tests run in `npm run check`, and each of the six Week 3 bugs is reproduced by
+  a test that would have failed;
+- the new baseline is recorded with intervals;
+- every dashboard page passes its rendering and accessibility checks;
+- the screenshots show the new baseline's trends and comparison.
 
 ## Week 5 — Independent review, lower false success
 
