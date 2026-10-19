@@ -725,3 +725,29 @@ memory and say so. Today memory stores only confirmed knowledge, under the write
 **Cost of item 5:** $14.38 (the invalid run, whose B runs are reused) + $1.30 (two A-path
 checks) + $8.79 (`memory_on` rerun) = **$24.47**, against the ≈ $12 estimate. Subscription
 limits hit during item 5: **2**. In the whole final block so far: **3**.
+
+## Final block, item 3: live GitHub cycle (in progress)
+
+The factory ran on real GitHub: `npm run factory:watch -- --interval 20`, polling from the
+owner's computer. The repositories are private: `jemzza/taskflow-demo` (the stand at
+`factory-baseline` `8e6e21f`) and `jemzza/ledgerlite` (`8500e89`), with
+`allowed_users: [jemzza]`. The fine-grained token covers exactly these two repositories; a
+check against `agentic-factory` returned 403. By the owner's permission, the issues and the
+commands were posted from the owner's account with that token.
+
+| Project           | Path                                                                                                                                               | Result                                                                                                                                                                                                                                                          | Cost  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| **ledgerlite**    | [issue #1](https://github.com/jemzza/ledgerlite/issues/1) → spec v1 → `/approve` → [PR #2](https://github.com/jemzza/ledgerlite/pull/2) → `/merge` | **merged.** Gate in the `python312` sandbox (ruff, mypy, pytest) → review approve → `/merge` → gate again on the merge result → `main` = `9691c32` (`--no-ff`, parents `8500e89` + `2595add`). The PR shows merged, and the issue is closed with `factory:done` | $0.67 |
+| **taskflow-demo** | [issue #1](https://github.com/jemzza/taskflow-demo/issues/1) → spec v1 → `/reject <reason>` → spec v2 → `/approve`                                 | **`budget_exceeded`** in the developer step. Spec v2 contains the requirement from the rejection (`error.details.allowed`); the label is `factory:failed`, with a comment offering `/retry`                                                                     | $1.00 |
+
+Both projects record every decision with channel `github` and actor `jemzza`.
+
+**The `budget_exceeded` is a finding, not a factory crash.** The task budget defaults to $1
+(`budget_defaults.max_cost_usd`). The two planner passes, before and after `/reject`, used
+$0.53 of it. The developer was then capped at the remaining $0.47 and stopped there. A human
+rejection therefore shrinks the implementation budget. That is defensible as a hard cap, but
+it is surprising in practice. Options for the owner:
+
+- raise the default budget;
+- count spec revisions outside the developer's share;
+- `/retry` with a larger budget in the issue's Budget section.
