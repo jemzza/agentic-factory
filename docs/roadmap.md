@@ -73,6 +73,13 @@ run. Metrics have known uncertainty, and the dashboard shows them clearly.
   - `eval:compare` states whether a difference is beyond the spread.
 - **CI.** `npm run check` on every push (GitHub Actions on the factory repository, no
   secrets), so a green check no longer depends on the laptop's load.
+- **Separate planning and implementation budgets.** Week 3's live run in `taskflow-demo`
+  stopped at `budget_exceeded`: two planner passes (before and after `/reject`) used half the
+  task's $1, and the developer was capped at the rest. Spec revisions get their own budget, so
+  a human rejection never shrinks the implementation.
+- **Flaky-test detection.** On a gate failure, the failing check runs once more on the same
+  commit. A pass on the rerun is recorded as `flaky` (the project's test, not the agent's code)
+  and reported. A fix cycle is spent only on a reproducible failure.
 - **Dashboard: a clear, professional interface** (the week's last phase, so it shows the new
   metrics and the bigger eval). Still read-only, 127.0.0.1 only, secrets masked, no external
   scripts: charts are server-rendered SVG, so the strict CSP stays.
@@ -130,8 +137,18 @@ rule ("strict request body") that the Opus reviewer approved every time.
   - A rule is then not left to a model to notice.
   - This stays project-owned: the rules live in the project's `.factory/`, not in the
     factory code.
-- **Memory decision follow-up.** If the Week 3 A/B shows an effect, decide what else
-  qualifies as a lesson (fixed review findings), and re-measure with more pairs.
+- **Model routing by difficulty.**
+  - Sonnet by default.
+  - Opus for tasks marked hard, and for the retry after a failed gate, a `request_changes`
+    review or an invalid answer.
+  - Week 3's final eval: Sonnet failed exactly on the hard and the contradictory task.
+  - Measured against Sonnet-only and Opus-only on the same eval; config only, the routing
+    rule lives in `decide()`.
+- **Coverage of the changed lines as a gate signal.** Lines the agent added that no test
+  executes are reported to the reviewer, and above a project-set threshold they fail the gate.
+  Deterministic, and it works on projects without hidden tests.
+- **Memory decision follow-up.** Memory is on since Week 3 (A/B: 8/8 against 0/16). Decide
+  what else qualifies as a lesson (fixed review findings), and re-measure with more pairs.
 - **Live block:**
   - `eval:review` for each reviewer candidate (≈ $2–4);
   - one eval per candidate (≈ $15–18);
@@ -259,6 +276,50 @@ isolated macOS environment.
 
 **Done when:** a week of real issues in all registered projects is processed with no manual
 restarts.
+
+## Further ideas (backlog, not scheduled)
+
+Candidates for a week after iOS, or to pull into a week when they fit its goal. Each still
+needs its own measurement before it becomes a default.
+
+**Learning from experience**
+
+- **Rules from human edits to agent PRs.** When a person changes the agent's code before
+  merging, the planner turns the edit into a lesson, like a `/reject` comment.
+- **From memory to project rules.** A lesson that keeps being used is proposed, with the
+  owner's confirmation, as a line in the project's `CLAUDE.md` or as a deterministic check.
+  Memory then becomes a lasting guarantee.
+- **Memory hygiene.** Each record has an age, a use count and conflicts with other records.
+  Unused or contradicted records are proposed for removal.
+
+**Working with people**
+
+- **Respond to PR review comments** (a `/fix` command on the PR). The developer addresses a
+  human's review comments in the same PR, and the gate and review run again. Today only the
+  spec can be sent back.
+- **Spec diff between versions.** After `/reject`, the spec comment shows what changed from
+  the previous version instead of the whole spec again.
+- **Notifications** (Telegram or Slack) for a spec waiting for approval, a PR ready for
+  `/merge`, a limit hit or a failure.
+- **Large-task decomposition.** The planner can split a big issue into linked smaller issues,
+  each a normal factory task, instead of one large change.
+
+**Quality signals**
+
+- **Mutation testing of the agent's tests.** Mutate the changed code and measure how many
+  mutants the new tests kill. The mutation score separates "tests exist" from "tests check
+  something", and it needs no hidden tests.
+- **Real-world tasks.** Beyond the stands: closed issues from small open-source repositories,
+  compared with the human fix.
+- **A regression suite of the factory's own bugs** (partly in Week 4: each Week 3 bug as a
+  permanent test).
+
+**Safety**
+
+- **Dependency changes as a decision.** New packages and lock-file changes in an agent diff
+  need the owner's confirmation and pass a vulnerability check (supply chain).
+- **Secret scanning of every diff** before a commit, a PR or a merge, on top of the masking
+  that exists today.
 
 ## Not planned (unless the owner asks)
 
