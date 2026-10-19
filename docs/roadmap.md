@@ -1,30 +1,38 @@
 # Roadmap after Week 3
 
-Proposed 2026-10-19: three core weeks and one optional week. Each week follows the Week 3
+Proposed 2026-10-19: five core weeks (two of them new stacks, by the owner's request) and one
+optional week. Each week follows the Week 3
 working rules: phases with a stop for the owner's confirmation; code and tests first, then
 live measurements in one block; every number in the results comes from a recorded run.
 
-**Before Week 4:** close Week 3's final block. That means the live GitHub cycle in two
-projects, the memory A/B conclusion, the owner's decisions, the final
-`eval --repeat 3 --concurrency 2` and the week's report.
+**Week 3 is closed** (`docs/week3-results.md`). Default roles: Sonnet plans and develops, Opus
+reviews; memory on; concurrency 2. One leftover: the live GitHub cycle in `taskflow-demo`
+stopped at `budget_exceeded` and waits for the owner's `/retry`.
+
+The cost estimates below were made with Opus in every role. With the chosen Sonnet roles, an
+eval repeat costs ≈ $3.2 instead of ≈ $6, so the live runs should come out lower.
 
 ## Why this order
 
 Week 3's biggest lesson: **the serious bugs only surfaced in live runs.** Fakes did not
-model how the factory talks to the real CLIs. Five defects were found in the final block:
+model how the factory talks to the real CLIs. Six defects were found in the final block:
 
 - eval judged runs that ended without the merge gate as errors;
 - the A/B harness let task A be auto-approved;
 - the planner's agent schema had no `lessons` field;
 - git fell back to the owner's keychain;
-- spec versions could collide.
+- spec versions could collide;
+- resuming a parallel eval compared task lists in order and was refused.
 
 Hence the order:
 
 1. Trust the measurements (Week 4).
 2. Raise quality (Week 5).
 3. Close the isolation gap (Week 6).
-4. Scale (Week 7).
+4. New stacks: Kotlin (Week 7), then iOS (Week 8). They come after Week 4, because a new
+   stack must be measured with hidden tests and contract tests, not only run. iOS also comes
+   after Week 6, because its sandbox is a macOS VM, a continuation of the isolation work.
+5. Scale (Week 9).
 
 Improving quality before the numbers can be trusted is what Week 3 got wrong.
 
@@ -32,12 +40,14 @@ Costs are list-price estimates. The practical limit is the Claude subscription: 
 session window held about $10 of work, and the limit was hit 3 times in the final block. The
 "windows" column is how many such windows the week's live runs need.
 
-| Week         | Goal                                    | Live runs (estimate)  | Windows | Owner inputs                                                   |
-| ------------ | --------------------------------------- | --------------------- | ------- | -------------------------------------------------------------- |
-| 4            | Trust the numbers                       | ≈ $50–60              | 5–6     | Approve the new tasks; GitHub Actions on the factory repo      |
-| 5            | Independent review, lower false success | ≈ $60–70 (+ ≈ $5 API) | 6–7     | A second-vendor provider and key (Gemini API or OpenAI)        |
-| 6            | Agent isolation                         | ≈ $60                 | 6       | Approve the container design and the network allowlist         |
-| 7 (optional) | Operations                              | ≈ $10                 | 1       | A machine for the factory (home server or VM, no public entry) |
+| Week         | Goal                                    | Live runs (estimate)  | Windows | Owner inputs                                                            |
+| ------------ | --------------------------------------- | --------------------- | ------- | ----------------------------------------------------------------------- |
+| 4            | Trust the numbers                       | ≈ $50–60              | 5–6     | Approve the new tasks; GitHub Actions on the factory repo               |
+| 5            | Independent review, lower false success | ≈ $60–70 (+ ≈ $5 API) | 6–7     | A second-vendor provider and key (Gemini API or OpenAI)                 |
+| 6            | Agent isolation                         | ≈ $60                 | 6       | Approve the container design and the network allowlist                  |
+| 7            | Kotlin (JVM) as a third stack           | ≈ $20–30              | 2–3     | A Kotlin target repository (or approve a new demo project)              |
+| 8            | iOS (Swift) as a fourth stack           | ≈ $20–30              | 2–3     | Xcode, ≈ 80 GB of disk for a macOS VM, the VM tool, an iOS demo project |
+| 9 (optional) | Operations                              | ≈ $10                 | 1       | A machine for the factory (home server or VM, no public entry)          |
 
 ## Week 4 — Trust the numbers
 
@@ -128,7 +138,79 @@ limitation.
 - the eval is not worse than the Week 5 baseline;
 - README's "Known limitation: the agent runs on the host" is removed.
 
-## Week 7 (optional) — Operations
+## Week 7 — Kotlin (JVM) as a third stack
+
+**Goal:** the factory develops a Kotlin project as reliably as the Node and Python ones,
+measured with hidden tests, not only run.
+
+- **A Kotlin target project.** A small JVM service or library, the size of TaskFlow and
+  ledgerlite, with its own `CLAUDE.md`, `.factory/config.yaml` and the issue template. It is
+  registered in `projects.yaml` and on GitHub.
+- **A sandbox profile `jvm21`** (`sandbox/jvm21/`).
+  - Pinned JDK and Gradle versions.
+  - Dependencies resolved on the host from the lock state into a Gradle cache directory
+    (like `node_modules` / `.venv`), so the gate runs `gradle --offline` in the sandbox with
+    `--network none`.
+  - Checks: `compileKotlin`, `ktlint` or `detekt`, `test` (JUnit 5).
+- **Hidden tests and reference patches** for 8–10 Kotlin tasks, using the Week 4 tooling.
+  `verify-hidden` must report fail on baseline and pass on reference for every one.
+- **Agent commands** in the project config: exact Gradle commands, no wildcards.
+- **Not in scope:** Android instrumented tests on an emulator. Android code is covered only as
+  far as JVM unit tests reach.
+- **Live block:**
+  - `project:check`;
+  - one GitHub cycle;
+  - the Kotlin baseline eval × 3, at ≈ $3–5 per repeat with Sonnet roles.
+
+**Done when:**
+
+- `project:check` passes;
+- `verify-hidden` passes for every Kotlin task;
+- one live issue → PR → merge on GitHub;
+- a Kotlin baseline with intervals is recorded;
+- no factory code names the project.
+
+## Week 8 — iOS (Swift) as a fourth stack
+
+**Goal:** the factory develops an iOS app module and verifies it with `xcodebuild` in an
+isolated macOS environment.
+
+- **Why it is its own week.** iOS builds and tests need macOS and Xcode (`xcodebuild`, the
+  simulator), and the factory's sandbox is a Linux container. The gate needs a **macOS
+  sandbox**: a macOS VM on the owner's Apple hardware (Virtualization.framework, e.g. with
+  `tart`). Its constraints:
+  - no network during checks;
+  - only the worktree is shared;
+  - discarded after each check, or reset from a clean snapshot.
+
+  Check the tool's real flags first.
+
+- **An iOS target project:** a small SwiftUI app with its logic in a Swift package (unit
+  tests with XCTest or Swift Testing), plus a minimal UI layer. It has its own `CLAUDE.md`
+  and `.factory/config.yaml`.
+- **A sandbox profile `macos-xcode`.**
+  - Pinned Xcode and iOS simulator runtime.
+  - Swift packages resolved before the check.
+  - Checks: `xcodebuild build` and `xcodebuild test` on a pinned simulator, plus `swiftlint`
+    if the project uses it.
+- **Hidden tests and reference patches** for 6–8 tasks (package-level logic first). UI tests
+  are a stretch goal, because simulator UI tests are slow and flaky.
+- **Not in scope:** code signing, devices, App Store builds; there are no Apple credentials
+  in the factory.
+- **Live block:**
+  - `project:check`, including VM start and reset times;
+  - one GitHub cycle;
+  - an iOS baseline eval × 3.
+
+**Done when:**
+
+- the macOS sandbox runs checks with no network and is reset after each run;
+- `verify-hidden` passes for every iOS task;
+- one live issue → PR → merge;
+- an iOS baseline is recorded, with the check time per task reported, since VM checks are
+  slower.
+
+## Week 9 (optional) — Operations
 
 **Goal:** the factory runs unattended without the owner's laptop.
 
@@ -144,7 +226,8 @@ limitation.
 
 - **Dashboard trends** of the main metrics across evals and weeks, still read-only.
 
-**Done when:** a week of real issues in both projects is processed with no manual restarts.
+**Done when:** a week of real issues in all registered projects is processed with no manual
+restarts.
 
 ## Not planned (unless the owner asks)
 
