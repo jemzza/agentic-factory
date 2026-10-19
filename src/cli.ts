@@ -956,7 +956,19 @@ async function dashboard(port: number): Promise<number> {
     { store, runsRoot: RUNS_DIR, githubRepos },
     { redact: createRedactor(secrets), port },
   );
-  await app.listen({ host: DASHBOARD_HOST, port });
+  try {
+    await app.listen({ host: DASHBOARD_HOST, port });
+  } catch (err) {
+    db.close();
+    if ((err as { code?: unknown }).code === "EADDRINUSE") {
+      console.error(
+        `Port ${String(port)} on ${DASHBOARD_HOST} is already in use (is a dashboard already running?). ` +
+          `Open http://${DASHBOARD_HOST}:${String(port)}/ or start another one with: npm run dashboard -- --port <N>`,
+      );
+      return 2;
+    }
+    throw err;
+  }
   console.log(
     `Dashboard (read-only): http://${DASHBOARD_HOST}:${String(port)}/  — Ctrl+C stops it`,
   );
